@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDS Rust DPWebRPC Production Readiness</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #172033;
+    --muted: #64748b;
+    --line: #d9e1ea;
+    --panel: #ffffff;
+    --page: #f6f7f9;
+    --blue: #2563eb;
+    --red: #b91c1c;
+    --red-bg: #fef2f2;
+    --amber: #a16207;
+    --amber-bg: #fffbeb;
+    --green: #15803d;
+    --green-bg: #f0fdf4;
+    --slate: #475569;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; line-height: 1.5; color: var(--ink); background: var(--page); }
+  h1 { font-size: 1.9rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.25rem; margin-top: 2rem; margin-bottom: 0.55rem; border-bottom: 2px solid var(--line); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.25rem; margin-bottom: 0.35rem; color: #334155; }
+  p { margin: 0.45rem 0; }
+  ul, ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+  li { margin-bottom: 0.35rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0.75rem 0 1.25rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e4eaf1; font-size: 0.9rem; vertical-align: top; }
+  th { background: #eef3f8; font-weight: 650; }
+  tr:last-child td { border-bottom: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+  pre { background: #eef3f8; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.84rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 1rem; border-radius: 8px; margin: 1rem 0 1.35rem; }
+  .panel h3:first-child { margin-top: 0; }
+  .callout { border-left: 4px solid var(--blue); padding: 0.75rem 0.9rem; background: #eff6ff; border-radius: 0 6px 6px 0; }
+  .danger { border-left-color: var(--red); background: var(--red-bg); }
+  .warning { border-left-color: var(--amber); background: var(--amber-bg); }
+  .success { border-left-color: var(--green); background: var(--green-bg); }
+  .small { font-size: 0.86rem; color: var(--muted); }
+  .status { display: inline-block; white-space: nowrap; border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
+  .status-blocker { color: #991b1b; background: #fee2e2; }
+  .status-high { color: #92400e; background: #fef3c7; }
+  .status-medium { color: #1d4ed8; background: #dbeafe; }
+  .status-open { color: #9f1239; background: #ffe4e6; }
+  .status-progress { color: #a16207; background: #fef3c7; }
+  .status-done { color: #166534; background: #dcfce7; }
+  .status-deferred { color: var(--slate); background: #e2e8f0; }
+  .gate-no { color: var(--red); font-weight: 750; }
+  .gate-yes { color: var(--green); font-weight: 750; }
+  .nowrap { white-space: nowrap; }
+  .toc { columns: 2; column-gap: 2rem; }
+  @media (max-width: 780px) {
+    body { margin: 1rem; }
+    .toc { columns: 1; }
+    table { display: block; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+
+<h1>GDS Rust DPWebRPC Production Readiness</h1>
+<div class="subtitle">
+  Component: <span class="mono">gds/rust/gds/src/dplib/dpwebrpc.rs</span> &nbsp;|&nbsp;
+  Delphi bridge: <span class="mono">lib/DPWebRPC.pas</span> &nbsp;|&nbsp;
+  Initial review: 2026-08-15 &nbsp;|&nbsp;
+  Overall status: <span class="gate-no">not ready for unrestricted production</span>
+</div>
+
+<div class="panel">
+  <h3>Purpose</h3>
+  <p>This is the working tracker for taking the Rust DPWebRPC implementation from preview use to full production. It records the production-readiness review, implementation order, acceptance criteria, verification evidence, rollout gates, and decisions that future sessions must preserve.</p>
+  <p>The scope includes the Rust poller and response sender, the shared Rust HTTP client where it directly affects DPWebRPC, the Rust/Delphi FFI boundary, the Delphi <span class="mono">TDPWebRPC</span> lifecycle wrapper, and compatibility with the deployed gateway protocol.</p>
+</div>
+
+<div class="callout danger">
+  <strong>Production gate:</strong> do not turn on Rust DPWebRPC universally, and do not remove the Delphi fallback until delivery failure, queue pressure, malformed traffic, and poller-panic recovery have been exercised under fault injection. Lifecycle stop no longer joins a mid-GET poller on the VCL thread. TLS verification is a separate project (Wine dual-named host); it remains mandatory before any HTTPS rollout.
+</div>
+
+<h2 id="contents">Contents</h2>
+<ol class="toc">
+  <li><a href="#state">Current state and evidence</a></li>
+  <li><a href="#findings">Prioritized findings</a></li>
+  <li><a href="#work">Implementation work packages</a></li>
+  <li><a href="#acceptance">Production acceptance gates</a></li>
+  <li><a href="#verification">Verification matrix</a></li>
+  <li><a href="#rollout">Rollout and rollback</a></li>
+  <li><a href="#decisions">Decision log</a></li>
+  <li><a href="#progress">Progress log</a></li>
+</ol>
+
+<h2 id="state">1. Current State and Evidence</h2>
+
+<div class="panel">
+  <h3>What is working</h3>
+  <ul>
+    <li>The Rust implementation polls the gateway on a dedicated thread, decrypts and queues incoming requests, and returns them to Delphi through a timer-driven FFI drain.</li>
+    <li>Responses are encrypted and posted through a four-worker Rust thread pool with up to five attempts for transport errors.</li>
+    <li>The implementation is gated by <span class="mono">use_rust_webrpc</span>, <span class="mono">Data.DisableRust</span>, and <span class="mono">Options.DisablePreviewFeatures</span>, so a practical rollback path already exists.</li>
+    <li>The focused Rust suite passed on 2026-08-15: <strong>56 passed, 0 failed</strong>, including parser hardening, panic-park, and poller restart.</li>
+    <li>Retained local logs contained 48 Rust poller starts and 444 successful POST records, with no retained decrypt/base64 or retry-exhaustion errors. This is useful operational evidence, but it is not a substitute for load and fault testing because the logs rotate.</li>
+  </ul>
+</div>
+
+<div class="callout warning">
+  Protocol tests now include OpenSSL PKCS7 golden vectors, a PHP leftover-pad fixture, poll-body trim, Drop-returns-quickly, GET lease, successor handoff, checked headers, and poller panic restart. They still do not cover bounded queues during a prolonged outage or Delphi-visible health. Do not check captured customer payloads into the tree.
+</div>
+
+<h3>Primary source map</h3>
+<table>
+<tr><th>Area</th><th>Source</th><th>Role</th></tr>
+<tr><td>Rust transport</td><td class="mono">gds/rust/gds/src/dplib/dpwebrpc.rs</td><td>Polling, protocol decoding, inbound queue, response encryption, outbound retry workers, shutdown.</td></tr>
+<tr><td>Rust HTTP</td><td class="mono">gds/rust/gds/src/dplib/dphttpclient.rs</td><td>ureq agent, TLS configuration, timeout application, response body reads.</td></tr>
+<tr><td>Rust FFI exports</td><td class="mono">gds/rust/gds/src/lib.rs</td><td>Create/free/fetch/respond opaque DPWebRPC handles.</td></tr>
+<tr><td>Delphi component</td><td class="mono">lib/DPWebRPC.pas</td><td>Activation, timer drain, event dispatch, response bridge, component destruction.</td></tr>
+<tr><td>CAT configuration</td><td class="mono">gds/udmCAT2.pas</td><td>Feature gate, gateway settings, refresh behavior.</td></tr>
+<tr><td>CAT lifecycle</td><td class="mono">gds/udmCat.pas</td><td>Primary/secondary activation, health watchdog, reset, shutdown.</td></tr>
+<tr><td>Live CAT gateway (ops tree)</td><td class="mono">gds/install/gateway_server/install/cat/</td><td>Gitignored host mirror. Do not treat as the git source of truth.</td></tr>
+<tr><td>Tracked CAT WebRPC PHP</td><td class="mono">gds/install/cat/{README.md,webrpc_unpad.inc.php,input.php}</td><td>Authoritative unpad + POST script. OpenSSL PKCS7 encrypt; raw decrypt then <span class="mono">webrpc_unpad</span> (PKCS7 or rtrim NULs).</td></tr>
+<tr><td>Stale gateway templates</td><td class="mono">gds/install/linux/ext</td><td>mcrypt zero-pad samples. Do not treat as live wire.</td></tr>
+</table>
+
+<h2 id="findings">2. Prioritized Findings</h2>
+<table>
+<tr><th>ID</th><th>Priority</th><th>Finding</th><th>Impact</th><th>Status</th></tr>
+<tr>
+  <td class="mono nowrap">DWR-01</td>
+  <td><span class="status status-deferred">Deferred</span></td>
+  <td><strong>TLS certificate and signature verification are disabled.</strong> <span class="mono">UreqDpHttpClient::new</span> always uses <span class="mono">build_insecure_agent</span>, whose verifier accepts every certificate and TLS signature. Kept this way after a Wine compatibility fight with a dual-named host.</td>
+  <td>Any HTTPS DPWebRPC connection is vulnerable to transparent interception or modification. The legacy inner AES-CBC format does not restore message authenticity. Latent on today’s CAT port-80 / HTTP default. Treat as a separate project before any <span class="mono">https://</span> rollout.</td>
+  <td><span class="status status-deferred">Separate project</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-02</td>
+  <td><span class="status status-done">Was blocker</span></td>
+  <td><strong>The Delphi Rust lifecycle is not safe or idempotent.</strong> <span class="mono">SetActive</span> is a no-op when already in the requested state; Rust create happens before <span class="mono">FActive</span> and the drain timer; stop clears the handle then frees; <span class="mono">Destroy</span> tears down an active instance. FFI create/free/fetch/respond catch panics. Drop no longer joins the poller on the VCL thread (WP6).</td>
+  <td>Watchdog reset and empty backup host should no longer leak, double-free, nil-deref the timer, or freeze the UI on <span class="mono">Active := False</span>.</td>
+  <td><span class="status status-done">In code</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-03</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Responding is fire-and-forget.</strong> Rust reports success as soon as a POST job is queued. Non-<span class="mono">OK</span> bodies and exhausted retries are only logged, and Delphi ignores the FFI return code.</td>
+  <td>GDS can lose a response while believing it completed the request. The remote web/mobile caller may hang or time out with no actionable GDS health state.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-04</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Inbound and outbound queues are unbounded.</strong> Inbound uses <span class="mono">Mutex&lt;Vec&lt;...&gt;&gt;</span> and removes index zero; the thread pool uses an unbounded job channel; Delphi drains all pending messages in one timer event.</td>
+  <td>A slow consumer or gateway outage can grow memory without limit, produce stale responses, make shutdown very long, and monopolize the Delphi main thread.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-05</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Malformed decrypted frames can panic the only poller.</strong> Header parsing now requires an ASCII alphabetic type and an unsigned positive decimal sequence (no sign, no leading zeros, <span class="mono">1..=i32::MAX</span>). Empty, non-ASCII, unknown-type, invalid-sequence, and bad-batch frames return a structured error and do not count as healthy communication. A valid batch prefix is salvaged when a later item is malformed, because the broker already dequeued the batch. The poller supervisor <span class="mono">catch_unwind</span>s: park inbound calls while still holding the GET lease, release the lease, mark unhealthy, then restart with capped exponential backoff that resets after a successful poll.</td>
+  <td>A bad frame logs and continues. A panic no longer kills polling or drops already-queued calls. Delphi still does not receive an explicit unhealthy FFI signal (WP8).</td>
+  <td><span class="status status-done">In code</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-06</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Shutdown must not block the Delphi UI thread.</strong> Drop sets a shared cancellation flag, stops accepting POSTs, interrupts poll/POST backoff sleeps, and joins the poller plus POST pool on a background waiter. ureq cannot cancel an in-flight GET. Pollers for the same URL take a lease so a successor cannot GET until the previous poller exits. Remaining inbound RPC items are parked for that successor; this instance has no Delphi consumer after free. Alive ticks are not parked. If Rust stays off, a parked call is stale until the next Rust start (or is never consumed, same as switching to the Delphi poller which cannot see the Rust queue).</td>
+  <td>Watchdog reset and application shutdown return immediately from <span class="mono">dpwebrpc_free</span>. Rapid restart does not steal the next broker GET. An in-flight GET after free is not delivered to the dying handle.</td>
+  <td><span class="status status-done">In code</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-07</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>No application-level payload limits are enforced.</strong> HTTP bodies, decoded ciphertext, plaintext, fields, batches, and queued requests can allocate based on remote input.</td>
+  <td>A faulty or hostile endpoint can cause excessive memory/CPU use. Multiple clones during decode and batch processing amplify large responses.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-08</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Full plaintext responses are logged, normally twice.</strong> Rust logs the complete response before encryption and Delphi logs it again after the FFI call.</td>
+  <td>Logs can contain session material and sensitive operational/client data. Large site/API responses also create avoidable allocations, log locking, disk traffic, and oversized rotated files.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-09</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>Live CAT encrypts PKCS7; PHP decrypt dual-unpads in tracked templates.</strong> <span class="mono">send_text</span> stays <span class="mono">openssl_encrypt(..., flags=0)</span> (Delphi poll decrypt is C-string and already tolerates leftover PKCS7 after <span class="mono">|</span>). <span class="mono">import_text</span> still uses <span class="mono">OPENSSL_ZERO_PADDING</span>, then <span class="mono">webrpc_unpad</span>: strip PKCS7 if valid, else rtrim NULs so Delphi zero-pad POSTs keep working. Source of truth: <span class="mono">gds/install/cat/</span>. The live <span class="mono">gateway_server</span> tree stays gitignored. The Delphi IV property is still not passed through the FFI.</td>
+  <td>A PKCS7-only <span class="mono">openssl_decrypt</span> would reject Delphi ciphertext. Dual unpad keeps one <span class="mono">input.php</span> for both clients. Isolation-deployed on the first test CAT host; fleet copy still needed.</td>
+  <td><span class="status status-progress">Tracked + isolation host</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-10</td>
+  <td><span class="status status-high">High</span></td>
+  <td><strong>The legacy encryption is unauthenticated.</strong> AES-CBC uses a fixed IV and a key truncated/zero-padded to 16 bytes, with no MAC or authenticated envelope.</td>
+  <td>Ciphertext is deterministic for matching prefixes and malleable. Correct TLS is therefore essential until a versioned authenticated protocol replaces it.</td>
+  <td><span class="status status-deferred">Protocol migration</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-11</td>
+  <td><span class="status status-medium">Medium</span></td>
+  <td><strong>An empty host fails open to a hard-coded HTTP test endpoint.</strong></td>
+  <td>A configuration or caller error can direct production data to an unintended cleartext test URL instead of refusing to start.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-12</td>
+  <td><span class="status status-medium">Medium</span></td>
+  <td><strong>Retry timing uses wall-clock time and fixed intervals.</strong> There is no exponential backoff or jitter.</td>
+  <td>Clock rollback can produce a very long sleep, while a shared outage can synchronize many GDS installations into a retry surge.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">DWR-13</td>
+  <td><span class="status status-medium">Medium</span></td>
+  <td><strong>Operational state is mostly visible only in text logs.</strong> Delphi receives periodic successful alive events but not queue age, delivery failure, malformed-frame counts, or explicit poller death.</td>
+  <td>Failures are detected late and are difficult to distinguish from endpoint, network, queue, or parser problems.</td>
+  <td><span class="status status-open">Open</span></td>
+</tr>
+</table>
+
+<h2 id="work">3. Implementation Work Packages</h2>
+
+<h3>WP1 — Secure and validate construction</h3>
+<p><span class="status status-deferred">TLS deferred</span> (Wine dual-named host; separate project). Empty-host fallback and FFI create <span class="status status-open">Open</span>. Addresses DWR-01 and DWR-11.</p>
+<ul>
+  <li>TLS certificate verification is deferred. Do not enable it as part of the current CAT HTTP canary. Revisit before any <span class="mono">https://</span> host, with an explicit insecure opt-in if Wine still cannot verify the dual-named certificate.</li>
+  <li>Validate host, scheme, port, poll path, post path, and key before starting any thread.</li>
+  <li>Remove the hard-coded empty-host fallback. Return a structured construction failure instead.</li>
+  <li>Change the FFI create boundary to return failure without unwinding across <span class="mono">extern "C"</span>.</li>
+</ul>
+<p><strong>Acceptance (when TLS is revisited):</strong> valid public certificates succeed; wrong hostname, expired certificate, unknown CA fail closed. <strong>Acceptance now:</strong> empty host and invalid port fail closed with a visible but non-secret error.</p>
+
+<h3>WP2 — Make the Delphi/Rust lifecycle safe</h3>
+<p><span class="status status-done">In code</span> Addresses DWR-02. Shutdown duration is WP6 (also in code).</p>
+<ul>
+  <li>Done: <span class="mono">SetActive</span> no-op when already in the requested state; design-time sets the flag only.</li>
+  <li>Done: <span class="mono">dpwebrpc_create</span> must succeed before <span class="mono">FActive</span> or enabling the drain timer. Nil create leaves inactive so a later True can retry.</li>
+  <li>Done: stop disables the timer, moves the handle aside, clears the field, frees only a non-nil pointer.</li>
+  <li>Done: destructor stops an active instance; <span class="mono">StopRust</span> is safe if never started.</li>
+  <li>Done: <span class="mono">catch_unwind</span> on create (nil), free, fetch (null), respond (-2).</li>
+  <li>Done: bounded non-blocking shutdown (WP6). <span class="mono">Active := False</span> does not join a mid-GET poller on the VCL thread.</li>
+</ul>
+<p><strong>Acceptance:</strong> repeated true/false assignments, false-before-first-start, empty backup configuration, failed construction, refresh while active, watchdog reset, and destruction while active all complete without access violation, leak, double-free, or VCL freeze. A successor poller waits for the previous GET lease instead of overlapping.</p>
+
+<h3>WP3 — Replace fire-and-forget response delivery</h3>
+<p><span class="status status-open">Open</span> Addresses DWR-03 and the outbound side of DWR-04.</p>
+<ul>
+  <li>Choose and document the contract: queued, accepted by HTTP, accepted by gateway/broker, or durably retained for retry.</li>
+  <li>Use a bounded outbound queue with sequence, enqueue time, attempt count, next-attempt time, and deadline.</li>
+  <li>Report terminal delivery failure to Delphi and system status rather than only logging it.</li>
+  <li>Classify failures: retry transient transport/5xx conditions; do not blindly retry permanent 4xx/protocol errors.</li>
+  <li>Treat a timeout after a possible server commit as ambiguous. Verify or define gateway deduplication by sequence before claiming exactly-once delivery.</li>
+  <li>Review the checked-in gateway behavior that returns <span class="mono">OK</span> even after broker forwarding errors.</li>
+</ul>
+<p><strong>Acceptance:</strong> tests cover connection refusal, timeout before send, timeout after gateway acceptance, non-OK 2xx body, 4xx, 5xx, broker rejection, process shutdown with pending work, and queue-full behavior.</p>
+
+<h3>WP4 — Bound inbound work and protect the Delphi main thread</h3>
+<p><span class="status status-open">Open</span> Addresses inbound DWR-04 and DWR-07.</p>
+<ul>
+  <li>Use <span class="mono">VecDeque</span> or a bounded channel for inbound requests.</li>
+  <li>Set explicit maximum response bytes, decoded bytes, fields, field bytes, batch items, and queued requests.</li>
+  <li>Avoid cloning the entire message/list for each nested batch operation.</li>
+  <li>Drain a bounded count or bounded elapsed-time budget per Delphi timer event, then yield to the UI.</li>
+  <li>Define what happens when the queue is full. Prefer pausing polling/backpressure over silently dropping an already-dequeued broker request.</li>
+  <li>The process-wide inbound handoff map is unbounded and never expires. Bound it, key-expire stale parks, and treat it as the same class of queue-pressure risk as the live inbound queue.</li>
+</ul>
+<p><strong>Acceptance:</strong> sustained traffic above consumer capacity remains within configured memory bounds, keeps the UI responsive, and produces an explicit health state without silently losing requests.</p>
+
+<h3>WP5 — Harden protocol parsing and poller supervision</h3>
+<p><span class="status status-done">In code</span> Addresses DWR-05 and part of DWR-13.</p>
+<ul>
+  <li>Done: <span class="mono">parse_frame_header</span> — ASCII alphabetic type plus unsigned positive decimal sequence (digits only, no sign, no leading zeros, <span class="mono">1..=i32::MAX</span>). Empty, non-ASCII, missing/invalid sequence, unknown type, bad batch length, and trailing batch data return structured errors.</li>
+  <li>Done: inbound queue locks use poison recovery so a malformed frame cannot stick the mutex.</li>
+  <li>Done: malformed HTTP 200 bodies (bad base64/decrypt/UTF-8/headers) do not set <span class="mono">comm_ok</span> and do not emit alive ticks.</li>
+  <li>Done: a valid batch prefix is enqueued even when a later item is malformed. That is an explicit protocol decision: the broker already dequeued the batch, so salvaging accepted calls is preferred over dropping work that will not be redelivered.</li>
+  <li>Done: panic order is contain, park queued calls while still owning the GET lease, release the lease, mark the poller unhealthy, then restart with interruptible backoff (1s, doubling, cap 30s). Backoff is skipped on shutdown. A later successful poll clears unhealthy and resets restart backoff to 1s.</li>
+  <li>Remaining for WP8: expose unhealthy / malformed / panic counts to Delphi system status.</li>
+</ul>
+<p><strong>Acceptance:</strong> empty/multi-byte/unknown headers and bad batches error without panic. Zero, signed, and overflowing sequences are rejected. <span class="mono">test_poller_restarts_after_panic</span>, <span class="mono">test_poller_restart_backoff_resets_after_recovery</span>, and <span class="mono">test_panic_parks_queued_call_for_successor</span> cover supervision. A panic while the lease is held does not drop already-queued inbound calls or leave the lease stuck.</p>
+
+<h3>WP6 — Make cancellation and shutdown bounded</h3>
+<p><span class="status status-done">In code</span> Addresses DWR-06.</p>
+<ul>
+  <li>Done: shared <span class="mono">AtomicBool</span> observed by the poller, outbound workers, and retry waits.</li>
+  <li>Done: stop accepting new outbound work before beginning shutdown.</li>
+  <li>Done: poll and POST backoff waits are interruptible (50ms slices on the real sleeper; mock sleep still records the full duration).</li>
+  <li>Done: ureq cannot cancel an in-flight request. Drop does not join on the caller; a <span class="mono">dpwebrpc-shutdown</span> thread joins the poller and POST pool. Drop logs its own return time; the waiter logs join duration.</li>
+  <li>Done: one GET lease per poll URL. A successor waits in the poller thread until the previous poller exits, so it cannot steal the next broker request.</li>
+  <li>Done: inbound RPC items still on a dying instance are parked for a successor with the same poll URL. Adoption happens only after the successor holds the GET lease and has rechecked shutdown, so a start-then-immediate-stop instance cannot take parked items and drop them. Alive ticks are not parked. If no successor starts, the parked call is not delivered (same class of loss as switching to the Delphi poller).</li>
+</ul>
+<p><strong>Acceptance:</strong> <span class="mono">test_drop_returns_quickly_while_get_blocks</span> asserts Drop returns in well under one second while a GET is parked. <span class="mono">test_inflight_get_is_handed_to_successor</span> and <span class="mono">test_start_stop_start_third_instance_receives_parked_request</span> cover rapid restart, including start then immediate stop then start. Watchdog reset must not freeze the VCL thread. Background join may still last up to the HTTP timeout.</p>
+
+<h3>WP7 — Establish wire compatibility and improve protocol security</h3>
+<p><span class="status status-progress">Partial</span> for compatibility (PKCS7 encrypt proven; dual unpad in the CAT install template). Remaining: deploy that PHP, pass or delete the Delphi IV. <span class="status status-deferred">Versioned migration</span> for AEAD. Addresses DWR-09 and DWR-10.</p>
+<ul>
+  <li>Done: OpenSSL PKCS7 golden vectors in <span class="mono">dpwebrpc.rs</span>. Live test-env poll decrypt and POST OK on 2026-08-15.</li>
+  <li>Done in git: <span class="mono">gds/install/cat/webrpc_unpad.inc.php</span> and <span class="mono">input.php</span>. <span class="mono">webrpc_unpad</span> on <span class="mono">import_text</span> — PKCS7 if valid (Rust), else rtrim NULs (Delphi). Do not use PKCS7-only <span class="mono">openssl_decrypt</span>; that rejects Delphi zero-pad. Isolation-deployed on the first test CAT host; fleet copy still needed. The gitignored <span class="mono">gateway_server</span> tree is not the source of truth.</li>
+  <li>Either pass the configured IV through the FFI or remove the misleading configurable Delphi property as part of a deliberate compatibility decision.</li>
+  <li>Design a versioned authenticated envelope for a later gateway migration, preferably with a unique nonce and AES-GCM or another reviewed AEAD.</li>
+  <li>Keep correct TLS mandatory even after the inner protocol gains authentication.</li>
+</ul>
+<p><strong>Acceptance:</strong> checked-in cross-implementation fixtures prove the current deployed wire contract, leftover pad is gone from the POST path, and old/new peers have an explicit version negotiation or rollout plan before further crypto changes ship.</p>
+
+<h3>WP8 — Redact logs and add operational telemetry</h3>
+<p><span class="status status-open">Open</span> Addresses DWR-08 and DWR-13.</p>
+<ul>
+  <li>Replace plaintext payload logging with direction, sequence, action where safely extractable, byte count, duration, attempt, and correlation ID.</li>
+  <li>Never log passwords, session keys, authentication headers, encryption keys, cookies, or complete API responses.</li>
+  <li>Count poll attempts, valid empty polls, messages/batches received, malformed frames, decrypt failures, POST successes, retries, terminal failures, queue rejections, queue depth/high-water mark, oldest age, and shutdown duration.</li>
+  <li>Expose last successful valid poll and explicit poller/worker state to Delphi system status.</li>
+  <li>Review log file permissions, retention, rotation, and the effect of one oversized line.</li>
+</ul>
+<p><strong>Acceptance:</strong> normal and failure diagnosis is possible without payload logging, automated tests assert redaction, and production status distinguishes network, protocol, queue, delivery, and poller failures.</p>
+
+<h3>WP9 — Use monotonic time and production backoff</h3>
+<p><span class="status status-open">Open</span> Addresses DWR-12.</p>
+<ul>
+  <li>Use <span class="mono">Instant</span> for elapsed time, deadlines, health age, and pacing.</li>
+  <li>Use capped exponential backoff with full jitter for repeated errors.</li>
+  <li>Reset backoff only after a valid successful exchange, not merely any HTTP 200.</li>
+  <li>Keep normal long-poll turnover prompt; do not add an unnecessary delay after a poll that already waited on the server.</li>
+</ul>
+<p><strong>Acceptance:</strong> forward/backward wall-clock changes do not alter retry deadlines, and a simulated fleet does not synchronize retries after an outage.</p>
+
+<h2 id="acceptance">4. Production Acceptance Gates</h2>
+<table>
+<tr><th>Gate</th><th>Required evidence</th><th>Current</th></tr>
+<tr><td>Security</td><td>Certificate verification on; invalid certificates fail closed; empty host rejected; payload logging removed/redacted.</td><td class="gate-no">Fail</td></tr>
+<tr><td>Lifecycle</td><td>Idempotent start/stop; safe partial construction; active destruction; no orphan threads; contained FFI panics.</td><td class="gate-no">Fail</td></tr>
+<tr><td>Wire parity</td><td>Deployed gateway ↔ Rust and Delphi ↔ Rust golden vectors pass for encryption, framing, escaping, batches, and Unicode.</td><td class="gate-no">Partial: dual unpad in install template; live servers still need deploy</td></tr>
+<tr><td>Delivery</td><td>Documented response-delivery contract; bounded queue; terminal failure surfaced; retry ambiguity covered.</td><td class="gate-no">Fail</td></tr>
+<tr><td>Load</td><td>Sustained overload remains bounded and UI responsive; queue pressure visible; no silent loss.</td><td class="gate-no">Not tested</td></tr>
+<tr><td>Network faults</td><td>DNS, connect, TLS, timeout, 4xx/5xx, malformed 200, gateway restart, and prolonged outage tests pass.</td><td class="gate-no">Not tested</td></tr>
+<tr><td>Shutdown</td><td>All shutdown/reset fault cases meet an agreed maximum duration without corruption or crash.</td><td class="gate-no">Unit: Drop returns while GET blocked. Live watchdog/reset duration still to measure.</td></tr>
+<tr><td>Observability</td><td>Poller, queues, retries, failures, message age, and shutdown state are visible without sensitive data.</td><td class="gate-no">Fail</td></tr>
+<tr><td>Canary</td><td>Controlled production canary runs through an agreed observation period with automatic/operational rollback ready.</td><td class="gate-no">Pending</td></tr>
+</table>
+
+<h2 id="verification">5. Verification Matrix</h2>
+<table>
+<tr><th>Layer</th><th>Required cases</th><th>Evidence/status</th></tr>
+<tr>
+  <td>Pure protocol</td>
+  <td>Escaping, empty fields, trailing escape, valid/invalid sequence bounds, batch nesting/length/trailing content, ASCII control header, Unicode payload, malformed Unicode header, exact size limits.</td>
+  <td><span class="status status-progress">Partial</span> Empty/non-ASCII/unknown headers, invalid seq, bad batch length, trailing batch data. Remaining: fuzz, size limits, Unicode payload kept.</td>
+</tr>
+<tr>
+  <td>Crypto interoperability</td>
+  <td>Delphi, deployed PHP/gateway, and Rust golden vectors in both directions; padding edge cases; wrong key/IV; corruption.</td>
+  <td><span class="status status-progress">Partial</span> OpenSSL PKCS7 vectors + dual-unpad fixture matching <span class="mono">gds/install/cat/webrpc_unpad.inc.php</span>. Remaining: fleet PHP deploy; Delphi IV FFI.</td>
+</tr>
+<tr>
+  <td>HTTP/TLS</td>
+  <td>Valid CA, wrong hostname, expired, unknown CA, TLS interruption, redirects policy, content-length mismatch, chunked oversized body, slow headers/body, proxy behavior.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Inbound pressure</td>
+  <td>Producer faster than Delphi; full queue; maximum batch; expensive handlers; bounded drain per UI tick; process restart after broker dequeue.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Outbound pressure</td>
+  <td>Queue full; four workers blocked; retry backlog; response deadline expiry; shutdown with work queued; out-of-order completion; ambiguous commit.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Lifecycle/FFI</td>
+  <td>False before true; true twice; false twice; empty secondary; create failure; refresh; reset; free during every network state; panic containment.</td>
+  <td><span class="status status-progress">Partial</span> SetActive state machine, FFI catch_unwind, Drop returns without joining an in-flight GET, poller panic contained and restarted. Remaining: live watchdog/reset duration; Delphi-visible unhealthy flag (WP8).</td>
+</tr>
+<tr>
+  <td>Time</td>
+  <td>Wall clock forward/backward, long suspend/resume, monotonic deadline behavior, jitter distribution.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Soak</td>
+  <td>At least one realistic multi-day canary with primary and secondary gateways, routine settings refresh, log rotation, network interruptions, memory/thread/queue monitoring.</td>
+  <td><span class="status status-open">Pending implementation</span></td>
+</tr>
+</table>
+
+<h3>Useful verification commands</h3>
+<pre>C:\Users\andre\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -X utf8 gds\scripts\test_rust.py dpwebrpc
+
+# After relevant Rust changes, run the broader Rust suite through the same repository test wrapper.
+# Build the Rust DLL with the repository's gds_build_rust workflow.
+# If the Delphi bridge changes, stop desktop GDS, rebuild gds.exe, restart it in the desktop session,
+# and verify primary/secondary activation, live polling, settings refresh, watchdog reset, and shutdown.</pre>
+
+<p class="small">Do not place encryption keys, credentials, session values, captured customer payloads, or secret-bearing gateway configuration in this tracker or test output. Golden vectors must use generated non-secret fixture data.</p>
+
+<h2 id="rollout">6. Rollout and Rollback</h2>
+<ol>
+  <li><strong>Development:</strong> complete WP1–WP6 and cross-language fixtures. Keep <span class="mono">use_rust_webrpc=false</span> by default.</li>
+  <li><strong>Local live verification:</strong> run Rust against the actual local/test gateway with synthetic sessions. Exercise primary and secondary configuration, including an absent secondary.</li>
+  <li><strong>Fault campaign:</strong> inject DNS failure, invalid TLS, connection refusal, slow response, timeout after accept, malformed encrypted data, oversized response, gateway restart, queue pressure, and clock changes.</li>
+  <li><strong>Single-channel canary:</strong> enable Rust for one controlled gateway/channel while preserving the other channel or a fast settings rollback path.</li>
+  <li><strong>Limited production canary:</strong> monitor queue depth/age, delivery failures, poll health, reset duration, memory, thread count, request latency, and user-visible timeouts for an agreed period.</li>
+  <li><strong>Progressive rollout:</strong> expand only when every gate above has linked evidence and no unresolved blocker/high item.</li>
+</ol>
+
+<div class="callout">
+  <strong>Rollback:</strong> retain the existing <span class="mono">use_rust_webrpc</span> feature flag and Delphi implementation throughout the rollout. A rollback must safely stop and free the Rust instance before Delphi polling starts; this transition itself belongs in the lifecycle test matrix.
+</div>
+
+<h2 id="decisions">7. Decision Log</h2>
+<table>
+<tr><th>Date</th><th>Decision</th><th>Reason</th></tr>
+<tr><td>2026-08-15</td><td>Do not approve unrestricted production yet.</td><td>TLS verification and lifecycle safety are blockers; delivery, queue, parser, and shutdown behavior need production hardening.</td></tr>
+<tr><td>2026-08-15</td><td>Treat successful enqueue separately from successful delivery.</td><td>The current FFI result cannot honestly represent asynchronous POST completion or broker acceptance.</td></tr>
+<tr><td>2026-08-15</td><td>Require cross-implementation golden vectors before changing padding or crypto.</td><td>Current Rust tests are self-roundtrips and the checked-in implementations describe different padding behavior.</td></tr>
+<tr><td>2026-08-15</td><td>Treat live CAT as OpenSSL PKCS7 encrypt; do not use <span class="mono">install/linux/ext</span> mcrypt templates as the wire.</td><td>Live <span class="mono">gateway_server/install/cat</span> uses <span class="mono">openssl_encrypt(..., 0)</span> and <span class="mono">OPENSSL_ZERO_PADDING</span> decrypt. Test-env Rust decrypted inbound and posted OK.</td></tr>
+<tr><td>2026-08-15</td><td>Keep a single <span class="mono">input.php</span>; dual-unpad rather than a parallel script or PKCS7-only decrypt.</td><td>Delphi Encrypt zero-pads with no extra block on exact 16 bytes. OpenSSL PKCS7 unpad rejects that. Well-formed frames end in <span class="mono">|</span>, so PKCS7 is not a false match. Rust POSTs unpad cleanly.</td></tr>
+<tr><td>2026-08-15</td><td>Defer TLS certificate verification as a separate project.</td><td>Insecure TLS was kept to work around a Wine compatibility issue with a dual-named host. CAT currently defaults to port 80 / HTTP, so the risk is latent until an <span class="mono">https://</span> host is used.</td></tr>
+<tr><td>2026-08-15</td><td>Isolate Drop join from the VCL thread rather than shortening the poll HTTP timeout.</td><td>ureq cannot cancel an in-flight GET. The 25s timeout is still required for the broker long-poll. Background join plus interruptible sleeps unblocks <span class="mono">Active := False</span>.</td></tr>
+<tr><td>2026-08-15</td><td>Serialize pollers per URL and park inbound RPC items for a successor instead of queuing into a dying instance.</td><td>After free, Delphi has no consumer for the old <span class="mono">WebRPCState</span>. A second poller must not GET until the previous lease is released, or it steals a broker request. Parked items are adopted by the next Rust instance with the same poll URL. No successor means the call is not delivered.</td></tr>
+<tr><td>2026-08-15</td><td>On poller panic: contain, park while still owning the GET lease, release the lease, mark unhealthy, then restart with capped backoff. Reset that backoff after a successful poll.</td><td>Unwinding used to skip parking and kill the only poller. The same thread supervises restarts so Delphi does not have to recreate the handle for recovery. Leaving backoff at 30s after days of healthy polls would delay an unrelated later recovery.</td></tr>
+<tr><td>2026-08-15</td><td>Broker frame sequences and batch lengths must be unsigned positive decimal digits in <span class="mono">1..=i32::MAX</span>. Reject zero, sign prefixes, leading zeros, and overflow.</td><td><span class="mono">parse::&lt;i32&gt;</span> accepted <span class="mono">N0</span>, <span class="mono">N-2</span>, and <span class="mono">N+2</span>. PHP <span class="mono">input.php</span> already treats seq 0 as invalid on POSTs; inbound poll frames are generated as positive decimals.</td></tr>
+<tr><td>2026-08-15</td><td>Salvage a valid batch prefix when a later item is malformed.</td><td>The broker has already dequeued the whole batch. Dropping already-parsed calls would lose work the gateway will not redeliver.</td></tr>
+</table>
+
+<h2 id="progress">8. Progress Log</h2>
+<ul>
+  <li><strong>2026-08-15 — Initial production-readiness review.</strong> Mapped Rust DPWebRPC, shared HTTP client, FFI exports, Delphi component/callers, CAT feature gating, legacy protocol references, focused tests, and retained runtime logs. Recorded 13 findings and nine work packages. No implementation changes made.</li>
+  <li><strong>2026-08-15 — Baseline focused verification.</strong> <span class="mono">test_rust.py dpwebrpc</span>: 31 passed, 0 failed, 0 ignored.</li>
+  <li><strong>2026-08-15 — Live CAT padding contract.</strong> Confirmed deployed PHP is OpenSSL PKCS7 encrypt, not mcrypt zero-pad. Added golden vectors in <span class="mono">dpwebrpc.rs</span>.</li>
+  <li><strong>2026-08-15 — Dual-unpad import_text.</strong> Added <span class="mono">webrpc_unpad</span> so the same CAT <span class="mono">input.php</span> accepts Rust PKCS7 and Delphi zero-pad POSTs. PKCS7-only decrypt is incompatible with legacy Delphi. <span class="mono">send_text</span> unchanged (already PKCS7; Delphi poll path already tolerates leftover pad).</li>
+  <li><strong>2026-08-15 — Isolation deploy.</strong> New PHP on the first test CAT host only. Rust login at 13:41 succeeded (inbound seqs handled, POST <span class="mono">OK</span>, no decrypt/base64 errors). Brief <span class="mono">rpc.php</span> HTTP 500s at 13:39 during the cutover, then recovered.</li>
+  <li><strong>2026-08-15 — Rust-off on the same host.</strong> Flag cleared at 13:43 (Rust shutdown). Delphi poller resumed at 13:45: login burst seq 30570–30582, every POST <span class="mono">OK</span>. Dual-unpad holds for both clients. One expected <span class="mono">SESSION</span> error on the first Delphi call after the switch (stale session), then a successful logon.</li>
+  <li><strong>2026-08-15 — Poll body trim.</strong> Rust poller now <span class="mono">trim()</span>s like Delphi before empty / <span class="mono">OK</span> / base64. Trailing <span class="mono">?> </span>newline no longer fails decode.</li>
+  <li><strong>2026-08-15 — SetActive state machine.</strong> No-op if already in the requested state; Rust create before <span class="mono">FActive</span>/timer; stop clears then frees; Destroy tears down Rust; FFI panics contained. Shutdown join still blocks the VCL thread (WP6).</li>
+  <li><strong>2026-08-15 — Bounded shutdown (WP6).</strong> Drop sets a cancellation flag, skips new POSTs, interrupts backoff sleeps, and joins the poller/POST pool on a background waiter. First suite after that change: 44 passed.</li>
+  <li><strong>2026-08-15 — Shutdown handoff.</strong> Per-URL GET lease so a successor cannot steal a broker request. Dying-instance inbound RPC items are parked for the next Rust poller with the same URL; adoption waits until that poller holds the lease and has rechecked shutdown. Tracked CAT PHP under <span class="mono">gds/install/cat/</span> because <span class="mono">gateway_server</span> is gitignored.</li>
+  <li><strong>2026-08-15 — Parser hardening and poller supervision (WP5).</strong> Checked ASCII headers; malformed frames error without panic and do not count as alive. Panic order: contain, park while holding the GET lease, release, mark unhealthy, restart with capped backoff. Suite: 56 passed.</li>
+  <li><strong>2026-08-15 — WP5 tightenings.</strong> Restart backoff resets after a successful poll. Sequences reject zero, signs, leading zeros, and overflow. Partial-batch prefix salvage is an explicit protocol decision. Panic-park test drops during a real 1s backoff so the same instance cannot re-adopt. Suite: 58 passed.</li>
+</ul>
+
+<div class="panel">
+  <h3>Next implementation session</h3>
+  <p>Start with <strong>WP3 delivery guarantees</strong> and <strong>WP4 bounded queues</strong> (including the unbounded handoff map). Surface poller unhealthy to Delphi as part of WP8. TLS verification remains a separate project. Keep the Delphi fallback through canary.</p>
+</div>
+
+</body>
+</html>

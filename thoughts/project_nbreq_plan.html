@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NBReq Delivery Plan</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #172033;
+    --muted: #64748b;
+    --line: #d9e1ea;
+    --panel: #ffffff;
+    --page: #f6f7f9;
+    --blue: #2563eb;
+    --red: #b91c1c;
+    --red-bg: #fef2f2;
+    --amber: #a16207;
+    --amber-bg: #fffbeb;
+    --green: #15803d;
+    --green-bg: #f0fdf4;
+    --slate: #475569;
+    --purple: #7e22ce;
+    --purple-bg: #faf5ff;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; line-height: 1.5; color: var(--ink); background: var(--page); }
+  h1 { font-size: 1.9rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.25rem; margin-top: 2rem; margin-bottom: 0.55rem; border-bottom: 2px solid var(--line); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.25rem; margin-bottom: 0.35rem; color: #334155; }
+  p { margin: 0.45rem 0; }
+  ul, ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+  li { margin-bottom: 0.35rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0.75rem 0 1.25rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e4eaf1; font-size: 0.9rem; vertical-align: top; }
+  th { background: #eef3f8; font-weight: 650; }
+  tr:last-child td { border-bottom: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+  pre { background: #eef3f8; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.84rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 1rem; border-radius: 8px; margin: 1rem 0 1.35rem; }
+  .panel h3:first-child { margin-top: 0; }
+  .callout { border-left: 4px solid var(--blue); padding: 0.75rem 0.9rem; background: #eff6ff; border-radius: 0 6px 6px 0; margin: 0.85rem 0; }
+  .danger { border-left-color: var(--red); background: var(--red-bg); }
+  .warning { border-left-color: var(--amber); background: var(--amber-bg); }
+  .success { border-left-color: var(--green); background: var(--green-bg); }
+  .future { border-left-color: var(--purple); background: var(--purple-bg); }
+  .small { font-size: 0.86rem; color: var(--muted); }
+  .status { display: inline-block; white-space: nowrap; border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
+  .status-blocker { color: #991b1b; background: #fee2e2; }
+  .status-high { color: #92400e; background: #fef3c7; }
+  .status-medium { color: #1d4ed8; background: #dbeafe; }
+  .status-open { color: #9f1239; background: #ffe4e6; }
+  .status-progress { color: #a16207; background: #fef3c7; }
+  .status-done { color: #166534; background: #dcfce7; }
+  .status-deferred { color: var(--slate); background: #e2e8f0; }
+  .status-question { color: #6b21a8; background: #f3e8ff; }
+  .gate-no { color: var(--red); font-weight: 750; }
+  .gate-yes { color: var(--green); font-weight: 750; }
+  .gate-partial { color: var(--amber); font-weight: 750; }
+  .nowrap { white-space: nowrap; }
+  .toc { columns: 2; column-gap: 2rem; }
+  @media (max-width: 780px) {
+    body { margin: 1rem; }
+    .toc { columns: 1; }
+    table { display: block; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+
+<h1>NBReq Delivery Plan</h1>
+<div class="subtitle">
+  Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
+  First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
+  Initial plan: 2026-08-15 &nbsp;|&nbsp;
+  Overall status: <span class="gate-partial">contract accepted for WP0; policy and proof work remains</span>
+</div>
+
+<div class="panel">
+  <h3>Purpose</h3>
+  <p>This is the working delivery tracker for producing NBReq: a cancellable, concurrent HTTP engine with cheap cloneable Client handles, blocking and callback APIs, no required async runtime, deterministic shutdown, and a backend that can move from libcurl Multi to a Rust-native HTTP/1.1 reactor without changing consumers.</p>
+  <p>This document describes <strong>how</strong> the product will be delivered: decision order, implementation slices, test evidence, integration sequence, backend migration, acceptance gates, rollout, and the progress record that future sessions must preserve. Product behaviour belongs in the separate specification.</p>
+</div>
+
+<div class="callout warning">
+  <strong>Planning gate passed:</strong> begin WP0 and the deliberately private curl Multi wakeup/cancellation/DLL experiment. Engine ownership, Client issuance, Send target, cancellation, blocking completion, dispatch, detachment, pilot scope, redirects, platforms, and curl packaging direction are sufficiently closed. Remaining naming, TLS-root, licensing, numeric latency, and packaging-proof details do not justify another ownership redesign; experimental types are not the public API.
+</div>
+
+<h2 id="contents">Contents</h2>
+<ol class="toc">
+  <li><a href="#state">Current state and source map</a></li>
+  <li><a href="#principles">Delivery principles</a></li>
+  <li><a href="#questions">Review questions</a></li>
+  <li><a href="#work">Implementation work packages</a></li>
+  <li><a href="#sequence">Dependency and milestone sequence</a></li>
+  <li><a href="#acceptance">Release acceptance gates</a></li>
+  <li><a href="#verification">Verification matrix</a></li>
+  <li><a href="#integration">GDS integration and migration</a></li>
+  <li><a href="#native">Rust-native backend transition</a></li>
+  <li><a href="#rollout">Rollout and rollback</a></li>
+  <li><a href="#decisions">Decision log</a></li>
+  <li><a href="#progress">Progress log</a></li>
+</ol>
+
+<h2 id="state">1. Current State and Source Map</h2>
+
+<div class="panel">
+  <h3>Starting assets</h3>
+  <ul>
+    <li>The Delphi <span class="mono">TDPHttp</span> implementation supplies a battle-tested slot, callback, progress, timeout, and cancellation model over the GPI socket layer.</li>
+    <li>The Rust GDS implementation already has a portable <span class="mono">polling</span>-based socket reactor with a command channel, explicit wakeup, background ownership, and joined shutdown.</li>
+    <li>The WebRPC broker demonstrates a useful single-thread reactor shape, while also confirming that its inline events are internal state transitions rather than arbitrary user callbacks.</li>
+    <li>The current Rust <span class="mono">DpHttpClient</span> abstraction isolates most GDS call sites from ureq and includes mocks used by a substantial test body.</li>
+    <li>DPWebRPC provides the first high-value cancellation case: a deliberate long-poll GET currently blocks a ureq caller and complicates shutdown.</li>
+    <li>libcurl Multi supplies the first backend and a mature behavioural reference while the public contract, lifecycle, tests, and GDS integration are established.</li>
+  </ul>
+</div>
+
+<div class="callout">
+  <strong>Key delivery strategy:</strong> curl is dynamically packaged pilot scaffolding, not the public/full-release foundation. It proves the API and solves GDS cancellation first while the existing ureq binding remains selectable for rollback. The Rust-native backend then replaces only the engine beneath a contract and conformance suite that already work.
+</div>
+
+<div class="callout success">
+  <strong>Three scopes:</strong> the core contract defines Engine/Client ownership, cancellation, terminal results, callback safety, timeouts, and shutdown. The curl/GDS milestone implements the smallest production-useful subset of that contract. The native destination completes HTTP/1.1 framing, DNS/TLS ownership, pooling, broader streaming, and full backend parity without moving the public boundary.
+</div>
+
+<h3>Primary source map</h3>
+<table>
+<tr><th>Area</th><th>Source</th><th>Role in delivery</th></tr>
+<tr><td>Product specification</td><td class="mono">thoughts/nbreq_initial_spec.md</td><td>Defines behaviour, scope, invariants, lifecycle, and unresolved product decisions.</td></tr>
+<tr><td>Plan style reference</td><td class="mono">thoughts/project_dpwebrpc_sample.html</td><td>Structure and conventions for a living implementation tracker.</td></tr>
+<tr><td>Legacy HTTP design</td><td class="mono">SecuritasNew/lib/dphttp.pas</td><td>Slots, progress/result callbacks, timeout checks, cancellation, and HTTP/1.1 parsing experience.</td></tr>
+<tr><td>Legacy/Rust socket design</td><td class="mono">SecuritasNew/lib/GPI.pas</td><td>Windows message/select-era nonblocking socket model.</td></tr>
+<tr><td>Rust reactor asset</td><td class="mono">SecuritasNew/gds/rust/gds/src/dplib/dpgpi.rs</td><td>Portable poller, nonblocking slots, command wakeup, TLS state, and joined background worker.</td></tr>
+<tr><td>Single-thread reactor comparison</td><td class="mono">SecuritasNew/WebRPCBroker</td><td>Evidence for a manually driven reactor shape; its internal inline events do not establish NBReq's user-callback policy.</td></tr>
+<tr><td>Current Rust HTTP facade</td><td class="mono">SecuritasNew/gds/rust/gds/src/dplib/dphttpclient.rs</td><td>Blocking ureq implementation, request model, GDS-facing trait, and HTTP mocks.</td></tr>
+<tr><td>First integration target</td><td class="mono">SecuritasNew/gds/rust/gds/src/dplib/dpwebrpc.rs</td><td>Long-poll lifecycle, outbound POST workers, cancellation pain, shutdown and handoff tests.</td></tr>
+<tr><td>First backend</td><td class="mono">curl::multi</td><td>Concurrent transfer engine, protocol/TLS reference, cancellation by transfer removal.</td></tr>
+<tr><td>Native HTTP parser</td><td class="mono">httparse</td><td>Rust response-head and chunk-size parsing; not a complete HTTP engine.</td></tr>
+</table>
+
+<h2 id="principles">2. Delivery Principles</h2>
+
+<ol>
+  <li><strong>Contract before backend.</strong> Write and test terminal-state, cancellation, shutdown, callback, timeout, and error semantics before optimizing transport details.</li>
+  <li><strong>One ownership boundary.</strong> Engine owns resources, lifecycle, worker services, and bulk cancellation. Cloneable Clients submit and individually cancel requests but do not create hidden cancellation domains.</li>
+  <li><strong>One Engine owner.</strong> Engine is not cloneable and is not wrapped in <span class="mono">Arc</span> as part of the public ownership model. Explicit shutdown consumes it; other threads signal its owner or use Clients for request work.</li>
+  <li><strong>Movable owner.</strong> Ordinary Engine targets <span class="mono">Send</span> without initially promising <span class="mono">Sync</span>. Users may build <span class="mono">Arc&lt;Mutex&lt;Option&lt;Engine&gt;&gt;&gt;</span> or other shared ownership themselves and own the consequences.</li>
+  <li><strong>Safe-point dispatch.</strong> Backends commit request state and release internal locks before publishing owned callback events. User code never runs on the reactor.</li>
+  <li><strong>Direct blocking wakeup.</strong> Blocking waiters observe committed terminal state directly and never depend on callback-dispatch availability.</li>
+  <li><strong>Vertical slices.</strong> Deliver one complete path at a time: submit → transfer → completion → cancellation → shutdown. Avoid building disconnected layers that cannot be exercised end to end.</li>
+  <li><strong>Fault-first verification.</strong> Every happy-path feature arrives with cancellation, timeout, malformed input, and shutdown cases.</li>
+  <li><strong>One conformance suite.</strong> Curl and native backends run the same public black-box tests. Backend-only tests supplement rather than replace contract tests.</li>
+  <li><strong>Keep GDS usable.</strong> Preserve the existing ureq implementation behind the <span class="mono">DpHttpClient</span> seam and keep it configuration/feature selectable throughout curl pilots. Preserve curl as another rollback/reference until the native backend passes parity and canary gates.</li>
+  <li><strong>No dual-send of real mutations.</strong> Differential testing of POST/PUT uses controlled servers and fixtures, never duplicate production requests.</li>
+  <li><strong>Evidence in this tracker.</strong> Record commands, pass counts, fault campaigns, build artifacts, canary observations, and accepted decisions as work progresses.</li>
+  <li><strong>Small unsafe boundary.</strong> Isolate raw backend, OS, TLS, and FFI unsafe code. Require comments identifying ownership and thread invariants.</li>
+  <li><strong>Observable detachment.</strong> Timed shutdown may separate a sealed, self-draining callback domain from a stopped Engine, but it returns a waitable handle. DLL unload is not safe until that handle completes.</li>
+  <li><strong>Stage the proof.</strong> The core lifecycle contract is designed first; the curl/GDS milestone implements the minimum useful slice; the full adversarial and protocol campaign grows with the native destination.</li>
+  <li><strong>Scope earns expansion.</strong> HTTP/2, proxies, decompression, cookies, and elaborate streaming enter only with a named requirement and tests.</li>
+</ol>
+
+<h2 id="questions">3. Questions for the First Review</h2>
+
+<table>
+<tr><th>ID</th><th>Decision needed</th><th>Recommended starting answer</th><th>Status</th></tr>
+<tr>
+  <td class="mono nowrap">Q-01</td>
+  <td>Working name and repository location.</td>
+  <td>Use NBReq as a working name. Incubate as a standalone-shaped crate beside GDS, then split/publish once the API survives the curl milestone.</td>
+  <td><span class="status status-question">Discuss</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-02</td>
+  <td>Where callbacks execute.</td>
+  <td>The reactor queues owned events only after committing state and releasing internal locks. Spawned Engines dispatch off-reactor; manual Engines drain inline after a safe drive pass.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-03</td>
+  <td>Whether cancellation produces a terminal callback.</td>
+  <td>Yes: exactly one <span class="mono">Cancelled</span> terminal result for every accepted request.</td>
+  <td><span class="status status-progress">Accepted</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-04</td>
+  <td>What dropping a request handle means.</td>
+  <td>Continue the request; cancellation remains explicit. A separately named cancel-on-drop guard is desirable but optional if it is not straightforward initially.</td>
+  <td><span class="status status-progress">Accepted</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-05</td>
+  <td>Long-lived or indefinitely blocked callback policy.</td>
+  <td>Normal shutdown waits. Timed shutdown first stops all network services and seals the event queue, then returns either complete or a waitable <span class="mono">DetachedCallbacks</span> handle. Captured Clients return <span class="mono">EngineStopped</span>; DLL unload remains unsafe until the handle completes.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-06</td>
+  <td>First release body and protocol scope.</td>
+  <td>Buffered GET/POST over HTTP/1.1 and HTTPS, redirects, limits, progress, and cancellation are sufficient for the curl/GDS pilot. Reserve streaming shape for the native/full scope.</td>
+  <td><span class="status status-progress">Accepted</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-07</td>
+  <td>Curl stepping-stone packaging.</td>
+  <td>Dynamic curl beside GDS is acceptable. Pin and inventory curl plus transitive DLLs, load from a controlled location, use pilot deployments only, and retain ureq configuration rollback.</td>
+  <td><span class="status status-progress">Accepted for pilot</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-08</td>
+  <td>Initial platform gates.</td>
+  <td>Windows 10 x64 or later; Windows build under Ubuntu 20.04's distro-default Wine; native Linux x64 on Ubuntu 20.04. Vary only for a demonstrated toolchain/backend problem.</td>
+  <td><span class="status status-progress">Accepted initial targets</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-09</td>
+  <td>TLS trust and insecure compatibility.</td>
+  <td>Verified by default, configurable native/bundled roots. Preserve GDS's current explicit no-verify configuration and test whether it disables hostname, chain validation, or both.</td>
+  <td><span class="status status-progress">Compatibility accepted; roots open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-10</td>
+  <td>Spawned and manual execution modes.</td>
+  <td>Support both over the same state machine. Spawned is the convenient default; manual mode progresses and dispatches only when the host drives it, with no nested drive or same-Engine wait/join from callbacks.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-11</td>
+  <td>Publication and licensing.</td>
+  <td>Aim for a public crates.io release. Choose MIT, Apache-2.0, or dual MIT OR Apache-2.0 after confirming GDS compatibility and dependency notices.</td>
+  <td><span class="status status-progress">Public direction accepted; exact license open</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-12</td>
+  <td>Lifecycle and bulk-cancellation ownership.</td>
+  <td>Engine uniquely owns resources, shutdown, and <span class="mono">cancel_all()</span>. Clients are cheap cloneable command handles with individual cancellation only. A separate Engine creates a separate bulk-cancellation domain.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-13</td>
+  <td>Curl compatibility profile.</td>
+  <td>Force HTTP/1.1; disable environment proxies, cookies, and decompression unless explicitly enabled; suppress automatic <span class="mono">Expect: 100-continue</span>; apply the accepted conservative redirect table (301/302 no POST rewrite by default, 303 to GET except HEAD, 307/308 replay only when possible, no HTTPS downgrade, cross-origin credential stripping); treat HTTP 4xx/5xx as completed responses; record TLS/resolver capabilities.</td>
+  <td><span class="status status-progress">Accepted</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-14</td>
+  <td>Default callback dispatcher pool shape.</td>
+  <td>Default to exactly one off-reactor worker. <span class="mono">callback_workers(n)</span> explicitly enables a larger pool and cross-request concurrency; per-request ordering remains mandatory.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-15</td>
+  <td>Terminal callback delivery during shutdown.</td>
+  <td>Publish terminal cancellation for accepted requests and seal the queue. Normal shutdown drains it before returning; timed shutdown transfers the still-draining sealed domain without silently dropping terminal delivery.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-16</td>
+  <td>Engine ownership and method receivers.</td>
+  <td>Engine is unique, non-cloneable, and not placed in <span class="mono">Arc</span>. Client creation and cancel-all take shared access, manual drive takes exclusive access, and normal/timed shutdown consume the Engine.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-17</td>
+  <td>Blocking completion path.</td>
+  <td>Engine commits canonical <span class="mono">Completion</span> and wakes a waiter directly, independently of callback dispatch. <span class="mono">PendingRequest::wait()</span> returns Completion; <span class="mono">execute()</span> maps it to response/error sugar. Manual single-thread use calls <span class="mono">drive_until</span>.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-18</td>
+  <td>Numeric cancellation latency gate.</td>
+  <td>Measure the private curl experiment on each supported target and record an explicit threshold before the curl/GDS API milestone. “Prompt” alone is not acceptance evidence.</td>
+  <td><span class="status status-question">Measure in WP2</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-19</td>
+  <td>Engine and handle thread traits.</td>
+  <td>Ordinary Engine targets <span class="mono">Send</span>, not initially <span class="mono">Sync</span>. Client and RequestHandle target <span class="mono">Send + Sync</span>; PendingRequest and DetachedCallbacks target at least <span class="mono">Send</span>. Manual curl may remain thread-bound rather than weakening the destination.</td>
+  <td><span class="status status-progress">Accepted in principle</span></td>
+</tr>
+<tr>
+  <td class="mono nowrap">Q-20</td>
+  <td>Engine and Client construction.</td>
+  <td>Construct each Engine independently from configuration. Obtain Clients only through <span class="mono">engine.client()</span>; Client has no public constructor and never hides an Engine. Engines do not spawn linked child Engines.</td>
+  <td><span class="status status-progress">Accepted</span></td>
+</tr>
+</table>
+
+<h2 id="work">4. Implementation Work Packages</h2>
+
+<h3>WP0 — Resolve product decisions and establish the crate</h3>
+<p><span class="status status-progress">Ready to begin</span> Establishes the accepted boundary all later work must preserve.</p>
+<ul>
+  <li>Treat Q-01 through Q-20 as accepted or deliberately deferred per the tracker; do not reopen the ownership contract during scaffolding.</li>
+  <li>Create a standalone-shaped crate with modules for public types, Engine lifecycle, Client command handles, callback dispatch, the internal backend contract, testing support, and feature-gated backends.</li>
+  <li>Freeze the receiver/ownership sketch: <span class="mono">client(&amp;self)</span>, <span class="mono">cancel_all(&amp;self)</span>, manual <span class="mono">drive(&amp;mut self)</span>, and consuming <span class="mono">shutdown(self)</span>/<span class="mono">shutdown_for(self, duration)</span>. Do not make Engine cloneable or prescribe <span class="mono">Arc&lt;Engine&gt;</span>.</li>
+  <li>Expose independent <span class="mono">Engine::new(config)</span> or equivalent builder construction and Engine-issued <span class="mono">client()</span>. Give Client no public constructor; add no hidden or parent/child Engine convenience.</li>
+  <li>Add compile-time trait assertions for ordinary Engine: <span class="mono">Send</span>; Client and RequestHandle: <span class="mono">Send + Sync</span>; PendingRequest and DetachedCallbacks: at least <span class="mono">Send</span>. Do not promise Engine <span class="mono">Sync</span> in v1.</li>
+  <li>Require stored spawned callbacks, request data/sources, commands, and waiter state to preserve the Send target. Route any future non-Send manual callbacks through an explicitly local type/mode.</li>
+  <li>Select MSRV, formatting/lint policy, and dependency policy. Use Windows 10 x64, Ubuntu 20.04 default Wine for the Windows build, and native Ubuntu 20.04 x64 as initial targets. Confirm exact MIT/Apache licensing before publication.</li>
+  <li>Build/test Linux artifacts against the Ubuntu 20.04 ABI baseline rather than assuming binaries produced on a newer distribution remain compatible.</li>
+  <li>Write compile-only examples for spawned and manual Engines, cloneable Clients, callback and blocking requests, individual and Engine-wide cancellation, normal/timed shutdown, waiting on detached callbacks, and future FFI use.</li>
+  <li>Forbid backend-specific public types with API review and feature-matrix builds.</li>
+</ul>
+<p><strong>Acceptance:</strong> the crate builds without either backend implementation using a test backend; the public examples compile; the decision log records every accepted behavioural choice.</p>
+
+<h3>WP1 — Implement the request registry and lifecycle model</h3>
+<p><span class="status status-open">Open</span> Delivers backend-independent state transitions.</p>
+<ul>
+  <li>Implement Engine-identified request IDs/generations, terminal-state arbitration, cancellation flags, direct blocking waiters, and owned bounded callback events. Cross-Engine IDs fail closed.</li>
+  <li>Implement Engine states <span class="mono">Running → ShuttingDown → Stopped</span>, rejection after shutdown begins, idempotent request cancellation, and one internally idempotent shutdown transition. Public explicit shutdown consumes the unique Engine owner; dropping a Client does not affect Engine lifetime.</li>
+  <li>Make cancel of an already-terminal or stopped same-Engine request an idempotent success; retain a hard wrong-Engine failure. Make spawned <span class="mono">drive()</span> and nested/concurrent manual drive fail explicitly.</li>
+  <li>Implement the same state machine in spawned and manual drive modes. The spawned Engine owns its reactor and dispatcher workers; the manual Engine owns no hidden driving thread.</li>
+  <li>Model the spawned callback domain separately: <span class="mono">Open → Sealed → Draining → Complete</span>. It owns no Engine/network objects once sealed and may become a self-owned, observable <span class="mono">DetachedCallbacks</span> value.</li>
+  <li>Use a deterministic in-memory backend to force completion/cancellation races without network timing.</li>
+  <li>Test callback reentrancy and panic containment after state commit and outside internal locks. Forbid nested manual drive, same-Engine blocking waits, and synchronous Engine join/destruction from a callback.</li>
+  <li>Define command and callback-event backpressure; coalesce progress rather than dropping terminal events. Default to one dispatcher worker; explicit larger pools serialize callbacks per request while allowing different requests to use different workers.</li>
+</ul>
+<p><strong>Acceptance:</strong> exhaustive state-machine tests demonstrate exactly one terminal outcome, immediate waiter wakeup, safe cancel/complete races, bounded events, per-request callback order, no user callback on the reactor or under internal locks, and a detached callback domain that cannot reach stopped Engine resources.</p>
+
+<h3>WP2 — Prove the curl Multi reactor</h3>
+<p><span class="status status-open">Open</span> First real transport vertical slice.</p>
+<ul>
+  <li>Own one curl Multi handle and all easy handles on one engine thread.</li>
+  <li>Keep curl <span class="mono">Multi</span> inside the spawned reactor so the public Engine remains Send even though the current Rust binding is not. Do not promise manual curl or add an unsafe Send wrapper during the GDS milestone.</li>
+  <li>Submit request specifications through the backend command queue; create curl handles only on the owner thread.</li>
+  <li>Integrate command wakeup with curl waiting. Prefer a documented external wake socket or poll integration over periodic latency.</li>
+  <li>Map curl write/header/progress callbacks into owned per-request state without calling user code.</li>
+  <li>Cancel by removing the transfer on the owner thread; distinguish cancellation from curl failure.</li>
+  <li>Apply the explicit compatibility profile: force HTTP/1.1; disable environment proxies, cookies, automatic decompression, and automatic <span class="mono">Expect: 100-continue</span>; implement the agreed redirect/body/auth rules.</li>
+  <li>Treat HTTP 4xx/5xx as completed responses and record the packaged curl version, TLS backend/root strategy, resolver, and relevant runtime capabilities.</li>
+  <li>Build and package a pinned dynamic curl runtime for supported pilot targets. Inventory every transitive DLL/shared-library dependency and control how the application locates it.</li>
+  <li>Prove dependent-DLL resolution before the GDS Rust DLL loads: choose application-directory placement, host preload by absolute path, or another controlled mechanism; reject silent fallback to an unrelated ambient curl.</li>
+  <li>Record curl/TLS/resolver/compression build choices, versions, hashes, licenses/notices, runtime capability output, and the pilot security-update procedure.</li>
+  <li>Use the pinned Rust curl crate's once-only process/module initialization; never perform per-Engine <span class="mono">curl_global_cleanup</span>. Keep detached callback domains entirely free of curl/backend objects.</li>
+  <li>Investigate the Windows DLL initializer path against libcurl's loader-lock warning. Prove the exact GDS artifact can initialize, stop all curl/resolver activity, and repeat load/use/unload—or explicitly declare curl-backed DLL unloading unsupported.</li>
+  <li>Prove command wakeup, request cancellation, resolver cleanup, Engine shutdown, and callback-dispatch shutdown using the exact packaged curl build.</li>
+  <li>Measure cancellation latency during connect, slow headers, and stalled body on each supported target; turn the evidence into an explicit gate before WP3 is accepted.</li>
+</ul>
+<p><strong>Acceptance:</strong> one Engine runs multiple concurrent controlled requests, any request can be cancelled without harming peers, a blocked reactor wakes promptly for commands, normal shutdown joins reactor and callbacks, and timed shutdown stops all network work before returning any detached callback handle.</p>
+
+<h3>WP3 — Deliver the callback and blocking APIs over curl</h3>
+<p><span class="status status-open">Open</span> Produces the first consumer-usable library.</p>
+<ul>
+  <li>Implement request builders, response values, stable error categories, total/connect/idle timeout options, and redirect policy.</li>
+  <li>Implement bounded owned callback queues, one default spawned off-reactor dispatcher worker, an opt-in larger pool, and manual safe-pass draining, preserving per-request ordering.</li>
+  <li>Make canonical terminal-state commit wake blocking waiters directly before/independently of callback dispatch. A stuck callback worker must not delay <span class="mono">PendingRequest::wait()</span> or Engine cancellation of blocking callers.</li>
+  <li>Implement <span class="mono">PendingRequest::wait()</span> as returning <span class="mono">Completion</span>. Implement <span class="mono">execute</span> as sugar mapping Completed to <span class="mono">Ok(Response)</span>, Failed and Cancelled to distinct errors, and HTTP 4xx/5xx to successful responses.</li>
+  <li>Provide a two-step pending/wait form for individual cancellation from another thread. A waiter-local timeout retains the pending request and does not alter its terminal state.</li>
+  <li>Make wait itself passive. In manual mode another thread must drive the Engine, or single-thread code uses <span class="mono">Engine::drive_until(pending)</span>; waiting on the active drive/callback stack is forbidden.</li>
+  <li>Implement RequestHandle/RequestId cancellation, <span class="mono">Client::cancel(id)</span>, <span class="mono">Engine::cancel_all()</span>, and deterministic Engine shutdown. Do not add <span class="mono">Client::cancel_all()</span>.</li>
+  <li>Implement normal shutdown as wait-to-completion and timed shutdown as <span class="mono">Complete</span> or <span class="mono">CallbacksRemaining(DetachedCallbacks)</span>; include zero-duration status and wait/wait-for inspection on the returned handle.</li>
+  <li>Enforce body, header, active-request, queue, and completion-event limits.</li>
+  <li>Document HTTP status versus transport error semantics and cancellation's inability to undo remote effects.</li>
+</ul>
+<p><strong>Acceptance:</strong> callback and blocking forms derive from the same canonical Completion; a deliberately blocked callback worker cannot delay a blocking waiter; execute mapping and waiter-local timeout semantics pass; Engine cancellation and shutdown immediately release blocked callers; normal shutdown drains callbacks; timed shutdown returns an observable sealed domain when necessary; Clients remain cheap independent command handles; limits and request timeouts behave the same through both APIs.</p>
+
+<h3>WP4 — Build the adversarial HTTP test laboratory</h3>
+<p><span class="status status-open">Open</span> Built in stages: the lifecycle/cancellation subset gates GDS migration; the full protocol laboratory grows with the native backend and is reused by both.</p>
+<ul>
+  <li>Create a local controlled HTTP/TLS server capable of pausing at DNS substitute, accept, TLS, headers, body, and response completion points.</li>
+  <li>Support byte-by-byte fragmentation, invalid status/headers, conflicting lengths, chunk extensions/trailers, premature EOF, oversized data, redirects, connection reuse, and deliberate stalls.</li>
+  <li>Expose deterministic barriers so tests cancel at named stages rather than relying on sleeps.</li>
+  <li>Add certificate fixtures for valid, wrong-host, expired, and unknown-root cases without checking in secrets.</li>
+  <li>Add property/state tests for terminal arbitration and parser fragmentation; add fuzz targets for native parsing when WP7 begins.</li>
+  <li>Record redacted timing, thread-count, socket-count, and completion evidence.</li>
+</ul>
+<p><strong>Acceptance:</strong> before GDS migration, deterministic tests cover queue, wakeup, connect, headers/body stalls, cancellation races, callback pressure, and shutdown. Before native release, the complete HTTP/TLS corpus runs unchanged against both backends on Windows and Linux.</p>
+
+<h3>WP5 — Integrate the curl-backed client into GDS</h3>
+<p><span class="status status-open">Open</span> First production-value milestone.</p>
+<ul>
+  <li>Add an NBReq-backed implementation beside <span class="mono">UreqDpHttpClient</span>; preserve current mocks and the rollback path.</li>
+  <li>Give the GDS subsystem explicit ownership of one NBReq Engine and distribute cloneable Clients to callers. Keep blocking convenience for ordinary call sites while giving DPWebRPC ownership of a cancellable long-poll handle.</li>
+  <li>Replace background-detach shutdown workarounds only after NBReq proves bounded stop and request handoff behaviour.</li>
+  <li>Use normal draining shutdown in GDS. Do not use callback detachment on the DLL unload path; GDS callbacks are expected to return promptly and must be joined before unload.</li>
+  <li>Exercise start, stop, rapid restart, primary/secondary endpoints, poll lease/handoff, outbound posts, settings refresh, watchdog reset, and DLL shutdown.</li>
+  <li>Build the GDS DLL/executable with the pinned curl runtime beside it and verify Windows 10, Ubuntu 20.04 default Wine, and native Ubuntu 20.04 packaging.</li>
+  <li>Retain <span class="mono">UreqDpHttpClient</span> behind the existing facade and add feature/config selection between ureq and NBReq/curl. Curl remains pilot-only and immediately rollback-capable.</li>
+</ul>
+<p><strong>Acceptance:</strong> DPWebRPC cancels an in-flight long poll promptly; GDS Engine shutdown cancels all remaining work and joins reactor/dispatch services safely; ordinary GDS HTTP calls retain behaviour; focused Rust, Delphi bridge, live test-gateway, and packaging checks pass.</p>
+
+<h3>WP6 — Extract the Rust-native reactor foundation</h3>
+<p><span class="status status-deferred">After curl milestone</span> Begins backend replacement.</p>
+<ul>
+  <li>Extract reusable ideas from Rust DPGPI without coupling NBReq to GDS component types.</li>
+  <li>Implement portable poll registration, notification, timers/deadlines, nonblocking connect, read/write readiness, and slot generations.</li>
+  <li>Keep native manual backend state and all stored inputs/callbacks compatible with moving the uniquely owned Engine between threads; assert Engine remains Send.</li>
+  <li>Keep all sockets and per-connection state on the reactor owner.</li>
+  <li>Implement cancellation and shutdown before adding HTTP.</li>
+  <li>Use a raw TCP echo/script protocol to validate fragmentation, backpressure, error readiness, half-close, and resource cleanup.</li>
+  <li>Run leak, repeated-start/stop, and high-concurrency tests.</li>
+</ul>
+<p><strong>Acceptance:</strong> the native reactor passes the backend lifecycle contract with scripted TCP transfers and demonstrates prompt cancellation and joined shutdown independently of HTTP/TLS.</p>
+
+<h3>WP7 — Implement native HTTP/1.1 framing with `httparse`</h3>
+<p><span class="status status-deferred">After WP6</span> First cleartext native HTTP slice.</p>
+<ul>
+  <li>Serialize requests and use <span class="mono">httparse</span> for response heads and chunk sizes where suitable.</li>
+  <li>Implement no-body, content-length, chunked, and close-delimited response framing.</li>
+  <li>Handle informational responses, malformed/conflicting lengths, premature EOF, trailers, header limits, and arbitrary fragmentation.</li>
+  <li>Start with one request per connection; add safe HTTP/1.1 reuse only after framing tests are complete.</li>
+  <li>Implement buffered bodies and accepted progress/streaming hooks with bounded buffering.</li>
+  <li>Fuzz response parsing and chunk framing; seed the corpus with legacy DPHttp edge cases and adversarial server outputs.</li>
+</ul>
+<p><strong>Acceptance:</strong> cleartext native requests pass the shared conformance suite and fuzz/property campaigns, including every-byte fragmentation and cancellation at every parse boundary.</p>
+
+<h3>WP8 — Add native TLS and DNS</h3>
+<p><span class="status status-deferred">After WP7</span> Enables production HTTPS.</p>
+<ul>
+  <li>Drive rustls over the reactor using readiness and TLS <span class="mono">wants_read</span>/<span class="mono">wants_write</span> state.</li>
+  <li>Implement verified trust roots, hostname validation, SNI, and deliberate ALPN. Preserve the current explicit GDS no-verify configuration, determine whether it disables hostname/chain checks, and cover the compatibility mapping with tests.</li>
+  <li>Add a resolver service without blocking the reactor; cache results with expiry and define IPv4/IPv6 selection.</li>
+  <li>Prove request cancellation during resolution and TLS handshake.</li>
+  <li>Prove resolver shutdown is bounded on every release platform or replace it with cancellable/platform/nonblocking resolution.</li>
+  <li>Add Happy Eyeballs after basic correctness if dual-stack connection latency requires it.</li>
+</ul>
+<p><strong>Acceptance:</strong> valid HTTPS succeeds; wrong host, expired, unknown CA, and interrupted TLS fail correctly; cancellation is prompt; Engine shutdown leaves no resolver or TLS work alive.</p>
+
+<h3>WP9 — Add pooling, redirects, streaming, and production limits</h3>
+<p><span class="status status-deferred">After native HTTPS</span> Completes agreed native v1 behaviour.</p>
+<ul>
+  <li>Add bounded per-origin/global connection pooling and idle expiry.</li>
+  <li>Reject reuse after ambiguous framing, premature EOF, unsafe cancellation, or transport failure.</li>
+  <li>Implement the accepted redirect method/body/auth policy identically to curl backend semantics.</li>
+  <li>Complete streaming backpressure, large-body limits, file helpers if required, and progress coalescing.</li>
+  <li>Add fair scheduling across origins and queue-pressure metrics.</li>
+  <li>Benchmark allocation, throughput, connection reuse, cancellation latency, and idle footprint against curl.</li>
+</ul>
+<p><strong>Acceptance:</strong> the full accepted public contract passes against the native backend under concurrency, pressure, slow consumer, redirect, reuse, and cancellation tests.</p>
+
+<h3>WP10 — Establish backend parity and switch the default</h3>
+<p><span class="status status-deferred">After WP9</span> Removes curl from the default product.</p>
+<ul>
+  <li>Run the complete black-box suite against both backends and classify deliberate differences.</li>
+  <li>Perform differential testing only against controlled endpoints or safe idempotent fixtures.</li>
+  <li>Run Windows, Wine, and Linux soak tests with repeated network interruption and application restart.</li>
+  <li>Run GDS canaries selectable between ureq, curl NBReq, and native NBReq.</li>
+  <li>Switch the crate default only when native meets all gates and rollback remains available.</li>
+  <li>Keep curl as an optional diagnostic/reference backend until at least one stable native release has completed production observation.</li>
+</ul>
+<p><strong>Acceptance:</strong> GDS changes no code when changing backends; native meets all contract/security/lifecycle gates; observed performance is acceptable; a documented feature rollback remains.</p>
+
+<h3>WP11 — Harden, document, and publish</h3>
+<p><span class="status status-deferred">After default switch</span> Produces the reusable public module.</p>
+<ul>
+  <li>Write API guides for blocking programs, callbacks, GUI dispatch, DLL/FFI use, cancellation, shutdown, limits, TLS, and testing.</li>
+  <li>Document MSRV, supported platforms, feature matrix, dependency/licensing inventory, and security reporting.</li>
+  <li>Audit unsafe code, callback panic boundaries, secret redaction, and denial-of-service limits.</li>
+  <li>Provide examples and a small C ABI adapter if accepted.</li>
+  <li>Define semantic-versioning policy and distinguish portable contract from backend extras.</li>
+  <li>Publish only after reproducing builds and release tests from a clean environment.</li>
+</ul>
+<p><strong>Acceptance:</strong> a new consumer can use NBReq without GDS knowledge; docs state execution and shutdown honestly; release artifacts and tests are reproducible.</p>
+
+<h2 id="sequence">5. Dependency and Milestone Sequence</h2>
+
+<table>
+<tr><th>Milestone</th><th>Work packages</th><th>Usable outcome</th><th>Exit evidence</th></tr>
+<tr>
+  <td><strong>M0 — Contract accepted</strong></td>
+  <td>WP0</td>
+  <td>Stable enough public boundary and recorded decisions.</td>
+  <td>Reviewed specification, compile examples, decision log.</td>
+</tr>
+<tr>
+  <td><strong>M1 — Lifecycle kernel</strong></td>
+  <td>WP1</td>
+  <td>Backend-independent cancellation, waiters, completion, shutdown.</td>
+  <td>Deterministic race/state tests.</td>
+</tr>
+<tr>
+  <td><strong>M2 — Curl library alpha</strong></td>
+  <td>WP2–WP4</td>
+  <td>Concurrent cancellable HTTP usable outside GDS.</td>
+  <td>Shared conformance subset on target platforms; pinned dynamic curl dependency inventory and pilot package.</td>
+</tr>
+<tr>
+  <td><strong>M3 — GDS value</strong></td>
+  <td>WP5</td>
+  <td>Long-poll shutdown fixed; blocking GDS calls supported.</td>
+  <td>Focused suites, live test gateway, Wine/DLL shutdown, rollback.</td>
+</tr>
+<tr>
+  <td><strong>M4 — Native cleartext</strong></td>
+  <td>WP6–WP7</td>
+  <td>Rust-owned HTTP/1.1 over nonblocking TCP.</td>
+  <td>Parser fuzzing and backend contract parity for HTTP.</td>
+</tr>
+<tr>
+  <td><strong>M5 — Native production candidate</strong></td>
+  <td>WP8–WP9</td>
+  <td>HTTPS, DNS, pooling, redirects, streaming/limits.</td>
+  <td>Security, lifecycle, pressure, and parity gates pass.</td>
+</tr>
+<tr>
+  <td><strong>M6 — Native default</strong></td>
+  <td>WP10</td>
+  <td>No default curl dependency; optional reference backend remains.</td>
+  <td>GDS canary and multi-platform soak accepted.</td>
+</tr>
+<tr>
+  <td><strong>M7 — Reusable release</strong></td>
+  <td>WP11</td>
+  <td>Documented/published self-contained module.</td>
+  <td>Audit, clean build, release checklist.</td>
+</tr>
+</table>
+
+<div class="callout future">
+  <strong>Critical path:</strong> WP0 → WP1 → WP2 → WP3 → the GDS-gating subset of WP4 → WP5 produces immediate GDS value. The broader WP4 laboratory continues alongside WP6–WP9. WP6 can begin once the lifecycle contract and relevant adversarial harness are stable; it need not wait for extended GDS curl canary observation, provided shared code is not destabilized.
+</div>
+
+<h2 id="acceptance">6. Release Acceptance Gates</h2>
+
+<table>
+<tr><th>Gate</th><th>Required evidence</th><th>Curl milestone</th><th>Native milestone</th></tr>
+<tr><td>API contract</td><td>Unique non-Arc, Send Engine and consuming shutdown; no initial Sync promise; cloneable Send+Sync Clients/handles; canonical Completion; reviewed cancellation, callbacks, direct blocking wait, timeout, error, and ownership semantics.</td><td class="gate-no">Pending</td><td>Must remain unchanged or use an explicit versioned revision.</td></tr>
+<tr><td>Thread traits</td><td>Compile-time assertions plus runtime tests moving an idle/active spawned Engine owner, PendingRequest, and DetachedCallbacks between threads. Native manual Engine moves only between drive calls; manual curl is excluded or separately audited.</td><td class="gate-no">Pending spawned proof</td><td class="gate-no">Pending native manual proof</td></tr>
+<tr><td>Lifecycle</td><td>Engine is the sole network/resource owner; exactly one terminal outcome; idempotent cancel/shutdown; normal shutdown joins everything; timed shutdown returns the only observable handle to any sealed callback domain still draining.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Cancellation</td><td>Deterministic tests at queue, resolve, connect, TLS, send, headers, body, and completion race; agreed latency bound.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Blocking callers</td><td>Direct terminal-state wakeup independent of callback workers; Completion/execute mapping; passive wait and manual drive-until; individual cancellation and Engine cancel-all/shutdown without per-request network threads.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>HTTP correctness</td><td>Status/headers/body framing, redirects, limits, malformed responses, and connection reuse pass shared tests.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>TLS</td><td>Verified by default; negative certificates fail; existing explicit GDS no-verify configuration preserved and its hostname/chain scope tested; interrupted handshake cancellable.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>DNS</td><td>Reactor never blocks; cancellation prompt; Engine-owned resolver shutdown bounded.</td><td>Inspect packaged curl resolver/capabilities and pass the portable contract.</td><td class="gate-no">Pending</td></tr>
+<tr><td>Callback dispatch</td><td>Owned events after safe state commit; no user code on reactor; bounded queue; per-request order; normal drain/join; timed sealed-domain detachment with status/wait; stopped Clients; explicit DLL-unload prohibition until complete.</td><td class="gate-no">Pending implementation proof</td><td class="gate-no">Pending</td></tr>
+<tr><td>Curl compatibility</td><td>HTTP/1.1 forced; environment proxies/cookies/decompression opt-in or off; Expect suppressed; redirect table/auth/body replay explicit; HTTP error status preserved as response; runtime capabilities and allowed Happy-Eyeballs difference recorded.</td><td class="gate-no">Pending</td><td>Parity target, not a curl dependency.</td></tr>
+<tr><td>Resource bounds</td><td>Configured limits for active/queued requests, bodies, headers, events, connections; overload remains bounded.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Packaging</td><td>Curl pilot pins adjacent dynamic dependencies and controlled loading; native aims for one self-contained artifact. Both record clean builds. Curl proves once-only initialization, no per-Engine cleanup, complete resolver/handle stop, and the exact DLL load/unload policy.</td><td class="gate-no">Pending dynamic curl/DLL pilot proof</td><td class="gate-no">Pending native proof</td></tr>
+<tr><td>GDS compatibility</td><td>DPWebRPC long poll, POSTs, restart/handoff, watchdog, primary/secondary, shutdown, and rollback tested.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Observability</td><td>Redacted stage, timing, cancellation, queue, pool, error, and shutdown information without payload leakage.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Soak/canary</td><td>Agreed duration under realistic concurrency, network interruption, settings refresh, and repeated process lifecycle.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+</table>
+
+<h2 id="verification">7. Verification Matrix</h2>
+
+<table>
+<tr><th>Layer</th><th>Required cases</th><th>Method/evidence</th><th>Status</th></tr>
+<tr>
+  <td>State machine</td>
+  <td>Submit/cancel/complete/shutdown interleavings; duplicate request/Engine cancel; completion race; ID reuse and wrong-Engine ID; multiple independent Engines; Client drop; consuming normal/timed/zero-wait shutdown; callback panic/reentrancy.</td>
+  <td>Deterministic in-memory backend, property/state tests, optional concurrency model testing.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Thread traits and owner movement</td>
+  <td>Compile assertions; move spawned Engine owner before/while active; shutdown from new owner thread; move PendingRequest and DetachedCallbacks; sequentially move native manual Engine between drive calls; reject concurrent drive.</td>
+  <td>Compile-time trait tests plus deterministic lifecycle harness. Manual curl is not used to weaken ordinary Engine.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Command wakeup</td>
+  <td>Idle worker, busy worker, no sockets, many sockets, start/cancel/shutdown storms, lost/coalesced wakeups.</td>
+  <td>Barriers and latency measurements; no long periodic wait used as correctness.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Blocking adapter</td>
+  <td>Canonical Completion and execute mapping; HTTP 4xx/5xx; waiter-local timeout retains request; many blocked callers; deliberately blocked callback worker; Engine cancel-all/shutdown; manual drive-until; Client drop; caller panic; individual pending handle.</td>
+  <td>Shared contract suite with bounded wall-clock assertions.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>HTTP response head</td>
+  <td>Every-byte fragmentation; header limits; invalid bytes; informational/final responses; no-body statuses; duplicate headers.</td>
+  <td>Adversarial server; native parser unit/fuzz tests; curl comparison where meaningful.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Body framing</td>
+  <td>Length zero/valid/mismatch; conflicting lengths; chunk extensions/trailers; invalid chunks; EOF body; premature close.</td>
+  <td>Generated fragmentation corpus and fuzzing.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Cancellation stages</td>
+  <td>Queued, DNS, TCP connect, TLS, partial upload, awaiting headers, partial body, idle pool, terminal race.</td>
+  <td>Named test-server barriers; assert exactly one terminal result and peer isolation.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>TLS</td>
+  <td>Valid chain, wrong host, expired, unknown CA, custom CA, handshake stall/close, TLS alert, cancellation.</td>
+  <td>Generated local CA/cert fixtures; no private production material.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Redirects/security</td>
+  <td>Relative/absolute, loop/limit, 301/302/303/307/308, POST body replay, cross-origin auth stripping, HTTPS downgrade.</td>
+  <td>Controlled origin pair and policy assertions.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Pooling</td>
+  <td>Reuse, server close, stale idle, cancellation contamination, per-origin/global cap, fairness, shutdown.</td>
+  <td>Server connection counters and forced-close scripts.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Pressure</td>
+  <td>Command/callback queue full, slow and indefinitely blocked callbacks, sealed-domain detachment, status/wait races, captured stopped Clients, per-request ordering, cross-request concurrency, oversized body/header, many origins, progress storm, connection cap.</td>
+  <td>Bounded-memory tests and high-water metrics.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>FFI/DLL lifecycle</td>
+  <td>Null/invalid handles, repeated free, free while active in every network stage, normal callback drain, timed detached-handle ownership, callback-context retention, panic containment, unload refused until complete.</td>
+  <td>Rust boundary tests plus Delphi/Windows integration harness.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+<tr>
+  <td>Backend parity</td>
+  <td>Public response/error/cancel/timeout/redirect semantics and limits identical for curl/native.</td>
+  <td>Parameterized black-box suite and controlled differential fixtures.</td>
+  <td><span class="status status-deferred">After native</span></td>
+</tr>
+<tr>
+  <td>Soak</td>
+  <td>Multi-day requests, long polls, network loss/recovery, repeated Engine start/stop, Client clone/drop storms, log rotation, memory/thread/socket stability.</td>
+  <td>Windows/Wine and Linux monitored canaries.</td>
+  <td><span class="status status-open">Missing</span></td>
+</tr>
+</table>
+
+<p class="small">Never place credentials, authentication headers, certificate private keys, captured customer payloads, or secret GDS configuration in tests, logs, this tracker, or differential fixtures.</p>
+
+<h2 id="integration">8. GDS Integration and Migration</h2>
+
+<ol>
+  <li><strong>Facade compatibility:</strong> audit that all relevant GDS HTTP traffic passes through <span class="mono">DpHttpClient</span>, retaining its mocks and current ureq implementation. Add NBReq behind a new binding rather than mixing curl/native concepts into application modules; document any bypassing call site before pilot.</li>
+  <li><strong>Engine ownership:</strong> the GDS HTTP subsystem owns and shuts down one Engine; its components receive cloneable Clients. DPWebRPC retains its own request handle for long-poll cancellation, not a private Client cancellation group.</li>
+  <li><strong>Long poll first:</strong> migrate DPWebRPC's GET because it proves cancellation, rapid restart, handoff, and DLL shutdown. Do not delete the existing workaround until live stop behaviour is measured.</li>
+  <li><strong>Blocking adapter next:</strong> route ordinary JSON/text/form GET/POST calls through NBReq's blocking adapter without changing their business logic.</li>
+  <li><strong>Feature/config gate:</strong> allow ureq and NBReq/curl selection throughout pilot deployment, preferably at client construction/startup. Log only the selected backend and safe diagnostics; keep rollback immediate and unsurprising.</li>
+  <li><strong>Packaging proof:</strong> pin curl and every transitive runtime library beside GDS, load them from a controlled location rather than ambient search paths, and verify Windows 10, Ubuntu 20.04 default Wine, and native Ubuntu 20.04.</li>
+  <li><strong>Curl DLL lifecycle proof:</strong> verify initialization does not perform unsafe loader-lock work, every Engine stops its multi/easy handles and resolver activity, no per-Engine global cleanup occurs, and the supported load/use/unload sequence is reproducible.</li>
+  <li><strong>Lifecycle campaign:</strong> run primary and secondary WebRPC, start/stop/start, settings refresh, watchdog reset, GDS close, and forced network stalls.</li>
+  <li><strong>Curl canary:</strong> deploy narrowly with immediate configuration rollback.</li>
+  <li><strong>Native switch:</strong> later change only backend construction. Repeat the same campaign and retain curl rollback through observation.</li>
+</ol>
+
+<div class="callout danger">
+  <strong>Mutation warning:</strong> never compare backends by duplicating live WebRPC POSTs or other non-idempotent production calls. Use the test gateway, a recording fake that does not forward, or saved non-secret protocol fixtures.
+</div>
+
+<h2 id="native">9. Rust-Native Backend Transition</h2>
+
+<p>The native backend begins only after the common lifecycle model and adversarial test laboratory are useful. This prevents the hardest protocol work from simultaneously defining public semantics.</p>
+
+<table>
+<tr><th>Native layer</th><th>Build order</th><th>Must be proven before next layer</th></tr>
+<tr><td>Poller and commands</td><td>Notification, timers, slot generations, shutdown.</td><td>No lost wakeups; joined shutdown; race suite.</td></tr>
+<tr><td>Nonblocking TCP</td><td>Connect, readiness, partial read/write, close/error.</td><td>Cancellation and resource cleanup under fragmentation/pressure.</td></tr>
+<tr><td>HTTP/1.1 cleartext</td><td>Request serialization, <span class="mono">httparse</span> response head, body framing.</td><td>Adversarial corpus, fuzzing, single-connection correctness.</td></tr>
+<tr><td>TLS</td><td>rustls readiness integration and verification.</td><td>Positive/negative certificate suite and handshake cancellation.</td></tr>
+<tr><td>DNS</td><td>Resolver service/cache/dual-stack.</td><td>Reactor nonblocking and bounded Engine shutdown.</td></tr>
+<tr><td>Policy</td><td>Redirects, limits, timeouts, errors.</td><td>Shared curl/native semantics.</td></tr>
+<tr><td>Performance</td><td>Pooling, backpressure, fairness, progress.</td><td>Bounded overload and acceptable benchmark/soak results.</td></tr>
+</table>
+
+<div class="callout success">
+  <strong>Replacement gate:</strong> native becomes default because it satisfies the public contract and operational gates—not merely because it can fetch a page. Curl remains an optional reference until production observation supports removal.
+</div>
+
+<h2 id="rollout">10. Rollout and Rollback</h2>
+
+<ol>
+  <li><strong>Local library:</strong> run unit, state, adversarial server, and feature-matrix builds.</li>
+  <li><strong>GDS development:</strong> use synthetic/test endpoints; exercise long-poll cancellation and all shutdown paths.</li>
+  <li><strong>Wine/package verification:</strong> build from clean inputs, inspect runtime dependencies, and confirm unload/restart.</li>
+  <li><strong>Single controlled curl canary:</strong> enable NBReq curl for one test/low-risk instance with ureq rollback ready.</li>
+  <li><strong>Expanded curl observation:</strong> monitor cancellation latency, request errors, queue/connection counts, memory, threads, and shutdown duration.</li>
+  <li><strong>Native test shadow:</strong> compare only safe controlled fixtures; do not dual-send production mutations.</li>
+  <li><strong>Single controlled native canary:</strong> select native with curl and ureq rollback retained.</li>
+  <li><strong>Progressive native rollout:</strong> expand only with every release gate linked to evidence.</li>
+  <li><strong>Default switch:</strong> native becomes default; curl remains feature-selectable for an agreed support window.</li>
+</ol>
+
+<div class="callout">
+  <strong>Rollback:</strong> backend selection must occur at Engine construction and must not change the public request contract. Rollback safely shuts down and frees the old Engine before starting its replacement. The transition itself belongs in the lifecycle test matrix.
+</div>
+
+<h2 id="decisions">11. Decision Log</h2>
+
+<table>
+<tr><th>Date</th><th>Decision</th><th>Reason</th></tr>
+<tr><td>2026-08-15</td><td>Use libcurl Multi as the first backend and stepping stone.</td><td>It supplies mature concurrent HTTP/TLS and cancellable transfers while the public lifecycle, GDS integration, and conformance suite are established.</td></tr>
+<tr><td>2026-08-15</td><td>Keep backend types out of the public API.</td><td>The intended destination is a Rust-native engine selectable without consumer changes.</td></tr>
+<tr><td>2026-08-15</td><td>Require blocking calls to use the shared cancellable engine.</td><td>Request cancellation or Engine shutdown must release blocking GDS callers promptly rather than waiting for socket calls or timeouts.</td></tr>
+<tr><td>2026-08-15</td><td>Use <span class="mono">httparse</span> as the proposed native response-head parser.</td><td>It is a focused Rust parser; NBReq still owns body framing, connections, TLS, policy, and cancellation. Final acceptance follows a prototype and tests.</td></tr>
+<tr><td>2026-08-15</td><td>Target a self-contained native/full release; accept platform/native cryptographic dependencies.</td><td>The objective is easy long-term deployment and explicit lifecycle, not a literal ban on all native code. Curl pilots may package pinned dynamic runtime libraries beside GDS.</td></tr>
+<tr><td>2026-08-15</td><td>Make GDS WebRPC long polling the first integration target.</td><td>It exercises the exact cancellation and shutdown behaviour motivating the library.</td></tr>
+<tr><td>2026-08-15</td><td>Make Engine the unique lifecycle, resource, and bulk-cancellation owner.</td><td>Cloneable Clients remain cheap command handles. Independent cancellation domains are explicit separate Engines, avoiding surprising Client-local grouping.</td></tr>
+<tr><td>2026-08-15</td><td>Do not provide <span class="mono">Client::cancel_all()</span>.</td><td>Requests cancel by handle/ID; <span class="mono">Engine::cancel_all()</span> cancels the Engine's current work without shutting it down.</td></tr>
+<tr><td>2026-08-15</td><td>Queue owned callback events after state is committed.</td><td>User code never runs on the reactor or under internal locks. Spawned mode dispatches off-reactor; manual mode drains inline only after a safe drive pass.</td></tr>
+<tr><td>2026-08-15</td><td>Serialize callbacks per request and allow concurrency across requests.</td><td>This preserves meaningful request-local order without letting one normal callback stall all unrelated completions. Queueing is bounded; progress may coalesce; terminal events are never dropped.</td></tr>
+<tr><td>2026-08-15</td><td>Make normal spawned shutdown wait for the sealed callback domain to drain.</td><td>This is the least surprising default and suits GDS, whose callbacks are expected to return promptly.</td></tr>
+<tr><td>2026-08-15</td><td>Allow timed shutdown to return an observable <span class="mono">DetachedCallbacks</span> domain.</td><td>Arbitrary user code cannot be interrupted. Once all network services stop and the event queue is sealed, remaining callbacks can finish independently while callers retain status and wait operations.</td></tr>
+<tr><td>2026-08-15</td><td>Keep callback domains independent of Client.</td><td>Callbacks may capture Client clones, but after Engine shutdown those handles simply return <span class="mono">EngineStopped</span>; they do not keep network resources alive.</td></tr>
+<tr><td>2026-08-15</td><td>Do not equate Engine destruction with DLL-unload safety after callback detachment.</td><td>Detached workers may still execute DLL code or use foreign callback context. Unload is safe only after the callback-domain handle reports complete.</td></tr>
+<tr><td>2026-08-15</td><td>Apply an explicit curl compatibility profile.</td><td>Backend defaults must not silently define the future native contract. HTTP version, proxies, Expect, redirects, HTTP-status treatment, TLS, and resolver capability are deliberate and recorded.</td></tr>
+<tr><td>2026-08-15</td><td>Use connect timeout, inactivity timeout, and total deadline as the portable initial time model.</td><td>These can be represented honestly by curl and native backends; finer native stages remain diagnostics until parity is possible.</td></tr>
+<tr><td>2026-08-15</td><td>Keep Engine uniquely owned and out of <span class="mono">Arc</span>.</td><td>Shared Engine ownership would obscure who may drive and destroy it. Shared methods expose commands, manual drive is exclusive, and explicit normal/timed shutdown consumes the owner.</td></tr>
+<tr><td>2026-08-15</td><td>Target ordinary Engine as <span class="mono">Send</span> without initially promising <span class="mono">Sync</span>.</td><td>The unique owner may move between threads without becoming cloneable or concurrently driven. Users can add their own <span class="mono">Arc&lt;Mutex&lt;Option&lt;Engine&gt;&gt;&gt;</span> ownership and assume its locking/shutdown consequences.</td></tr>
+<tr><td>2026-08-15</td><td>Do not let manual curl determine Engine's thread traits.</td><td>Spawned curl keeps its non-Send Multi on the reactor. Native manual targets Send; manual curl remains unsupported/thread-bound unless a pinned unsafe-wrapper audit later justifies it.</td></tr>
+<tr><td>2026-08-15</td><td>Default spawned callback dispatch to one worker.</td><td>This matches GDS/foreign-host expectations and minimizes thread/lock surprises. A larger pool is explicit while retaining per-request ordering.</td></tr>
+<tr><td>2026-08-15</td><td>Wake blocking requests directly from canonical terminal-state commit.</td><td>Blocking callers must not depend on callback-pool availability. Pending wait returns Completion; execute is only response/error mapping sugar.</td></tr>
+<tr><td>2026-08-15</td><td>Keep waiter-local timeout separate from request timeout.</td><td>A local wait timeout returns the still-live pending request; only a configured request deadline creates a terminal timeout failure.</td></tr>
+<tr><td>2026-08-15</td><td>Do not perform per-Engine curl global cleanup.</td><td>The pinned Rust curl layer uses once-only initialization and deliberately avoids global cleanup. Engines own handles and resolver activity, while detached callback domains remain curl-free; DLL safety requires an exact artifact proof.</td></tr>
+<tr><td>2026-08-15</td><td>Use dynamically packaged curl only for pilots.</td><td>Static curl is unnecessary for the stepping stone. Pin and audit adjacent runtime libraries, retain ureq selection in DpHttpClient, and defer broad/full release until the native backend if desired.</td></tr>
+<tr><td>2026-08-15</td><td>Set initial platform targets to Windows 10 x64, Ubuntu 20.04 default Wine, and native Ubuntu 20.04 x64.</td><td>These reflect current GDS deployment needs and may vary only when a concrete compatibility problem is recorded.</td></tr>
+<tr><td>2026-08-15</td><td>Preserve the current explicit GDS no-verify mode.</td><td>Some deployments still require it. Verification remains default; integration must determine and test the legacy hostname/chain semantics.</td></tr>
+<tr><td>2026-08-15</td><td>Aim for a public crates.io release.</td><td>Exact MIT, Apache-2.0, or dual licensing remains open pending GDS compatibility and dependency-notice review.</td></tr>
+<tr><td>2026-08-16</td><td>Issue Clients only from independently constructed Engines.</td><td><span class="mono">Engine::new(config)</span> establishes an independent ownership and cancellation domain; <span class="mono">engine.client()</span> issues command handles. There is no public <span class="mono">Client::new()</span>, hidden Engine, or parent/child Engine relationship.</td></tr>
+<tr><td>2026-08-16</td><td>Make mode misuse and late cancellation boring and explicit.</td><td><span class="mono">drive()</span> is manual-only and rejects spawned, nested, or concurrent use. Cancelling a terminal same-Engine request is an idempotent success even after stop; a wrong-Engine ID still fails closed.</td></tr>
+<tr><td>2026-08-16</td><td>Accept the conservative redirect table and narrow the pilot contract.</td><td>The curl/GDS pilot implements buffered bodies and connect/inactivity/total time controls. Streaming and finer stage timeouts remain later native/full work, while redirect behaviour is now portable policy rather than backend default.</td></tr>
+<tr><td>2026-08-16</td><td>Close the architecture contract for WP0.</td><td>Remaining naming, trust-root, licensing, measured-latency, dependency-inventory, and GDS HTTP-scope work can be resolved without reopening Engine/Client ownership.</td></tr>
+</table>
+
+<h2 id="progress">12. Progress Log</h2>
+
+<ul>
+  <li><strong>2026-08-15 — Initial design discussion.</strong> Identified the gap between blocking embeddable clients and runtime-dependent async clients. Reviewed the Delphi DPHttp callback/slot/cancel design and the Rust GDS ureq shutdown problem.</li>
+  <li><strong>2026-08-15 — Existing alternatives reviewed.</strong> libcurl Multi selected as a viable stepping stone. Isahc was not selected because NBReq still requires unique Engine ownership, manual driving, direct terminal waiters, callback-domain detachment, a pinned curl profile, and DLL shutdown proof; wrapping it would retain another lifecycle/policy layer while rebuilding NBReq's differentiating machinery.</li>
+  <li><strong>2026-08-15 — Native direction selected in principle.</strong> Portable polling, nonblocking sockets, TLS, and HTTP/1.1 using a focused parser; no required Tokio runtime.</li>
+  <li><strong>2026-08-15 — Initial documents created.</strong> Added <span class="mono">nbreq_initial_spec.md</span> and this delivery plan for review. No implementation changes made.</li>
+  <li><strong>2026-08-15 — Ownership and callback architecture review.</strong> Converged on Engine-owned lifecycle/bulk cancellation, cloneable Client command handles, spawned/manual operation, and queued safe-point callback dispatch.</li>
+  <li><strong>2026-08-15 — Long-lived callback shutdown resolved in principle.</strong> Normal shutdown drains and joins; timed shutdown stops network work, seals the event queue, and returns a status/wait handle for callbacks still running. Captured Clients are stopped handles, and detached callbacks keep DLL unload unsafe until complete.</li>
+  <li><strong>2026-08-15 — Curl/native parity risks incorporated.</strong> Added a deliberate curl compatibility profile, portable three-part timeout contract, staged test-laboratory scope, and explicit runtime capability/packaging proof.</li>
+  <li><strong>2026-08-15 — Blocking and owner APIs pinned in principle.</strong> Rejected <span class="mono">Arc&lt;Engine&gt;</span>; chose consuming shutdown, direct terminal-state waiters, canonical Completion mapping, passive waits/manual drive-until, and one callback worker by default.</li>
+  <li><strong>2026-08-15 — Engine movement policy accepted.</strong> Ordinary Engine targets Send but not initially Sync; public handles carry the stronger cross-thread traits they need. User-imposed Arc/Mutex ownership remains possible and user-managed, while manual curl cannot weaken the native destination.</li>
+  <li><strong>2026-08-15 — Pilot and release boundaries clarified.</strong> Curl may ship dynamically beside GDS for limited pilots with ureq rollback retained. Initial Windows/Wine/Linux targets and no-verify compatibility were accepted; broad public rollout can wait for native, with exact MIT/Apache licensing still open.</li>
+  <li><strong>2026-08-15 — Curl lifecycle review tightened.</strong> Added cookies/decompression and a concrete redirect table, documented once-only curl initialization with no per-Engine cleanup, required curl-free detached callbacks, and elevated Windows DLL initialization/unload to a WP2 proof gate.</li>
+  <li><strong>2026-08-16 — Architecture contract closed for WP0.</strong> Accepted Engine-only Client issuance with no hidden or child Engines, explicit mode errors for <span class="mono">drive()</span>, harmless same-Engine cancellation after terminal/stop, the conservative redirect table, and the narrow buffered pilot scope. WP0 and the private curl proof may begin.</li>
+</ul>
+
+<div class="panel">
+  <h3>WP0 kickoff</h3>
+  <p>The architecture contract is accepted. Begin <strong>WP0</strong> and the deliberately private curl Multi wakeup/cancellation/DLL-lifecycle experiment; experimental types are not the public API. Resolve final timed-shutdown naming/status detail, TLS trust roots, measured cancellation latency, the exact MIT/Apache grant, curl loading/dependency inventory, and the DpHttpClient HTTP-scope audit as policy or proof work. Do not reopen Engine/Client ownership without contradictory implementation evidence.</p>
+</div>
+
+</body>
+</html>
