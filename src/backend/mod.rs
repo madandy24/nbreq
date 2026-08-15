@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use crate::{DriveStatus, Error, ShutdownError};
+use crate::{Completion, Error, Request, RequestId, ShutdownError};
 
 #[cfg(feature = "curl")]
 mod curl;
@@ -10,11 +10,23 @@ mod curl;
 mod native;
 mod scaffold;
 
+pub(crate) struct BackendCompletion {
+    pub(crate) id: RequestId,
+    pub(crate) completion: Completion,
+}
+
 pub(crate) trait Backend: Send {
-    fn drive(&mut self, deadline: Instant) -> Result<DriveStatus, Error>;
+    fn submit(&mut self, id: RequestId, request: Request) -> Option<Completion>;
+    fn cancel(&mut self, id: RequestId);
+    fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error>;
     fn shutdown(&mut self) -> Result<(), ShutdownError>;
 }
 
 pub(crate) fn scaffold() -> Box<dyn Backend> {
-    Box::new(scaffold::ScaffoldBackend::default())
+    Box::new(scaffold::ScaffoldBackend)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn held() -> Box<dyn Backend> {
+    Box::new(scaffold::HeldBackend)
 }

@@ -3,7 +3,7 @@ name = "nbreq"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Runtime-independent cancellable HTTP client (pre-implementation skeleton)"
+description = "Runtime-independent cancellable HTTP client (pre-transport)"
 publish = false
 
 [features]

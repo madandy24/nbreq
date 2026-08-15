@@ -345,7 +345,7 @@ pub struct RequestId {
 }
 
 /// The canonical terminal outcome of an accepted request.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Completion {
     /// A complete HTTP exchange, including HTTP error status codes.
@@ -368,8 +368,12 @@ pub enum ErrorKind {
     WrongMode,
     /// A manual drive was attempted recursively or concurrently.
     ReentrantDrive,
+    /// A blocking lifecycle operation was attempted from the Engine's callback/drive stack.
+    ReentrantOperation,
     /// Request data failed backend-independent validation.
     InvalidRequest,
+    /// The configured bounded admission or command capacity is exhausted.
+    QueueFull,
     /// No production backend implements the operation yet.
     BackendUnavailable,
     /// The selected backend cannot represent the requested portable feature.

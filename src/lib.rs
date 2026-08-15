@@ -7,12 +7,18 @@
 mod backend;
 mod callback;
 mod client;
+mod context;
 mod dispatch;
 mod engine;
+mod reactor;
+mod registry;
 mod types;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};

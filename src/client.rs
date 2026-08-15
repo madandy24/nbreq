@@ -1,9 +1,8 @@
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::engine::Shared;
-use crate::{Completion, Error, ErrorKind, ExecuteError, Request, RequestId, Response};
+use crate::registry::{CompletionCallback, RequestState, Shared};
+use crate::{Completion, Error, ExecuteError, Request, RequestId, Response};
 
 /// Cheap cloneable command handle issued by an [`Engine`](crate::Engine).
 ///
@@ -20,23 +19,25 @@ impl Client {
 
     /// Starts a callback-oriented request.
     ///
-    /// Callback storage is `Send` by construction and will be dispatched only from an owned event
-    /// after terminal state is committed. The scaffold backend rejects requests before acceptance.
+    /// The callback is queued only after canonical terminal state is committed. It never executes
+    /// on the network reactor or while the request registry is locked.
     pub fn start<F>(&self, request: Request, callback: F) -> Result<RequestHandle, Error>
     where
         F: FnOnce(Completion) + Send + 'static,
     {
-        self.ensure_running()?;
-        drop(request);
-        drop(callback);
-        Err(backend_not_implemented())
+        let callback: CompletionCallback = Box::new(callback);
+        let accepted = self.shared.accept(request, Some(callback))?;
+        Ok(RequestHandle::new(self.clone(), accepted.state.id()))
     }
 
     /// Submits a request and returns its direct terminal-state waiter.
     pub fn submit(&self, request: Request) -> Result<PendingRequest, Error> {
-        self.ensure_running()?;
-        drop(request);
-        Err(backend_not_implemented())
+        let accepted = self.shared.accept(request, None)?;
+        let handle = RequestHandle::new(self.clone(), accepted.state.id());
+        Ok(PendingRequest {
+            handle,
+            state: accepted.state,
+        })
     }
 
     /// Submits a request and blocks on its direct terminal-state waiter.
@@ -54,27 +55,7 @@ impl Client {
     /// Cancellation is idempotent for same-Engine terminal requests, including after Engine stop.
     /// An ID issued by another Engine fails closed.
     pub fn cancel(&self, request_id: RequestId) -> Result<(), Error> {
-        if request_id.engine != self.shared.id {
-            return Err(Error::new(
-                ErrorKind::WrongEngine,
-                "request ID belongs to another Engine",
-            ));
-        }
-
-        // WP1 installs the request registry and wakeup command. With no accepted requests in WP0,
-        // every representable same-Engine ID is necessarily terminal and cancellation is a no-op.
-        Ok(())
-    }
-
-    fn ensure_running(&self) -> Result<(), Error> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            Err(Error::new(
-                ErrorKind::EngineStopped,
-                "the owning Engine has stopped",
-            ))
-        } else {
-            Ok(())
-        }
+        self.shared.cancel(request_id)
     }
 }
 
@@ -86,7 +67,6 @@ pub struct RequestHandle {
 }
 
 impl RequestHandle {
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(client: Client, id: RequestId) -> Self {
         Self { client, id }
     }
@@ -146,50 +126,42 @@ impl Drop for CancelOnDrop {
 #[derive(Debug)]
 pub struct PendingRequest {
     handle: RequestHandle,
-    completion: Receiver<Completion>,
+    state: Arc<RequestState>,
 }
 
 impl PendingRequest {
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn completed(handle: RequestHandle, completion: Completion) -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let _ignored = sender.send(completion);
-        Self {
-            handle,
-            completion: receiver,
-        }
-    }
-
     /// Returns a clone of the independent cancellation handle.
     #[must_use]
     pub fn handle(&self) -> RequestHandle {
         self.handle.clone()
     }
 
+    /// Returns whether canonical terminal state has been committed.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.state.is_terminal()
+    }
+
+    pub(crate) fn try_completion(&self) -> Option<Completion> {
+        self.state.completion()
+    }
+
+    pub(crate) fn request_id(&self) -> RequestId {
+        self.state.id()
+    }
+
     /// Waits for and returns the canonical terminal outcome.
     #[must_use]
     pub fn wait(self) -> Completion {
-        match self.completion.recv() {
-            Ok(completion) => completion,
-            Err(_disconnected) => Completion::Failed(Error::new(
-                ErrorKind::Internal,
-                "request completion channel closed before terminal state",
-            )),
-        }
+        self.state.wait()
     }
 
     /// Waits locally without changing request state or cancelling on timeout.
     #[must_use]
     pub fn wait_for(self, duration: Duration) -> WaitOutcome {
-        match self.completion.recv_timeout(duration) {
-            Ok(completion) => WaitOutcome::Completed(completion),
-            Err(RecvTimeoutError::Timeout) => WaitOutcome::TimedOut(self),
-            Err(RecvTimeoutError::Disconnected) => {
-                WaitOutcome::Completed(Completion::Failed(Error::new(
-                    ErrorKind::Internal,
-                    "request completion channel closed before terminal state",
-                )))
-            }
+        match self.state.wait_for(duration) {
+            Some(completion) => WaitOutcome::Completed(completion),
+            None => WaitOutcome::TimedOut(self),
         }
     }
 }
@@ -204,33 +176,30 @@ pub enum WaitOutcome {
     TimedOut(PendingRequest),
 }
 
-fn backend_not_implemented() -> Error {
-    Error::new(
-        ErrorKind::BackendUnavailable,
-        "no production HTTP backend is implemented in WP0",
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::{Engine, EngineConfig};
+    use crate::testing;
+    use crate::{EngineConfig, ErrorKind};
 
     use super::*;
 
+    fn request() -> Request {
+        Request::get("https://example.invalid/")
+            .build()
+            .expect("test request must build")
+    }
+
     #[test]
     fn late_cancel_is_idempotent_but_wrong_engine_fails_closed() {
-        let first = Engine::new(EngineConfig::spawned()).expect("first Engine must construct");
+        let (first, controller) = testing::engine(EngineConfig::spawned())
+            .expect("first deterministic Engine must construct");
         let first_client = first.client();
-        let first_engine_id = first_client.shared.id;
-        let handle = RequestHandle::new(
-            first_client,
-            RequestId {
-                engine: first_engine_id,
-                sequence: 7,
-            },
-        );
+        let pending = first_client.submit(request()).expect("request must submit");
+        let handle = pending.handle();
+        assert!(controller.complete(handle.id(), Completion::Cancelled));
 
-        let second = Engine::new(EngineConfig::spawned()).expect("second Engine must construct");
+        let second =
+            crate::Engine::new(EngineConfig::spawned()).expect("second Engine must construct");
         let second_client = second.client();
         let error = second_client
             .cancel(handle.id())

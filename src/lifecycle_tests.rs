@@ -1,0 +1,524 @@
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::testing;
+use crate::{
+    Completion, DriveStatus, Engine, EngineConfig, ErrorKind, Request, Response, ShutdownOutcome,
+    WaitOutcome,
+};
+
+fn request() -> Request {
+    Request::get("https://example.invalid/")
+        .build()
+        .expect("test request must build")
+}
+
+fn response(marker: u8) -> Completion {
+    Completion::Completed(Response::new(200, Vec::new(), vec![marker]))
+}
+
+#[test]
+fn cancel_complete_race_has_exactly_one_terminal_winner() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+
+    for marker in 0..100_u8 {
+        let pending = client.submit(request()).expect("request must submit");
+        let handle = pending.handle();
+        let id = handle.id();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let complete_barrier = Arc::clone(&barrier);
+        let complete_controller = controller.clone();
+        let completer = thread::spawn(move || {
+            complete_barrier.wait();
+            complete_controller.complete(id, response(marker))
+        });
+
+        let cancel_barrier = Arc::clone(&barrier);
+        let cancel_handle = handle.clone();
+        let canceller = thread::spawn(move || {
+            cancel_barrier.wait();
+            cancel_handle.cancel().expect("cancellation must submit");
+        });
+
+        barrier.wait();
+        let completion = pending.wait();
+        let completion_won = completer.join().expect("completer must not panic");
+        canceller.join().expect("canceller must not panic");
+
+        match completion {
+            Completion::Completed(result) => {
+                assert!(completion_won);
+                assert_eq!(result.body(), &[marker]);
+            }
+            Completion::Cancelled => assert!(!completion_won),
+            Completion::Failed(error) => panic!("unexpected terminal failure: {error}"),
+        }
+        assert!(!controller.complete(id, response(marker)));
+        handle.cancel().expect("late cancellation must be harmless");
+    }
+
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn callback_request_receives_exactly_one_terminal_notification() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let (completion_tx, completion_rx) = mpsc::channel();
+    let handle = client
+        .start(request(), move |completion| {
+            completion_tx
+                .send(completion)
+                .expect("test receiver must remain");
+        })
+        .expect("callback request must submit");
+    let id = handle.id();
+    let barrier = Arc::new(Barrier::new(3));
+    let complete_barrier = Arc::clone(&barrier);
+    let complete_controller = controller.clone();
+    let completer = thread::spawn(move || {
+        complete_barrier.wait();
+        complete_controller.complete(id, response(9));
+    });
+    let cancel_barrier = Arc::clone(&barrier);
+    let cancel_handle = handle.clone();
+    let canceller = thread::spawn(move || {
+        cancel_barrier.wait();
+        cancel_handle.cancel().expect("cancellation must submit");
+    });
+
+    barrier.wait();
+    let _completion = completion_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("one terminal callback must run");
+    completer.join().expect("completer must not panic");
+    canceller.join().expect("canceller must not panic");
+    assert!(
+        completion_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err()
+    );
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn dropping_plain_handle_does_not_cancel_but_cancel_guard_does() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let (completion_tx, completion_rx) = mpsc::channel();
+    let handle = client
+        .start(request(), move |completion| {
+            completion_tx
+                .send(completion)
+                .expect("test receiver must remain");
+        })
+        .expect("callback request must submit");
+    let id = handle.id();
+    drop(handle);
+    assert!(controller.complete(id, response(4)));
+    assert!(matches!(
+        completion_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("dropped plain handle request must continue"),
+        Completion::Completed(_)
+    ));
+
+    let pending = client
+        .submit(request())
+        .expect("guarded request must submit");
+    let guarded_id = pending.handle().id();
+    drop(pending.handle().cancel_on_drop());
+    assert!(matches!(pending.wait(), Completion::Cancelled));
+    assert!(!controller.complete(guarded_id, response(5)));
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn blocked_callback_does_not_delay_direct_waiter() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    let callback = client
+        .start(request(), move |_completion| {
+            started_tx.send(()).expect("test receiver must remain");
+            release_rx.recv().expect("test release must arrive");
+        })
+        .expect("callback request must submit");
+    assert!(controller.complete(callback.id(), response(1)));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback must begin");
+
+    let pending = client
+        .submit(request())
+        .expect("waited request must submit");
+    assert!(controller.complete(pending.handle().id(), response(2)));
+    match pending.wait_for(Duration::from_millis(100)) {
+        WaitOutcome::Completed(Completion::Completed(result)) => assert_eq!(result.body(), &[2]),
+        other => panic!("waiter was delayed by callback dispatch: {other:?}"),
+    }
+
+    release_tx.send(()).expect("callback must remain alive");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn callback_can_submit_and_complete_another_request() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let callback_client = client.clone();
+    let callback_controller = controller.clone();
+    let (nested_tx, nested_rx) = mpsc::channel();
+
+    let outer = client
+        .start(request(), move |_completion| {
+            let nested = callback_client
+                .start(request(), move |_completion| {
+                    nested_tx.send(()).expect("test receiver must remain");
+                })
+                .expect("callback reentrant submission must succeed");
+            assert!(callback_controller.complete(nested.id(), response(2)));
+        })
+        .expect("outer request must submit");
+    assert!(controller.complete(outer.id(), response(1)));
+    nested_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("nested callback must run");
+
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn callback_panic_and_forbidden_wait_do_not_kill_dispatcher() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let pending = client
+        .submit(request())
+        .expect("pending request must submit");
+
+    let panicking = client
+        .start(request(), move |_completion| {
+            let _never = pending.wait();
+        })
+        .expect("panicking callback request must submit");
+    assert!(controller.complete(panicking.id(), response(1)));
+
+    let (survivor_tx, survivor_rx) = mpsc::channel();
+    let survivor = client
+        .start(request(), move |_completion| {
+            survivor_tx.send(()).expect("test receiver must remain");
+        })
+        .expect("survivor request must submit");
+    assert!(controller.complete(survivor.id(), response(2)));
+    survivor_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("dispatcher must survive callback panic");
+
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn manual_callbacks_run_inline_only_when_driven() {
+    let (mut engine, controller) =
+        testing::engine(EngineConfig::manual()).expect("manual Engine must construct");
+    let client = engine.client();
+    let driving_thread = thread::current().id();
+    let (called_tx, called_rx) = mpsc::channel();
+
+    let handle = client
+        .start(request(), move |_completion| {
+            called_tx
+                .send(thread::current().id())
+                .expect("test receiver must remain");
+        })
+        .expect("manual callback request must submit");
+    assert!(controller.complete(handle.id(), response(1)));
+    assert!(called_rx.try_recv().is_err());
+
+    let status = engine
+        .drive(Instant::now())
+        .expect("manual drive must succeed");
+    assert_eq!(status, DriveStatus::Progress);
+    assert_eq!(
+        called_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("manual callback must run"),
+        driving_thread
+    );
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn cancel_all_has_a_deterministic_acceptance_barrier() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let before = client.submit(request()).expect("first request must submit");
+
+    engine.cancel_all();
+    assert!(matches!(before.wait(), Completion::Cancelled));
+
+    let after = client.submit(request()).expect("later request must submit");
+    let after_id = after.handle().id();
+    let after = match after.wait_for(Duration::ZERO) {
+        WaitOutcome::TimedOut(after) => after,
+        other => panic!("post-barrier request was unexpectedly terminal: {other:?}"),
+    };
+    assert!(controller.complete(after_id, response(3)));
+    assert!(matches!(after.wait(), Completion::Completed(_)));
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn bounded_admission_recovers_after_terminal_state() {
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let config = EngineConfig::manual()
+        .with_command_queue_capacity(one)
+        .with_callback_queue_capacity(one);
+    let (mut engine, _controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+    let first = client.submit(request()).expect("first request must submit");
+    engine
+        .drive(Instant::now())
+        .expect("first request must reach backend ownership");
+
+    let error = client
+        .submit(request())
+        .expect_err("second request must meet bounded admission");
+    assert_eq!(error.kind(), ErrorKind::QueueFull);
+
+    first.handle().cancel().expect("first request must cancel");
+    engine
+        .drive(Instant::now())
+        .expect("manual Engine must reap cancellation");
+    let second = client
+        .submit(request())
+        .expect("terminal state must release capacity");
+    second
+        .handle()
+        .cancel()
+        .expect("cleanup cancellation must work");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn normal_shutdown_waits_but_timed_shutdown_detaches_callbacks() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("normal Engine must construct");
+    let client = engine.client();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let handle = client
+        .start(request(), move |_completion| {
+            started_tx.send(()).expect("test receiver must remain");
+            release_rx.recv().expect("release must arrive");
+        })
+        .expect("callback request must submit");
+    assert!(controller.complete(handle.id(), response(1)));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback must begin");
+
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_tx
+            .send(engine.shutdown())
+            .expect("test receiver must remain");
+    });
+    assert!(shutdown_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    release_tx.send(()).expect("callback must remain alive");
+    shutdown_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown must finish after callback")
+        .expect("normal shutdown must succeed");
+    shutdown_thread.join().expect("shutdown thread must join");
+
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("timed Engine must construct");
+    let client = engine.client();
+    let surviving_client = client.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let handle = client
+        .start(request(), move |_completion| {
+            started_tx.send(()).expect("test receiver must remain");
+            release_rx.recv().expect("release must arrive");
+        })
+        .expect("callback request must submit");
+    assert!(controller.complete(handle.id(), response(2)));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback must begin");
+
+    let detached = match engine
+        .shutdown_for(Duration::ZERO)
+        .expect("timed network shutdown must succeed")
+    {
+        ShutdownOutcome::CallbacksRemaining(detached) => detached,
+        ShutdownOutcome::Complete => panic!("running callback cannot already be complete"),
+    };
+    let error = surviving_client
+        .submit(request())
+        .expect_err("stopped Client must reject new work");
+    assert_eq!(error.kind(), ErrorKind::EngineStopped);
+    assert!(!detached.is_complete());
+    release_tx.send(()).expect("callback must remain alive");
+    detached.wait().expect("detached callback must finish");
+    assert!(detached.is_complete());
+}
+
+#[test]
+fn shutdown_delivers_cancelled_callback_with_stopped_client() {
+    let (engine, _controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let callback_client = client.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+
+    client
+        .start(request(), move |completion| {
+            let submission = callback_client
+                .submit(request())
+                .expect_err("captured Client must observe stopped Engine");
+            result_tx
+                .send((completion, submission.kind()))
+                .expect("test receiver must remain");
+        })
+        .expect("request must submit");
+    engine.shutdown().expect("Engine must stop");
+    let (completion, error_kind) = result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown callback must run");
+    assert!(matches!(completion, Completion::Cancelled));
+    assert_eq!(error_kind, ErrorKind::EngineStopped);
+}
+
+#[test]
+fn callback_pressure_holds_bounded_admission_until_callback_returns() {
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let config = EngineConfig::spawned()
+        .with_command_queue_capacity(one)
+        .with_callback_queue_capacity(one);
+    let (engine, controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let returned = Arc::new(AtomicBool::new(false));
+    let callback_returned = Arc::clone(&returned);
+
+    let first = client
+        .start(request(), move |_completion| {
+            started_tx.send(()).expect("test receiver must remain");
+            release_rx.recv().expect("release must arrive");
+            callback_returned.store(true, Ordering::Release);
+        })
+        .expect("first callback must submit");
+    assert!(controller.complete(first.id(), response(1)));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback must begin");
+    let error = client
+        .submit(request())
+        .expect_err("running callback must retain its bounded permit");
+    assert_eq!(error.kind(), ErrorKind::QueueFull);
+
+    release_tx.send(()).expect("callback must remain alive");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let second = loop {
+        match client.submit(request()) {
+            Ok(pending) => break pending,
+            Err(error) if error.kind() == ErrorKind::QueueFull && Instant::now() < deadline => {
+                thread::yield_now();
+            }
+            Err(error) => panic!("capacity did not recover: {error}"),
+        }
+    };
+    assert!(returned.load(Ordering::Acquire));
+    second
+        .handle()
+        .cancel()
+        .expect("cleanup cancellation must work");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn manual_drive_until_uses_canonical_completion() {
+    let mut engine = Engine::new(EngineConfig::manual()).expect("manual Engine must construct");
+    let pending = engine
+        .client()
+        .submit(request())
+        .expect("request must be accepted");
+    let completion = engine
+        .drive_until(pending)
+        .expect("manual drive_until must progress request");
+    assert!(matches!(completion, Completion::Failed(_)));
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn manual_drive_until_rejects_another_engines_pending_request() {
+    let (mut first, _first_controller) =
+        testing::engine(EngineConfig::manual()).expect("first Engine must construct");
+    let (second, _second_controller) =
+        testing::engine(EngineConfig::manual()).expect("second Engine must construct");
+    let pending = second
+        .client()
+        .submit(request())
+        .expect("request must submit");
+    let error = first
+        .drive_until(pending)
+        .expect_err("cross-Engine drive_until must fail closed");
+    assert_eq!(error.kind(), ErrorKind::WrongEngine);
+    first.shutdown().expect("first Engine must stop");
+    second.shutdown().expect("second Engine must stop");
+}
+
+#[test]
+fn synchronous_shutdown_from_callback_is_rejected_without_deadlock() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let owner = Arc::new(Mutex::new(Some(engine)));
+    let callback_owner = Arc::clone(&owner);
+    let (result_tx, result_rx) = mpsc::channel();
+
+    let handle = client
+        .start(request(), move |_completion| {
+            let engine = callback_owner
+                .lock()
+                .expect("test owner must not poison")
+                .take()
+                .expect("callback must own Engine");
+            let error = engine
+                .shutdown()
+                .expect_err("callback-stack shutdown must be rejected");
+            result_tx
+                .send(error.error().kind())
+                .expect("test receiver must remain");
+        })
+        .expect("callback request must submit");
+    assert!(controller.complete(handle.id(), response(1)));
+    assert_eq!(
+        result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback shutdown attempt must return"),
+        ErrorKind::ReentrantOperation
+    );
+    let error = client
+        .submit(request())
+        .expect_err("deferred cleanup must close admission");
+    assert_eq!(error.kind(), ErrorKind::EngineStopped);
+}

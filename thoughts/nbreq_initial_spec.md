@@ -292,6 +292,7 @@ Requirements:
 - Cancelling an already-terminal request is successful idempotent no-op, including after its Engine has stopped. A same-Engine ID cannot resurrect work; a wrong-Engine ID still fails closed.
 - Cancellation before backend admission still produces the defined terminal outcome.
 - Completion racing cancellation has one winner. The loser observes the existing terminal state and does nothing.
+- The backend-independent request registry arbitrates that winner and wakes direct waiters synchronously. A winning cancellation then wakes the reactor so backend resource teardown follows; terminal notification does not falsely claim that a remote peer never observed the operation.
 - Cancellation submission wakes the Engine immediately; a long periodic polling interval is never the correctness mechanism. WP2 must measure and set an explicit supported-platform latency gate before the curl/GDS milestone rather than allowing “prompt” to remain subjective.
 - `cancel_and_wait()` returns only once the request is terminal and its network resources are no longer owned by active engine work.
 - `Engine::cancel_all()` affects requests accepted before its cancellation barrier and leaves the Engine running. Its treatment of simultaneously submitted requests must be deterministic.
@@ -361,7 +362,13 @@ Callback requirements:
 - event queues are bounded, with progress coalescing rather than unbounded growth;
 - completion events are not silently dropped due to queue pressure.
 
+Bounded admission accounts for terminal callback pressure: an accepted callback request retains its admission permit until that callback returns, while a request without a callback releases its permit at terminal-state commit. This ensures terminal callback events always fit without dropping or invoking inline under pressure. Long-running callbacks therefore apply documented admission backpressure. Pending progress events may be coalesced or displaced to preserve terminal capacity.
+
+Callback activation is tracked across admission. User code is enqueued only after the request registry lock is released, and shutdown waits for any in-progress activation before sealing the callback domain. No fast-completion race may invoke user code while admission or registry state is locked.
+
 Callbacks may submit and cancel requests through captured Clients and may signal the unique Engine owner that shutdown is requested. They do not acquire or consume another Engine owner. A callback must not synchronously wait on or recursively drive its own Engine; actual shutdown is performed by the owner only after the callback/drive frame has unwound.
+
+If a user-imposed shared owner nevertheless consumes Engine shutdown on the Engine's own callback stack, NBReq rejects the synchronous join with `ReentrantOperation`, closes admission, and defers cleanup off that stack so it cannot deadlock by joining itself. This is a misuse recovery path, not the normal shutdown API.
 
 NBReq cannot interrupt arbitrary user callback code safely. A callback already running when shutdown begins may finish unrelated work normally. Any Client captured by it is detached from the stopped Engine and returns `EngineStopped` for submission, cancellation, or other Engine-dependent operations.
 
@@ -751,9 +758,12 @@ Decisions already accepted in principle:
 - multiple Engines are permitted and operationally independent;
 - individual cancellation uses RequestHandle/RequestId; Engine cancellation covers everything;
 - accepted cancellation produces exactly one `Cancelled` terminal result;
+- terminal arbitration and direct waiter wakeup occur in the backend-independent request registry; backend cancellation cleanup follows on the awakened reactor;
 - dropping RequestHandle allows continuation; a named cancel-on-drop guard is optional/desirable;
 - cancellation after terminal/Engine stop is an idempotent same-Engine success; wrong-Engine IDs fail closed;
 - callbacks are always queued as owned events and dispatched only after internal state is safe;
+- accepted callback work retains bounded admission until the callback returns; progress may coalesce, but terminal delivery is never dropped;
+- callback activation completes outside the registry lock and shutdown waits for activation before sealing;
 - spawned mode defaults to one off-reactor callback worker; a larger pool is explicit, with per-request order preserved;
 - manual mode may dispatch inline after a safe drive pass and permits no recursive blocking/drive/join;
 - blocking requests wait directly on canonical terminal state and never depend on callback dispatch;

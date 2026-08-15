@@ -1,4 +1,4 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::{Error, ErrorKind, ShutdownError};
@@ -28,30 +28,35 @@ pub enum ShutdownOutcome {
 /// interrupt callbacks; the callback domain remains self-owned until complete.
 #[derive(Debug)]
 pub struct DetachedCallbacks {
-    state: Arc<DetachedState>,
+    state: Arc<CallbackCompletion>,
 }
 
 #[derive(Debug)]
-struct DetachedState {
+pub(crate) struct CallbackCompletion {
     complete: Mutex<bool>,
     changed: Condvar,
 }
 
-impl DetachedCallbacks {
-    /// Returns whether all callbacks have returned and workers have joined.
-    #[must_use]
-    pub fn is_complete(&self) -> bool {
-        match self.state.complete.lock() {
-            Ok(complete) => *complete,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
+impl CallbackCompletion {
+    pub(crate) fn pending() -> Arc<Self> {
+        Arc::new(Self {
+            complete: Mutex::new(false),
+            changed: Condvar::new(),
+        })
     }
 
-    /// Waits without a library-imposed timeout for the sealed domain to complete.
-    pub fn wait(&self) -> Result<(), ShutdownError> {
-        let complete = self.lock_complete()?;
+    pub(crate) fn mark_complete(&self) {
+        *lock_unpoisoned(&self.complete) = true;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        *lock_unpoisoned(&self.complete)
+    }
+
+    pub(crate) fn wait(&self) -> Result<(), ShutdownError> {
+        let complete = lock_unpoisoned(&self.complete);
         let result = self
-            .state
             .changed
             .wait_while(complete, |complete| !*complete)
             .map_err(|_| poisoned_callback_domain())?;
@@ -59,9 +64,8 @@ impl DetachedCallbacks {
         Ok(())
     }
 
-    /// Waits up to `duration`, returning `true` only when the domain completed.
-    pub fn wait_for(&self, duration: Duration) -> Result<bool, ShutdownError> {
-        let complete = self.lock_complete()?;
+    pub(crate) fn wait_for(&self, duration: Duration) -> Result<bool, ShutdownError> {
+        let complete = lock_unpoisoned(&self.complete);
         if *complete {
             return Ok(true);
         }
@@ -78,7 +82,6 @@ impl DetachedCallbacks {
             }
 
             let (next, timed_out) = self
-                .state
                 .changed
                 .wait_timeout(complete, remaining)
                 .map_err(|_| poisoned_callback_domain())?;
@@ -88,13 +91,34 @@ impl DetachedCallbacks {
             }
         }
     }
+}
 
-    fn lock_complete(&self) -> Result<std::sync::MutexGuard<'_, bool>, ShutdownError> {
-        self.state
-            .complete
-            .lock()
-            .map_err(|_| poisoned_callback_domain())
+impl DetachedCallbacks {
+    pub(crate) fn new(state: Arc<CallbackCompletion>) -> Self {
+        Self { state }
     }
+
+    /// Returns whether all callbacks have returned and workers have exited.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.state.is_complete()
+    }
+
+    /// Waits without a library-imposed timeout for the sealed domain to complete.
+    pub fn wait(&self) -> Result<(), ShutdownError> {
+        self.state.wait()
+    }
+
+    /// Waits up to `duration`, returning `true` only when the domain completed.
+    pub fn wait_for(&self, duration: Duration) -> Result<bool, ShutdownError> {
+        self.state.wait_for(duration)
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn poisoned_callback_domain() -> ShutdownError {

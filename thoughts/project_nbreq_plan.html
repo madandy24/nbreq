@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">WP0 complete; WP1 and private curl proof are next</span>
+  Overall status: <span class="gate-partial">WP1 complete; WP2 private curl reactor is next</span>
 </div>
 
 <div class="panel">
@@ -84,7 +84,7 @@
 </div>
 
 <div class="callout warning">
-  <strong>M0 passed:</strong> the standalone crate, backend-neutral public boundary, private feature seams, trait assertions, and compile-only examples are established. Begin WP1 and the deliberately private curl Multi wakeup/cancellation/DLL experiment. Remaining naming, TLS-root, licensing, numeric latency, and packaging-proof details do not justify another ownership redesign; experimental curl types are not the public API.
+  <strong>M1 passed:</strong> the deterministic backend-independent lifecycle kernel now proves request identity, exactly-once terminal arbitration, synchronous waiter wakeup, cancellation barriers, bounded callback dispatch, spawned/manual progression, and normal/timed shutdown. Begin WP2's deliberately private curl Multi wakeup/cancellation/DLL experiment; experimental curl types are not the public API.
 </div>
 
 <h2 id="contents">Contents</h2>
@@ -306,7 +306,7 @@
 <p><strong>Acceptance passed:</strong> the dependency-free scaffold crate builds with no backend, curl-only, native-only, both backend features, and all features. Spawned, manual, callback, blocking, cancellation, normal/timed shutdown, detached-callback wait, and future FFI examples compile. Contract tests enforce the positive thread traits and explicit spawned-drive failure; a compile-fail test enforces the initial non-<span class="mono">Sync</span> Engine boundary.</p>
 
 <h3>WP1 — Implement the request registry and lifecycle model</h3>
-<p><span class="status status-progress">Ready to begin</span> Delivers backend-independent state transitions.</p>
+<p><span class="status status-done">Complete — 2026-08-16</span> Delivers backend-independent state transitions.</p>
 <ul>
   <li>Implement Engine-identified request IDs/generations, terminal-state arbitration, cancellation flags, direct blocking waiters, and owned bounded callback events. Cross-Engine IDs fail closed.</li>
   <li>Implement Engine states <span class="mono">Running → ShuttingDown → Stopped</span>, rejection after shutdown begins, idempotent request cancellation, and one internally idempotent shutdown transition. Public explicit shutdown consumes the unique Engine owner; dropping a Client does not affect Engine lifetime.</li>
@@ -317,10 +317,10 @@
   <li>Test callback reentrancy and panic containment after state commit and outside internal locks. Forbid nested manual drive, same-Engine blocking waits, and synchronous Engine join/destruction from a callback.</li>
   <li>Define command and callback-event backpressure; coalesce progress rather than dropping terminal events. Default to one dispatcher worker; explicit larger pools serialize callbacks per request while allowing different requests to use different workers.</li>
 </ul>
-<p><strong>Acceptance:</strong> exhaustive state-machine tests demonstrate exactly one terminal outcome, immediate waiter wakeup, safe cancel/complete races, bounded events, per-request callback order, no user callback on the reactor or under internal locks, and a detached callback domain that cannot reach stopped Engine resources.</p>
+<p><strong>Acceptance passed:</strong> deterministic tests cover repeated cancel/complete races, exactly one terminal callback, immediate direct waiters behind a blocked callback worker, Engine-scoped IDs, cancellation barriers, handle/drop behavior, bounded admission through callback return, progress coalescing with terminal priority, per-request serialization and cross-request pool concurrency, callback reentrancy and panic containment, registry-lock exclusion, manual inline dispatch and drive-until, spawned shutdown cancellation, normal drain, timed detachment, stopped captured Clients, and rejection/deferred cleanup of synchronous callback-stack shutdown.</p>
 
 <h3>WP2 — Prove the curl Multi reactor</h3>
-<p><span class="status status-open">Open</span> First real transport vertical slice.</p>
+<p><span class="status status-progress">Ready to begin</span> First real transport vertical slice.</p>
 <ul>
   <li>Own one curl Multi handle and all easy handles on one engine thread.</li>
   <li>Keep curl <span class="mono">Multi</span> inside the spawned reactor so the public Engine remains Send even though the current Rust binding is not. Do not promise manual curl or add an unsafe Send wrapper during the GDS milestone.</li>
@@ -468,7 +468,7 @@
   <td><strong>M1 — Lifecycle kernel</strong></td>
   <td>WP1</td>
   <td>Backend-independent cancellation, waiters, completion, shutdown.</td>
-  <td>Deterministic race/state tests.</td>
+  <td class="gate-yes">Passed 2026-08-16: deterministic race/state, callback pressure, mode, and shutdown/detachment tests.</td>
 </tr>
 <tr>
   <td><strong>M2 — Curl library alpha</strong></td>
@@ -721,6 +721,10 @@
 <tr><td>2026-08-16</td><td>Keep the crate non-publishable until naming and licensing close.</td><td><span class="mono">publish = false</span> prevents an accidental crates.io release under a working identity or incomplete grant while leaving the standalone crate structure real.</td></tr>
 <tr><td>2026-08-16</td><td>Separate closed admission from completed shutdown.</td><td>A teardown error still seals callback admission but retains incomplete backend state for retry. Neither the stopped flag nor a repeated cleanup call may hide an earlier incomplete teardown.</td></tr>
 <tr><td>2026-08-16</td><td>Keep <span class="mono">DetachedCallbacks</span> unique and non-cloneable.</td><td>One observation handle makes final-wait and DLL-unload responsibility obvious, while the sealed callback domain remains self-owned if the handle is dropped.</td></tr>
+<tr><td>2026-08-16</td><td>Commit terminal state synchronously in the backend-independent registry.</td><td>Cancellation and backend completion race on one canonical state. The winner wakes direct waiters immediately and queues any callback; the reactor is separately awakened to clean backend resources.</td></tr>
+<tr><td>2026-08-16</td><td>Bound admission through terminal callback return.</td><td>An admission permit moves into terminal callback work and is released after user code returns, guaranteeing bounded terminal delivery. Progress may coalesce or yield its slot; terminal events never do.</td></tr>
+<tr><td>2026-08-16</td><td>Track callback activation across registry unlock and shutdown seal.</td><td>Fast completion cannot invoke user code while the registry is locked, and shutdown cannot seal before every accepted callback has either been queued or proven unnecessary.</td></tr>
+<tr><td>2026-08-16</td><td>Reject synchronous Engine shutdown on its callback stack and defer cleanup.</td><td>A callback cannot join itself. The misuse path closes admission, transfers cleanup to a helper, and returns <span class="mono">ReentrantOperation</span>; normal callers signal the owner and shut down after unwinding.</td></tr>
 </table>
 
 <h2 id="progress">12. Progress Log</h2>
@@ -740,11 +744,12 @@
   <li><strong>2026-08-16 — Architecture contract closed for WP0.</strong> Accepted Engine-only Client issuance with no hidden or child Engines, explicit mode errors for <span class="mono">drive()</span>, harmless same-Engine cancellation after terminal/stop, the conservative redirect table, and the narrow buffered pilot scope. WP0 and the private curl proof may begin.</li>
   <li><strong>2026-08-16 — WP0 completed.</strong> Established the Rust 2024/MSRV 1.85 standalone crate with no runtime dependencies, private scaffold/curl/native backend seams, backend-neutral public types, consuming Engine lifecycle, Engine-issued Clients, callback and waiter shapes, compile-only spawned/manual/FFI examples, trait contract tests, formatting/lint policy, dependency policy, and a clean feature matrix.</li>
   <li><strong>2026-08-16 — WP0 review nits closed.</strong> Made shutdown failure sealing/retry-safe, made manual-drive state unwind-safe, kept detached callback ownership unique, added direct callback-worker builder sugar, and moved cross-Engine/late-cancel coverage into the default test suite.</li>
+  <li><strong>2026-08-16 — WP1 completed.</strong> Implemented Engine-scoped request registry and IDs, canonical terminal arbitration, direct condition-variable waiters, bounded submission and callback pressure, keyed callback serialization/pooling, progress coalescing with terminal priority, spawned reactor and manual drive paths over one core, cancellation barriers, callback panic/reentrancy containment, normal/timed shutdown, detached callback observation, and a deterministic held-request controller for adversarial tests.</li>
 </ul>
 
 <div class="panel">
   <h3>Next implementation step</h3>
-  <p><strong>WP1:</strong> implement the deterministic backend-independent request registry, terminal-state arbitration, cancellation barriers, direct waiters, bounded owned callback events, and spawned/manual lifecycle state machine. In parallel, the deliberately private curl Multi experiment may prove wakeup, cancellation latency, controlled DLL loading, and shutdown assumptions without donating its types to the public API.</p>
+  <p><strong>WP2:</strong> build the deliberately private curl Multi experiment against the accepted lifecycle boundary. Prove external wakeup, request removal cancellation, measured cancellation latency, exact dynamic-library loading and dependency inventory, once-only initialization outside loader-sensitive work, resolver/handle teardown, and the supported DLL load/use/unload policy. Do not donate experimental curl types to the public API.</p>
 </div>
 
 </body>
