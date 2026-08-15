@@ -10,4 +10,9 @@ impl ScaffoldDispatcher {
     pub(crate) fn seal(&mut self) {
         self.sealed = true;
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed
+    }
 }

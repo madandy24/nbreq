@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -36,6 +37,16 @@ pub struct Engine {
     dispatcher: ScaffoldDispatcher,
     driving: bool,
     _not_sync: PhantomData<Cell<()>>,
+}
+
+struct DrivingGuard<'flag> {
+    driving: &'flag mut bool,
+}
+
+impl Drop for DrivingGuard<'_> {
+    fn drop(&mut self) {
+        *self.driving = false;
+    }
 }
 
 impl Engine {
@@ -95,13 +106,13 @@ impl Engine {
             ));
         }
 
-        self.driving = true;
-        let result = match self.backend.as_mut() {
+        let (driving, backend) = (&mut self.driving, &mut self.backend);
+        *driving = true;
+        let _guard = DrivingGuard { driving };
+        match backend.as_mut() {
             Some(backend) => backend.drive(deadline),
             None => Err(Error::new(ErrorKind::EngineStopped, "Engine has stopped")),
-        };
-        self.driving = false;
-        result
+        }
     }
 
     /// Irreversibly stops network work and waits for callback dispatch to drain.
@@ -117,15 +128,22 @@ impl Engine {
     }
 
     fn stop_network(&mut self) -> Result<(), ShutdownError> {
-        if self.shared.stopped.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
+        // Closing admission and completing teardown are separate facts. A failed teardown remains
+        // retryable by the consuming shutdown path's Drop fallback.
+        self.shared.stopped.store(true, Ordering::Release);
+        let shutdown = match self.backend.as_mut() {
+            Some(backend) => backend.shutdown(),
+            None => Ok(()),
+        };
 
-        if let Some(mut backend) = self.backend.take() {
-            backend.shutdown()?;
-        }
+        // WP1 will publish every terminal callback event before reaching this seal. Sealing must
+        // still happen when backend teardown reports failure so no producer can add later work.
         self.dispatcher.seal();
-        Ok(())
+
+        if shutdown.is_ok() {
+            self.backend = None;
+        }
+        shutdown
     }
 }
 
@@ -165,8 +183,122 @@ impl EngineBuilder {
         self
     }
 
+    /// Selects the Engine-owned callback worker count.
+    #[must_use]
+    pub fn callback_workers(mut self, workers: NonZeroUsize) -> Self {
+        self.config = self.config.with_callback_workers(workers);
+        self
+    }
+
     /// Builds one independent Engine.
     pub fn build(self) -> Result<Engine, Error> {
         Engine::new(self.config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct FailOnceBackend {
+        shutdown_attempts: Arc<AtomicUsize>,
+    }
+
+    impl Backend for FailOnceBackend {
+        fn drive(&mut self, _deadline: Instant) -> Result<DriveStatus, Error> {
+            Ok(DriveStatus::Idle)
+        }
+
+        fn shutdown(&mut self) -> Result<(), ShutdownError> {
+            if self.shutdown_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                Err(ShutdownError::new(Error::new(
+                    ErrorKind::Internal,
+                    "deliberate first shutdown failure",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct PanicOnceBackend {
+        should_panic: bool,
+    }
+
+    impl Backend for PanicOnceBackend {
+        fn drive(&mut self, _deadline: Instant) -> Result<DriveStatus, Error> {
+            if self.should_panic {
+                self.should_panic = false;
+                panic!("deliberate drive panic");
+            }
+            Ok(DriveStatus::Idle)
+        }
+
+        fn shutdown(&mut self) -> Result<(), ShutdownError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_backend_shutdown_seals_and_remains_retryable() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut engine = Engine::new(EngineConfig::manual()).expect("Engine must construct");
+        engine.backend = Some(Box::new(FailOnceBackend {
+            shutdown_attempts: Arc::clone(&attempts),
+        }));
+
+        assert!(engine.stop_network().is_err());
+        assert!(engine.shared.stopped.load(Ordering::Acquire));
+        assert!(engine.dispatcher.is_sealed());
+        assert!(engine.backend.is_some());
+
+        engine
+            .stop_network()
+            .expect("a second teardown attempt must reach the backend");
+        assert!(engine.backend.is_none());
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn consuming_shutdown_drop_retries_failed_backend_teardown() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut engine = Engine::new(EngineConfig::manual()).expect("Engine must construct");
+        engine.backend = Some(Box::new(FailOnceBackend {
+            shutdown_attempts: Arc::clone(&attempts),
+        }));
+
+        assert!(engine.shutdown().is_err());
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn drive_guard_clears_reentrancy_flag_during_unwind() {
+        let mut engine = Engine::new(EngineConfig::manual()).expect("Engine must construct");
+        engine.backend = Some(Box::new(PanicOnceBackend { should_panic: true }));
+
+        let panic = catch_unwind(AssertUnwindSafe(|| engine.drive(Instant::now())));
+        assert!(panic.is_err());
+
+        let status = engine
+            .drive(Instant::now())
+            .expect("drive must be usable after a contained backend panic");
+        assert_eq!(status, DriveStatus::Idle);
+    }
+
+    #[test]
+    fn builder_sets_callback_worker_count() {
+        let workers = NonZeroUsize::new(3).expect("three is non-zero");
+        let engine = EngineBuilder::spawned()
+            .callback_workers(workers)
+            .build()
+            .expect("Engine must construct");
+        assert_eq!(
+            engine.config.callback_dispatch(),
+            crate::CallbackDispatch::Workers(workers)
+        );
     }
 }

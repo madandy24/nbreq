@@ -13,6 +13,7 @@ cargo fmt --check
 cargo check --no-default-features
 cargo check --all-features --all-targets
 cargo clippy --all-features --all-targets -- -D warnings
+cargo test --no-default-features
 cargo test --all-features
 ```
 

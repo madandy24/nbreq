@@ -15,9 +15,18 @@ pub enum ShutdownOutcome {
 
 /// Observable ownership of a sealed callback domain after timed shutdown.
 ///
+/// The public observation handle is unique and deliberately not `Clone`, keeping DLL-unload and
+/// final-wait responsibility obvious. The sealed callback domain itself remains self-owned.
+///
+/// ```compile_fail
+/// use nbreq::DetachedCallbacks;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<DetachedCallbacks>();
+/// ```
+///
 /// This value contains no Engine, network, resolver, TLS, or backend state. Dropping it does not
 /// interrupt callbacks; the callback domain remains self-owned until complete.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DetachedCallbacks {
     state: Arc<DetachedState>,
 }

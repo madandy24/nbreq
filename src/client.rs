@@ -210,3 +210,37 @@ fn backend_not_implemented() -> Error {
         "no production HTTP backend is implemented in WP0",
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Engine, EngineConfig};
+
+    use super::*;
+
+    #[test]
+    fn late_cancel_is_idempotent_but_wrong_engine_fails_closed() {
+        let first = Engine::new(EngineConfig::spawned()).expect("first Engine must construct");
+        let first_client = first.client();
+        let first_engine_id = first_client.shared.id;
+        let handle = RequestHandle::new(
+            first_client,
+            RequestId {
+                engine: first_engine_id,
+                sequence: 7,
+            },
+        );
+
+        let second = Engine::new(EngineConfig::spawned()).expect("second Engine must construct");
+        let second_client = second.client();
+        let error = second_client
+            .cancel(handle.id())
+            .expect_err("cross-Engine cancellation must fail closed");
+        assert_eq!(error.kind(), ErrorKind::WrongEngine);
+
+        first.shutdown().expect("first Engine must stop");
+        handle
+            .cancel()
+            .expect("same-Engine cancellation remains harmless after stop");
+        second.shutdown().expect("second Engine must stop");
+    }
+}

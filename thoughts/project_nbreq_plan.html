@@ -719,6 +719,8 @@
 <tr><td>2026-08-16</td><td>Use Rust 2024 edition with MSRV 1.85 for the initial crate.</td><td>Edition 2024 makes the language baseline explicit while 1.85 is its first supported compiler. GDS currently builds with a newer toolchain; supported-platform artifact tests remain separate from the language MSRV.</td></tr>
 <tr><td>2026-08-16</td><td>Begin with zero runtime dependencies and private empty backend feature seams.</td><td>The WP0 scaffold proves the public boundary without accidentally blessing curl/native implementation types. Every future dependency requires purpose, platform, license, and runtime-model review.</td></tr>
 <tr><td>2026-08-16</td><td>Keep the crate non-publishable until naming and licensing close.</td><td><span class="mono">publish = false</span> prevents an accidental crates.io release under a working identity or incomplete grant while leaving the standalone crate structure real.</td></tr>
+<tr><td>2026-08-16</td><td>Separate closed admission from completed shutdown.</td><td>A teardown error still seals callback admission but retains incomplete backend state for retry. Neither the stopped flag nor a repeated cleanup call may hide an earlier incomplete teardown.</td></tr>
+<tr><td>2026-08-16</td><td>Keep <span class="mono">DetachedCallbacks</span> unique and non-cloneable.</td><td>One observation handle makes final-wait and DLL-unload responsibility obvious, while the sealed callback domain remains self-owned if the handle is dropped.</td></tr>
 </table>
 
 <h2 id="progress">12. Progress Log</h2>
@@ -737,6 +739,7 @@
   <li><strong>2026-08-15 — Curl lifecycle review tightened.</strong> Added cookies/decompression and a concrete redirect table, documented once-only curl initialization with no per-Engine cleanup, required curl-free detached callbacks, and elevated Windows DLL initialization/unload to a WP2 proof gate.</li>
   <li><strong>2026-08-16 — Architecture contract closed for WP0.</strong> Accepted Engine-only Client issuance with no hidden or child Engines, explicit mode errors for <span class="mono">drive()</span>, harmless same-Engine cancellation after terminal/stop, the conservative redirect table, and the narrow buffered pilot scope. WP0 and the private curl proof may begin.</li>
   <li><strong>2026-08-16 — WP0 completed.</strong> Established the Rust 2024/MSRV 1.85 standalone crate with no runtime dependencies, private scaffold/curl/native backend seams, backend-neutral public types, consuming Engine lifecycle, Engine-issued Clients, callback and waiter shapes, compile-only spawned/manual/FFI examples, trait contract tests, formatting/lint policy, dependency policy, and a clean feature matrix.</li>
+  <li><strong>2026-08-16 — WP0 review nits closed.</strong> Made shutdown failure sealing/retry-safe, made manual-drive state unwind-safe, kept detached callback ownership unique, added direct callback-worker builder sugar, and moved cross-Engine/late-cancel coverage into the default test suite.</li>
 </ul>
 
 <div class="panel">

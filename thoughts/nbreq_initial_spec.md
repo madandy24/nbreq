@@ -394,9 +394,11 @@ Both normal and timed shutdown will:
 
 A zero duration is the nonblocking test: it returns `Complete` only if dispatch is already finished, otherwise it returns the handle. Timing out does not cancel user code and does not restart or leave the Engine half-running.
 
-`DetachedCallbacks` is independent of Client and provides at least completion/status inspection plus `wait()` and `wait_for(duration)`. Dropping this handle does not interrupt callbacks; the sealed domain remains self-owned until its queue drains and its running callbacks return. Once detached, it cannot receive more work and it has no access to the dead Engine's reactor, connections, resolver, or request registry.
+`DetachedCallbacks` is an independent, unique, non-cloneable observation/ownership handle and provides at least completion/status inspection plus `wait()` and `wait_for(duration)`. A single obvious handle owns final-wait and DLL-unload responsibility; callers that need several observers coordinate around it explicitly. Dropping this handle does not interrupt callbacks; the sealed domain remains self-owned until its queue drains and its running callbacks return. Once detached, it cannot receive more work and it has no access to the dead Engine's reactor, connections, resolver, or request registry.
 
 Callback detachment applies only after network-side shutdown is complete. An unjoined resolver, reactor, TLS operation, or other Engine service is a shutdown failure, not a detachable callback. The API must never imply that a callback handle makes such network work safe to abandon.
+
+Closing request admission and completing shutdown are distinct facts. Once shutdown begins, admission remains permanently closed even if backend teardown reports an error. The callback queue is still sealed, incomplete backend state is retained for the internal Drop fallback to retry, and a later cleanup attempt cannot report success merely because admission was already closed.
 
 Explicit shutdown consumes the unique Engine owner, so callers cannot continue using a public stopped Engine value. Shutdown initiation remains internally idempotent so races, cleanup paths, and the Engine destructor converge safely on the same transition.
 
@@ -762,6 +764,7 @@ Decisions already accepted in principle:
 - the conservative redirect table in Section 20 is accepted;
 - normal spawned shutdown waits for sealed callback dispatch to drain;
 - timed spawned shutdown may return an observable, waitable, self-draining callback domain only after every network-side service has stopped;
+- `DetachedCallbacks` is a unique, non-cloneable observation/ownership handle; the sealed callback domain remains self-owned if that handle is dropped;
 - the callback domain is not attached to a Client; captured Clients survive only as stopped command handles;
 - detached callbacks prohibit claiming DLL-unload safety until their handle reports complete;
 - the current curl backend uses once-only process/module initialization with no per-Engine global cleanup; detached callback domains contain no curl state;
