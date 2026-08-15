@@ -687,8 +687,7 @@ The Rust-native public release is useful when it meets the same contract for the
 
 Accepted answers form the WP0 contract. Unresolved items below are policy, integration-audit, or proof work and do not block WP0.
 
-1. **Name and home:** Is `NBReq` the intended name, and should it begin as its own crate/repository or inside the GDS Rust workspace until the API settles?\
-   Recommendation: incubate beside GDS with a clean standalone crate boundary, then split/publish after the curl milestone.
+1. **Name and home:** `NBReq` remains the working name; the final public name remains open. The standalone repository/crate boundary beside GDS was accepted and established in WP0.
 
 2. **Cancellation notification — accepted:** An explicitly cancelled accepted request receives exactly one `Cancelled` terminal callback. Silent disappearance would make ownership and cleanup harder.
 

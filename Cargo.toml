@@ -1,0 +1,25 @@
+[package]
+name = "nbreq"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Runtime-independent cancellable HTTP client (pre-implementation skeleton)"
+publish = false
+
+[features]
+default = []
+curl = []
+native = []
+test-support = []
+ffi = []
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

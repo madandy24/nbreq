@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">contract accepted for WP0; policy and proof work remains</span>
+  Overall status: <span class="gate-partial">WP0 complete; WP1 and private curl proof are next</span>
 </div>
 
 <div class="panel">
@@ -84,7 +84,7 @@
 </div>
 
 <div class="callout warning">
-  <strong>Planning gate passed:</strong> begin WP0 and the deliberately private curl Multi wakeup/cancellation/DLL experiment. Engine ownership, Client issuance, Send target, cancellation, blocking completion, dispatch, detachment, pilot scope, redirects, platforms, and curl packaging direction are sufficiently closed. Remaining naming, TLS-root, licensing, numeric latency, and packaging-proof details do not justify another ownership redesign; experimental types are not the public API.
+  <strong>M0 passed:</strong> the standalone crate, backend-neutral public boundary, private feature seams, trait assertions, and compile-only examples are established. Begin WP1 and the deliberately private curl Multi wakeup/cancellation/DLL experiment. Remaining naming, TLS-root, licensing, numeric latency, and packaging-proof details do not justify another ownership redesign; experimental curl types are not the public API.
 </div>
 
 <h2 id="contents">Contents</h2>
@@ -168,8 +168,8 @@
 <tr>
   <td class="mono nowrap">Q-01</td>
   <td>Working name and repository location.</td>
-  <td>Use NBReq as a working name. Incubate as a standalone-shaped crate beside GDS, then split/publish once the API survives the curl milestone.</td>
-  <td><span class="status status-question">Discuss</span></td>
+  <td>Use NBReq as a working name in the standalone repository beside GDS. Choose the final public name before publication.</td>
+  <td><span class="status status-progress">Repository accepted; final name open</span></td>
 </tr>
 <tr>
   <td class="mono nowrap">Q-02</td>
@@ -290,7 +290,7 @@
 <h2 id="work">4. Implementation Work Packages</h2>
 
 <h3>WP0 — Resolve product decisions and establish the crate</h3>
-<p><span class="status status-progress">Ready to begin</span> Establishes the accepted boundary all later work must preserve.</p>
+<p><span class="status status-done">Complete — 2026-08-16</span> Established the accepted boundary all later work must preserve.</p>
 <ul>
   <li>Treat Q-01 through Q-20 as accepted or deliberately deferred per the tracker; do not reopen the ownership contract during scaffolding.</li>
   <li>Create a standalone-shaped crate with modules for public types, Engine lifecycle, Client command handles, callback dispatch, the internal backend contract, testing support, and feature-gated backends.</li>
@@ -303,10 +303,10 @@
   <li>Write compile-only examples for spawned and manual Engines, cloneable Clients, callback and blocking requests, individual and Engine-wide cancellation, normal/timed shutdown, waiting on detached callbacks, and future FFI use.</li>
   <li>Forbid backend-specific public types with API review and feature-matrix builds.</li>
 </ul>
-<p><strong>Acceptance:</strong> the crate builds without either backend implementation using a test backend; the public examples compile; the decision log records every accepted behavioural choice.</p>
+<p><strong>Acceptance passed:</strong> the dependency-free scaffold crate builds with no backend, curl-only, native-only, both backend features, and all features. Spawned, manual, callback, blocking, cancellation, normal/timed shutdown, detached-callback wait, and future FFI examples compile. Contract tests enforce the positive thread traits and explicit spawned-drive failure; a compile-fail test enforces the initial non-<span class="mono">Sync</span> Engine boundary.</p>
 
 <h3>WP1 — Implement the request registry and lifecycle model</h3>
-<p><span class="status status-open">Open</span> Delivers backend-independent state transitions.</p>
+<p><span class="status status-progress">Ready to begin</span> Delivers backend-independent state transitions.</p>
 <ul>
   <li>Implement Engine-identified request IDs/generations, terminal-state arbitration, cancellation flags, direct blocking waiters, and owned bounded callback events. Cross-Engine IDs fail closed.</li>
   <li>Implement Engine states <span class="mono">Running → ShuttingDown → Stopped</span>, rejection after shutdown begins, idempotent request cancellation, and one internally idempotent shutdown transition. Public explicit shutdown consumes the unique Engine owner; dropping a Client does not affect Engine lifetime.</li>
@@ -462,7 +462,7 @@
   <td><strong>M0 — Contract accepted</strong></td>
   <td>WP0</td>
   <td>Stable enough public boundary and recorded decisions.</td>
-  <td>Reviewed specification, compile examples, decision log.</td>
+  <td class="gate-yes">Passed 2026-08-16: reviewed specification, compiling examples, clean feature matrix, trait tests, decision log.</td>
 </tr>
 <tr>
   <td><strong>M1 — Lifecycle kernel</strong></td>
@@ -716,6 +716,9 @@
 <tr><td>2026-08-16</td><td>Make mode misuse and late cancellation boring and explicit.</td><td><span class="mono">drive()</span> is manual-only and rejects spawned, nested, or concurrent use. Cancelling a terminal same-Engine request is an idempotent success even after stop; a wrong-Engine ID still fails closed.</td></tr>
 <tr><td>2026-08-16</td><td>Accept the conservative redirect table and narrow the pilot contract.</td><td>The curl/GDS pilot implements buffered bodies and connect/inactivity/total time controls. Streaming and finer stage timeouts remain later native/full work, while redirect behaviour is now portable policy rather than backend default.</td></tr>
 <tr><td>2026-08-16</td><td>Close the architecture contract for WP0.</td><td>Remaining naming, trust-root, licensing, measured-latency, dependency-inventory, and GDS HTTP-scope work can be resolved without reopening Engine/Client ownership.</td></tr>
+<tr><td>2026-08-16</td><td>Use Rust 2024 edition with MSRV 1.85 for the initial crate.</td><td>Edition 2024 makes the language baseline explicit while 1.85 is its first supported compiler. GDS currently builds with a newer toolchain; supported-platform artifact tests remain separate from the language MSRV.</td></tr>
+<tr><td>2026-08-16</td><td>Begin with zero runtime dependencies and private empty backend feature seams.</td><td>The WP0 scaffold proves the public boundary without accidentally blessing curl/native implementation types. Every future dependency requires purpose, platform, license, and runtime-model review.</td></tr>
+<tr><td>2026-08-16</td><td>Keep the crate non-publishable until naming and licensing close.</td><td><span class="mono">publish = false</span> prevents an accidental crates.io release under a working identity or incomplete grant while leaving the standalone crate structure real.</td></tr>
 </table>
 
 <h2 id="progress">12. Progress Log</h2>
@@ -733,11 +736,12 @@
   <li><strong>2026-08-15 — Pilot and release boundaries clarified.</strong> Curl may ship dynamically beside GDS for limited pilots with ureq rollback retained. Initial Windows/Wine/Linux targets and no-verify compatibility were accepted; broad public rollout can wait for native, with exact MIT/Apache licensing still open.</li>
   <li><strong>2026-08-15 — Curl lifecycle review tightened.</strong> Added cookies/decompression and a concrete redirect table, documented once-only curl initialization with no per-Engine cleanup, required curl-free detached callbacks, and elevated Windows DLL initialization/unload to a WP2 proof gate.</li>
   <li><strong>2026-08-16 — Architecture contract closed for WP0.</strong> Accepted Engine-only Client issuance with no hidden or child Engines, explicit mode errors for <span class="mono">drive()</span>, harmless same-Engine cancellation after terminal/stop, the conservative redirect table, and the narrow buffered pilot scope. WP0 and the private curl proof may begin.</li>
+  <li><strong>2026-08-16 — WP0 completed.</strong> Established the Rust 2024/MSRV 1.85 standalone crate with no runtime dependencies, private scaffold/curl/native backend seams, backend-neutral public types, consuming Engine lifecycle, Engine-issued Clients, callback and waiter shapes, compile-only spawned/manual/FFI examples, trait contract tests, formatting/lint policy, dependency policy, and a clean feature matrix.</li>
 </ul>
 
 <div class="panel">
-  <h3>WP0 kickoff</h3>
-  <p>The architecture contract is accepted. Begin <strong>WP0</strong> and the deliberately private curl Multi wakeup/cancellation/DLL-lifecycle experiment; experimental types are not the public API. Resolve final timed-shutdown naming/status detail, TLS trust roots, measured cancellation latency, the exact MIT/Apache grant, curl loading/dependency inventory, and the DpHttpClient HTTP-scope audit as policy or proof work. Do not reopen Engine/Client ownership without contradictory implementation evidence.</p>
+  <h3>Next implementation step</h3>
+  <p><strong>WP1:</strong> implement the deterministic backend-independent request registry, terminal-state arbitration, cancellation barriers, direct waiters, bounded owned callback events, and spawned/manual lifecycle state machine. In parallel, the deliberately private curl Multi experiment may prove wakeup, cancellation latency, controlled DLL loading, and shutdown assumptions without donating its types to the public API.</p>
 </div>
 
 </body>
