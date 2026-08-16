@@ -73,6 +73,13 @@ impl ScriptedServer {
                                 socket
                                     .set_linger(Some(Duration::ZERO))
                                     .expect("abortive close must configure");
+                                let body_bytes = read_request_head(&mut stream);
+                                if body_bytes == 0 {
+                                    let mut body_byte = [0_u8; 1];
+                                    stream
+                                        .read_exact(&mut body_byte)
+                                        .expect("lab server must observe upload data before reset");
+                                }
                             }
                             Script::TwoKeepAliveResponses => {
                                 for (body, connection) in [
@@ -130,10 +137,13 @@ impl Drop for ScriptedServer {
     }
 }
 
-fn read_request_head(stream: &mut TcpStream) {
+fn read_request_head(stream: &mut TcpStream) -> usize {
     let mut received = Vec::new();
     let mut buffer = [0_u8; 512];
-    while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+    loop {
+        if let Some(head_end) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+            return received.len() - (head_end + 4);
+        }
         let read = stream
             .read(&mut buffer)
             .expect("lab request head must read");
