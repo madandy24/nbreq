@@ -8,8 +8,8 @@ publish = false
 
 [features]
 default = []
-curl = ["dep:curl"]
-curl-vendored = ["curl", "curl/ssl"]
+curl-pilot = ["dep:curl"]
+curl-pilot-vendored = ["curl-pilot", "curl/ssl"]
 native = []
 test-support = []
 ffi = []

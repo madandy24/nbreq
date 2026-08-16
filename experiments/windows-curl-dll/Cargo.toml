@@ -15,7 +15,7 @@ name = "nbreq-curl-dll-host"
 path = "src/host.rs"
 
 [dependencies]
-nbreq = { path = "../..", features = ["curl", "test-support"] }
+nbreq = { path = "../..", features = ["curl-pilot", "test-support"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
-#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
 use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
@@ -80,13 +80,7 @@ impl Engine {
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
         )?;
-        let shared = Shared::new(
-            id,
-            config.run_mode(),
-            config.command_queue_capacity().get(),
-            config.callback_queue_capacity().get(),
-            dispatcher.domain(),
-        );
+        let shared = Shared::new(id, &config, dispatcher.domain());
         let runtime = match config.run_mode() {
             RunMode::Spawned => {
                 let reactor_shared = Arc::clone(&shared);
@@ -125,7 +119,7 @@ impl Engine {
         })
     }
 
-    #[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
     pub(crate) fn with_curl_backend(config: EngineConfig) -> Result<Self, Error> {
         if config.run_mode() != RunMode::Spawned {
             return Err(Error::new(
@@ -146,15 +140,9 @@ impl Engine {
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
         )?;
-        let shared = Shared::new(
-            id,
-            config.run_mode(),
-            config.command_queue_capacity().get(),
-            config.callback_queue_capacity().get(),
-            dispatcher.domain(),
-        );
+        let shared = Shared::new(id, &config, dispatcher.domain());
         let reactor_shared = Arc::clone(&shared);
-        let factory = backend::curl_factory();
+        let factory = backend::curl_factory(&config);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
             .spawn(move || spawned_main_factory(reactor_shared, factory))
@@ -460,6 +448,48 @@ impl EngineBuilder {
         self
     }
 
+    /// Selects the bounded command queue capacity.
+    #[must_use]
+    pub fn command_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.config = self.config.with_command_queue_capacity(capacity);
+        self
+    }
+
+    /// Selects the bounded callback event queue capacity.
+    #[must_use]
+    pub fn callback_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.config = self.config.with_callback_queue_capacity(capacity);
+        self
+    }
+
+    /// Selects the maximum buffered request-body size.
+    #[must_use]
+    pub fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_request_body_bytes(bytes);
+        self
+    }
+
+    /// Selects the maximum buffered response-body size.
+    #[must_use]
+    pub fn max_response_body_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_response_body_bytes(bytes);
+        self
+    }
+
+    /// Selects the maximum cumulative request/response header bytes.
+    #[must_use]
+    pub fn max_header_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_header_bytes(bytes);
+        self
+    }
+
+    /// Selects the maximum request/response header field count.
+    #[must_use]
+    pub fn max_header_count(mut self, count: usize) -> Self {
+        self.config = self.config.with_max_header_count(count);
+        self
+    }
+
     /// Builds one independent Engine.
     pub fn build(self) -> Result<Engine, Error> {
         Engine::new(self.config)
@@ -482,7 +512,12 @@ mod tests {
     }
 
     impl Backend for FailOnceBackend {
-        fn submit(&mut self, _id: RequestId, _request: Request) -> Option<Completion> {
+        fn submit(
+            &mut self,
+            _id: RequestId,
+            _request: Request,
+            _accepted_at: Instant,
+        ) -> Option<Completion> {
             None
         }
 
@@ -508,8 +543,36 @@ mod tests {
         should_panic: bool,
     }
 
+    struct PanicOnSubmitBackend;
+
+    impl Backend for PanicOnSubmitBackend {
+        fn submit(
+            &mut self,
+            _id: RequestId,
+            _request: Request,
+            _accepted_at: Instant,
+        ) -> Option<Completion> {
+            panic!("deliberate spawned reactor panic");
+        }
+
+        fn cancel(&mut self, _id: RequestId) {}
+
+        fn poll(&mut self, _deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+            Ok(Vec::new())
+        }
+
+        fn shutdown(&mut self) -> Result<(), ShutdownError> {
+            Ok(())
+        }
+    }
+
     impl Backend for PanicOnceBackend {
-        fn submit(&mut self, _id: RequestId, _request: Request) -> Option<Completion> {
+        fn submit(
+            &mut self,
+            _id: RequestId,
+            _request: Request,
+            _accepted_at: Instant,
+        ) -> Option<Completion> {
             None
         }
 
@@ -603,15 +666,47 @@ mod tests {
     }
 
     #[test]
+    fn spawned_reactor_panic_fails_accepted_waiters_instead_of_stranding_them() {
+        let engine = Engine::with_backend(EngineConfig::spawned(), Box::new(PanicOnSubmitBackend))
+            .expect("Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get("https://example.invalid/")
+                    .build()
+                    .expect("request must build"),
+            )
+            .expect("request must be accepted before the reactor panic");
+
+        match pending.wait_for(Duration::from_secs(1)) {
+            crate::WaitOutcome::Completed(Completion::Failed(error)) => {
+                assert_eq!(error.kind(), ErrorKind::Internal);
+                assert_eq!(error.message(), "NBReq reactor thread panicked");
+            }
+            other => panic!("reactor panic stranded or miscompleted the waiter: {other:?}"),
+        }
+        let shutdown = engine
+            .shutdown()
+            .expect_err("the contained reactor panic must remain observable at shutdown");
+        assert_eq!(shutdown.error().kind(), ErrorKind::Internal);
+    }
+
+    #[test]
     fn builder_sets_callback_worker_count() {
         let workers = NonZeroUsize::new(3).expect("three is non-zero");
+        let command_capacity = NonZeroUsize::new(7).expect("seven is non-zero");
+        let callback_capacity = NonZeroUsize::new(9).expect("nine is non-zero");
         let engine = EngineBuilder::spawned()
             .callback_workers(workers)
+            .command_queue_capacity(command_capacity)
+            .callback_queue_capacity(callback_capacity)
             .build()
             .expect("Engine must construct");
         assert_eq!(
             engine.config.callback_dispatch(),
             CallbackDispatch::Workers(workers)
         );
+        assert_eq!(engine.config.command_queue_capacity(), command_capacity);
+        assert_eq!(engine.config.callback_queue_capacity(), callback_capacity);
     }
 }

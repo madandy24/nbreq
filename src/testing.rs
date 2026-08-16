@@ -49,8 +49,8 @@ pub fn engine(config: EngineConfig) -> Result<(Engine, TestController), Error> {
 /// Creates an Engine using the private curl Multi proving backend.
 ///
 /// This is experimental test support rather than a stable backend-selection API. It exists only
-/// when both the `curl` and `test-support` features are enabled (or in NBReq's own curl tests).
-#[cfg(feature = "curl")]
+/// when both the `curl-pilot` and `test-support` features are enabled (or in NBReq's own curl tests).
+#[cfg(feature = "curl-pilot")]
 pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
     Engine::with_curl_backend(config)
 }

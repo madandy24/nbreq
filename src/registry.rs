@@ -2,12 +2,14 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::Instant;
 
 use crate::context;
 use crate::dispatch::{CallbackDomain, CallbackJob};
-use crate::{Completion, Error, ErrorKind, Request, RequestId, RunMode};
+use crate::{Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestId, RunMode};
 
 pub(crate) type CompletionCallback = Box<dyn FnOnce(Completion) + Send + 'static>;
+type ExternalWaker = Arc<dyn Fn() -> Result<(), Error> + Send + Sync + 'static>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LifecycleState {
@@ -165,6 +167,7 @@ impl RequestState {
 pub(crate) struct Submission {
     pub(crate) request: Request,
     pub(crate) state: Arc<RequestState>,
+    pub(crate) accepted_at: Instant,
 }
 
 struct QueueState {
@@ -176,7 +179,8 @@ pub(crate) struct CommandQueue {
     capacity: usize,
     state: Mutex<QueueState>,
     changed: Condvar,
-    external_waker: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
+    external_waker: Mutex<Option<ExternalWaker>>,
+    external_wake_failure: Mutex<Option<Error>>,
 }
 
 impl CommandQueue {
@@ -189,6 +193,7 @@ impl CommandQueue {
             }),
             changed: Condvar::new(),
             external_waker: Mutex::new(None),
+            external_wake_failure: Mutex::new(None),
         }
     }
 
@@ -231,14 +236,23 @@ impl CommandQueue {
         *seen_generation = state.generation;
     }
 
-    pub(crate) fn set_external_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync + 'static>>) {
+    pub(crate) fn set_external_waker(&self, waker: Option<ExternalWaker>) {
         *lock_unpoisoned(&self.external_waker) = waker;
+    }
+
+    pub(crate) fn take_external_wake_failure(&self) -> Option<Error> {
+        lock_unpoisoned(&self.external_wake_failure).take()
     }
 
     fn wake_external(&self) {
         let waker = lock_unpoisoned(&self.external_waker).clone();
         if let Some(waker) = waker {
-            waker();
+            if let Err(error) = waker() {
+                let mut failure = lock_unpoisoned(&self.external_wake_failure);
+                if failure.is_none() {
+                    *failure = Some(error);
+                }
+            }
         }
     }
 }
@@ -262,6 +276,9 @@ pub(crate) struct Shared {
     core: Mutex<CoreState>,
     inflight: Arc<AtomicUsize>,
     inflight_limit: usize,
+    max_request_body_bytes: usize,
+    max_header_bytes: usize,
+    max_header_count: usize,
     callback_activations: Mutex<usize>,
     callback_activations_done: Condvar,
     #[cfg(test)]
@@ -292,15 +309,15 @@ impl fmt::Debug for Shared {
 impl Shared {
     pub(crate) fn new(
         id: u64,
-        run_mode: RunMode,
-        command_capacity: usize,
-        callback_capacity: usize,
+        config: &EngineConfig,
         callback_domain: Arc<CallbackDomain>,
     ) -> Arc<Self> {
+        let command_capacity = config.command_queue_capacity().get();
+        let callback_capacity = config.callback_queue_capacity().get();
         Arc::new(Self {
             id,
             stopped: AtomicBool::new(false),
-            run_mode,
+            run_mode: config.run_mode(),
             queue: CommandQueue::new(command_capacity),
             callback_domain,
             core: Mutex::new(CoreState {
@@ -310,6 +327,9 @@ impl Shared {
             }),
             inflight: Arc::new(AtomicUsize::new(0)),
             inflight_limit: command_capacity.min(callback_capacity),
+            max_request_body_bytes: config.max_request_body_bytes(),
+            max_header_bytes: config.max_header_bytes(),
+            max_header_count: config.max_header_count(),
             callback_activations: Mutex::new(0),
             callback_activations_done: Condvar::new(),
             #[cfg(test)]
@@ -336,6 +356,7 @@ impl Shared {
                 "request identity space is exhausted",
             ));
         }
+        self.validate_request_limits(&request)?;
 
         let permit =
             AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit).ok_or_else(|| {
@@ -355,6 +376,7 @@ impl Shared {
         let submission = Submission {
             request,
             state: Arc::clone(&state),
+            accepted_at: Instant::now(),
         };
         if !self.queue.try_push(submission) {
             core.requests.remove(&id);
@@ -483,6 +505,43 @@ impl Shared {
         self.queue.wake();
     }
 
+    fn validate_request_limits(&self, request: &Request) -> Result<(), Error> {
+        if request.body().len() > self.max_request_body_bytes {
+            return Err(Error::limit(
+                LimitKind::RequestBodyBytes,
+                format!(
+                    "request body exceeds the configured {} byte limit",
+                    self.max_request_body_bytes
+                ),
+            ));
+        }
+        if request.headers().len() > self.max_header_count {
+            return Err(Error::limit(
+                LimitKind::RequestHeaderCount,
+                format!(
+                    "request headers exceed the configured {} field limit",
+                    self.max_header_count
+                ),
+            ));
+        }
+        let header_bytes = request.headers().iter().try_fold(0_usize, |total, header| {
+            total
+                .checked_add(header.name().len())?
+                .checked_add(header.value().len())?
+                .checked_add(4)
+        });
+        if header_bytes.is_none_or(|bytes| bytes > self.max_header_bytes) {
+            return Err(Error::limit(
+                LimitKind::RequestHeaderBytes,
+                format!(
+                    "request headers exceed the configured {} byte limit",
+                    self.max_header_bytes
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn finish_callback_activation(&self) {
         let mut activations = lock_unpoisoned(&self.callback_activations);
         *activations -= 1;
@@ -517,10 +576,10 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    use crate::{Engine, EngineConfig, Request};
+    use crate::{Engine, EngineConfig, Error, ErrorKind, Request};
 
     #[test]
     fn user_callback_observes_registry_unlocked() {
@@ -544,6 +603,27 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("callback must run")
         );
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn external_wakeup_failure_is_latched_for_the_reactor() {
+        let engine = Engine::new(EngineConfig::manual()).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.queue.set_external_waker(Some(Arc::new(|| {
+            Err(Error::new(
+                ErrorKind::Internal,
+                "deliberate external wake failure",
+            ))
+        })));
+
+        shared.queue.wake();
+        let failure = shared
+            .queue
+            .take_external_wake_failure()
+            .expect("wake failure must be retained until the reactor sees it");
+        assert_eq!(failure.kind(), ErrorKind::Internal);
+        assert_eq!(failure.message(), "deliberate external wake failure");
         engine.shutdown().expect("Engine must stop");
     }
 }

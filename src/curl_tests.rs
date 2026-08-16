@@ -6,7 +6,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::testing;
-use crate::{Completion, EngineConfig, ErrorKind, Request, RequestOptions, TlsVerification};
+use crate::{
+    Completion, EngineConfig, ErrorKind, LimitKind, Method, Request, RequestOptions, TimeoutKind,
+    TlsVerification,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ServerEvent {
@@ -157,6 +160,17 @@ fn serve_connection(
             let cookie = request_has_header(&request, "cookie");
             let body = format!("authorization={authorization};cookie={cookie}");
             write_response(&mut stream, 200, body.as_bytes(), &[]);
+        }
+        "/inspect-content-type" => {
+            let content_type = request_has_header(&request, "content-type");
+            let body = format!("method={method};content-type={content_type}");
+            write_response(&mut stream, 200, body.as_bytes(), &[]);
+        }
+        "/informational" => {
+            stream
+                .write_all(b"HTTP/1.1 100 Continue\r\nX-Interim: yes\r\n\r\n")
+                .expect("informational response must write");
+            write_response(&mut stream, 200, b"final", &[]);
         }
         "/stall-headers" => watch_stalled_connection(
             stream,
@@ -338,6 +352,200 @@ fn curl_multi_runs_concurrent_get_status_and_post_requests() {
 }
 
 #[test]
+fn curl_enforces_request_and_response_buffer_limits_before_growth() {
+    let request_engine = testing::curl_engine(
+        EngineConfig::spawned()
+            .with_max_request_body_bytes(4)
+            .with_max_header_bytes(8)
+            .with_max_header_count(1),
+    )
+    .expect("curl Engine must construct");
+    let request_client = request_engine.client();
+
+    let body_error = request_client
+        .submit(
+            Request::post("http://example.invalid/")
+                .body(b"12345".to_vec())
+                .build()
+                .expect("request must build"),
+        )
+        .expect_err("oversized request body must be rejected");
+    assert_eq!(body_error.kind(), ErrorKind::Limit);
+    assert_eq!(body_error.limit_kind(), Some(LimitKind::RequestBodyBytes));
+
+    let count_error = request_client
+        .submit(
+            Request::get("http://example.invalid/")
+                .header("X-One", "1")
+                .header("X-Two", "2")
+                .build()
+                .expect("request must build"),
+        )
+        .expect_err("too many request headers must be rejected");
+    assert_eq!(
+        count_error.limit_kind(),
+        Some(LimitKind::RequestHeaderCount)
+    );
+
+    let bytes_error = request_client
+        .submit(
+            Request::get("http://example.invalid/")
+                .header("X-Long", "12345678")
+                .build()
+                .expect("request must build"),
+        )
+        .expect_err("oversized request headers must be rejected");
+    assert_eq!(
+        bytes_error.limit_kind(),
+        Some(LimitKind::RequestHeaderBytes)
+    );
+    request_engine.shutdown().expect("curl Engine must stop");
+
+    let server = LocalServer::start();
+    let body_engine = testing::curl_engine(EngineConfig::spawned().with_max_response_body_bytes(4))
+        .expect("curl Engine must construct");
+    let body = body_engine
+        .client()
+        .submit(
+            Request::get(server.url("/ok"))
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit")
+        .wait();
+    match body {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Limit);
+            assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+        }
+        other => panic!("expected response body limit failure, got {other:?}"),
+    }
+    body_engine.shutdown().expect("curl Engine must stop");
+
+    let header_engine = testing::curl_engine(EngineConfig::spawned().with_max_header_count(1))
+        .expect("curl Engine must construct");
+    let headers = header_engine
+        .client()
+        .submit(
+            Request::get(server.url("/ok"))
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit")
+        .wait();
+    match headers {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Limit);
+            assert_eq!(error.limit_kind(), Some(LimitKind::ResponseHeaderCount));
+        }
+        other => panic!("expected response header count failure, got {other:?}"),
+    }
+    header_engine.shutdown().expect("curl Engine must stop");
+
+    let header_bytes_engine =
+        testing::curl_engine(EngineConfig::spawned().with_max_header_bytes(16))
+            .expect("curl Engine must construct");
+    let headers = header_bytes_engine
+        .client()
+        .submit(
+            Request::get(server.url("/ok"))
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit")
+        .wait();
+    match headers {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Limit);
+            assert_eq!(error.limit_kind(), Some(LimitKind::ResponseHeaderBytes));
+        }
+        other => panic!("expected response header byte failure, got {other:?}"),
+    }
+    header_bytes_engine
+        .shutdown()
+        .expect("curl Engine must stop");
+}
+
+#[test]
+fn curl_inactivity_timeout_uses_subsecond_progress_semantics() {
+    let server = LocalServer::start();
+    let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
+    let pending = engine
+        .client()
+        .submit(
+            Request::get(server.url("/stall-body"))
+                .options(RequestOptions {
+                    inactivity_timeout: Some(Duration::from_millis(100)),
+                    total_timeout: Some(Duration::from_secs(2)),
+                    ..RequestOptions::default()
+                })
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit");
+    server.expect_event(ServerEvent::StalledBody);
+    let started = Instant::now();
+    match pending.wait() {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Inactivity));
+        }
+        other => panic!("expected inactivity timeout, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "subsecond inactivity timeout exceeded its bounded pilot resolution"
+    );
+    server.expect_event(ServerEvent::StalledBodyClosed);
+    engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
+fn curl_custom_method_body_does_not_invent_a_content_type() {
+    let server = LocalServer::start();
+    let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
+    let response = engine
+        .client()
+        .submit(
+            Request::builder(Method::Patch, server.url("/inspect-content-type"))
+                .body(b"payload".to_vec())
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit")
+        .wait();
+    let response = completion_response(response);
+    assert_eq!(response.body(), b"method=PATCH;content-type=false");
+    engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
+fn curl_header_budget_resets_for_each_informational_or_final_head() {
+    let server = LocalServer::start();
+    let engine = testing::curl_engine(EngineConfig::spawned().with_max_header_count(2))
+        .expect("curl Engine must construct");
+    let response = engine
+        .client()
+        .submit(
+            Request::get(server.url("/informational"))
+                .build()
+                .expect("request must build"),
+        )
+        .expect("request must submit")
+        .wait();
+    let response = completion_response(response);
+    assert_eq!(response.body(), b"final");
+    assert_eq!(response.headers().len(), 2);
+    assert!(
+        response
+            .headers()
+            .iter()
+            .all(|header| !header.name().eq_ignore_ascii_case("x-interim"))
+    );
+    engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
 fn busy_curl_poll_wakes_for_peer_submission_and_cancellation() {
     let server = LocalServer::start();
     let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
@@ -383,6 +591,7 @@ fn curl_total_timeout_and_shutdown_interrupt_stalled_body() {
         .submit(
             Request::get(server.url("/stall-headers"))
                 .options(RequestOptions {
+                    connect_timeout: Some(Duration::from_secs(1)),
                     total_timeout: Some(Duration::from_millis(100)),
                     ..RequestOptions::default()
                 })
@@ -392,7 +601,10 @@ fn curl_total_timeout_and_shutdown_interrupt_stalled_body() {
         .expect("timed request must submit");
     server.expect_event(ServerEvent::SlowHeaders);
     match timed.wait() {
-        Completion::Failed(error) => assert_eq!(error.kind(), ErrorKind::Timeout),
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        }
         other => panic!("expected timeout failure, got {other:?}"),
     }
     server.expect_event(ServerEvent::SlowHeadersClosed);
@@ -512,7 +724,7 @@ fn curl_runtime_capabilities_are_recordable() {
         version.vendored(),
     );
     assert!(version.version_num() >= 0x07_44_00);
-    if cfg!(feature = "curl-vendored") {
+    if cfg!(feature = "curl-pilot-vendored") {
         assert!(version.feature_ssl());
     }
     if std::env::var_os("NBREQ_EXPECT_DYNAMIC_CURL").is_some() {

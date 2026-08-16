@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
 use crate::backend::BackendFactory;
-use crate::backend::{Backend, BackendCompletion, PollMode, long_poll_deadline};
+use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
 use crate::registry::{RequestState, Shared};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
@@ -26,6 +27,9 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         shared: &Arc<Shared>,
         deadline: Instant,
     ) -> Result<DriveStatus, Error> {
+        if let Some(error) = shared.queue.take_external_wake_failure() {
+            return Err(error);
+        }
         let submissions = shared.queue.drain();
         let mut progressed = !submissions.is_empty();
         for submission in submissions {
@@ -33,7 +37,10 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
             if submission.state.is_terminal() {
                 continue;
             }
-            match self.backend.submit(id, submission.request) {
+            match self
+                .backend
+                .submit(id, submission.request, submission.accepted_at)
+            {
                 Some(completion) => {
                     shared.complete_state(&submission.state, completion);
                 }
@@ -45,6 +52,9 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
 
         progressed |= self.reap_cancelled();
         let completions = self.backend.poll(deadline)?;
+        if let Some(error) = shared.queue.take_external_wake_failure() {
+            return Err(error);
+        }
         progressed |= !completions.is_empty();
         self.commit_backend_completions(shared, completions);
         progressed |= self.reap_cancelled();
@@ -73,8 +83,14 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         self.backend.shutdown()
     }
 
-    fn can_wait_for_transport(&self) -> bool {
-        !self.active.is_empty() && self.backend.poll_mode() == PollMode::Interruptible
+    fn transport_wait(&self) -> Option<std::time::Duration> {
+        if self.active.is_empty() {
+            return None;
+        }
+        match self.backend.poll_mode() {
+            PollMode::CommandDriven => None,
+            PollMode::Interruptible { max_wait } => Some(max_wait),
+        }
     }
 
     fn reap_cancelled(&mut self) -> bool {
@@ -106,12 +122,21 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
 
 pub(crate) fn spawned_main<B: Backend + ?Sized>(
     shared: Arc<Shared>,
+    reactor: ReactorCore<B>,
+) -> Result<(), ShutdownError> {
+    contain_reactor_panic(Arc::clone(&shared), move || {
+        spawned_main_inner(shared, reactor)
+    })
+}
+
+fn spawned_main_inner<B: Backend + ?Sized>(
+    shared: Arc<Shared>,
     mut reactor: ReactorCore<B>,
 ) -> Result<(), ShutdownError> {
     let mut seen_generation = 0;
     loop {
-        let deadline = if reactor.can_wait_for_transport() {
-            long_poll_deadline()
+        let deadline = if let Some(max_wait) = reactor.transport_wait() {
+            interruptible_poll_deadline(max_wait)
         } else {
             shared
                 .queue
@@ -136,17 +161,33 @@ pub(crate) fn spawned_main<B: Backend + ?Sized>(
     }
 }
 
-#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
 pub(crate) fn spawned_main_factory(
     shared: Arc<Shared>,
     factory: Box<dyn BackendFactory>,
 ) -> Result<(), ShutdownError> {
-    match factory.create(&shared) {
-        Ok(backend) => spawned_main(shared, ReactorCore::new(backend)),
+    contain_reactor_panic(Arc::clone(&shared), move || match factory.create(&shared) {
+        Ok(backend) => spawned_main_inner(shared, ReactorCore::new(backend)),
         Err(error) => {
             shared.fail_all(error.clone());
             shared.mark_stopped();
             Err(ShutdownError::new(error))
+        }
+    })
+}
+
+fn contain_reactor_panic(
+    shared: Arc<Shared>,
+    operation: impl FnOnce() -> Result<(), ShutdownError>,
+) -> Result<(), ShutdownError> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(_panic) => {
+            shared.queue.set_external_waker(None);
+            let shutdown = reactor_panicked();
+            shared.fail_all(shutdown.error().clone());
+            shared.mark_stopped();
+            Err(shutdown)
         }
     }
 }

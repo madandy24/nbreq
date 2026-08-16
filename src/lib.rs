@@ -17,7 +17,7 @@ mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-#[cfg(all(test, feature = "curl"))]
+#[cfg(all(test, feature = "curl-pilot"))]
 mod curl_tests;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -27,6 +27,6 @@ pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcom
 pub use engine::{Engine, EngineBuilder};
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,
-    Header, Method, Request, RequestBuilder, RequestId, RequestOptions, Response, RunMode,
-    ShutdownError, TlsVerification,
+    Header, LimitKind, Method, Request, RequestBuilder, RequestId, RequestOptions, Response,
+    RunMode, ShutdownError, TimeoutKind, TlsVerification, TransportStage,
 };

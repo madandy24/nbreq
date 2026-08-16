@@ -23,7 +23,7 @@ $env:VCPKGRS_DYNAMIC = '1'
 $env:CARGO_TARGET_DIR = Join-Path $workspace 'target\curl-pilot\rust-dynamic'
 $env:PATH = "$runtimeBin;$env:PATH"
 $env:NBREQ_EXPECT_DYNAMIC_CURL = '1'
-& cargo test --features curl 'curl_' -- --nocapture
+& cargo test --features curl-pilot 'curl_' -- --nocapture
 if ($LASTEXITCODE -ne 0) {
     throw "dynamic curl test suite failed with exit code $LASTEXITCODE"
 }

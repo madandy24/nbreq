@@ -8,7 +8,9 @@ progress for controlled connect/DNS proof, Windows 10, Ubuntu 20.04/Wine, and na
 - One private curl `Multi` and all easy handles live on the spawned Engine reactor thread. Curl
   handle types do not cross the backend boundary and manual curl remains unsupported.
 - The command queue holds curl's thread-safe `MultiWaker`. Submit, cancel, cancel-all, and shutdown
-  wake `curl_multi_poll` directly; periodic polling is not the correctness mechanism.
+  wake `curl_multi_poll` directly. The hardening seam additionally latches wake failure and uses a
+  short bounded safety poll so a failed wake cannot turn the old 24-hour proving deadline into an
+  indefinite stall; periodic polling is not the normal latency mechanism.
 - Cancellation commits the canonical `Cancelled` result first, then removes the easy handle on its
   owner thread. Local server EOF proves network ownership was actually released.
 - Curl header/write callbacks collect owned data only. User callbacks remain in the WP1 dispatcher
@@ -63,9 +65,11 @@ package before GDS deployment.
 ## Loader and shutdown decision
 
 Upstream Rust `curl` 0.4.50 invokes `curl_global_init()` from a Windows CRT constructor. That is not
-acceptable in a DLL under loader lock. The pinned local fork adds only `nbreq-explicit-init`, which
-disables the constructor. NBReq explicitly calls `curl::init()` when its spawned reactor constructs
-the curl backend, on an ordinary thread after an exported API call.
+acceptable in a DLL under loader lock. The pinned local fork adds `nbreq-explicit-init`, which
+disables the constructor, plus a fallible `curl::try_init()` extension. NBReq calls that extension
+when its spawned reactor constructs the curl backend, on an ordinary thread after an exported API
+call. The first initialization result is retained without a poisonable `Once`, so failure becomes
+an Engine error rather than a repeated reactor panic.
 
 The binding deliberately never calls `curl_global_cleanup()` because it cannot prove that all
 process threads are safe for global cleanup. Consequently, **the curl-backed GDS pilot does not
@@ -87,14 +91,40 @@ individual cancellation, and Engine shutdown tests. On the recorded machine:
 
 - command submission woke a reactor already blocked in curl Multi and completed its peer request;
 - individual cancellation did not harm the peer transfer;
-- 10 slow-header cancellation trials had a maximum observed socket-release latency of 3.8892 ms;
-- 10 stalled-body cancellation trials had a maximum observed socket-release latency of 3.0735 ms;
+- 10 slow-header cancellation trials had a latest maximum observed socket-release latency of 1.6264 ms;
+- 10 stalled-body cancellation trials had a latest maximum observed socket-release latency of 3.3578 ms;
 - the provisional supported-platform gate is **less than 100 ms** from cancellation request to the
   controlled peer observing socket closure.
 
 The 100 ms value is provisional until the same named-stage tests run on every supported target.
 Waiter notification is earlier than socket release because WP1 commits terminal state synchronously;
 the measurement above intentionally covers backend teardown as well.
+
+## Hardening seam completed
+
+The post-slice review was applied before consumer API work:
+
+- Configurable defaults now bound buffered request/response bodies at 16 MiB, request/response
+  header storage at 64 KiB, and header fields at 256. Limits are checked before buffer extension and
+  return backend-neutral `LimitKind` detail.
+- The spawned reactor and backend factory are unwind-contained. A panic drops backend objects on
+  the reactor thread, fails every accepted request with the canonical internal failure, wakes
+  waiters/callbacks, and remains observable at Engine shutdown.
+- `MultiWaker` failure is retained as a fatal Engine error. The curl backend advertises a 50 ms
+  safety wait, so the reactor discovers a failed wake and checks inactivity without imposing that
+  fixed cadence on the native destination or making periodic polling the ordinary latency path.
+- Inactivity is measured by NBReq's monotonic useful-I/O progress clock rather than curl's
+  whole-second average-low-speed option. A 100 ms stalled-body case passes against both the ordinary
+  and exact pinned dynamic builds.
+- Errors carry portable timeout, transport-stage, and resource-limit detail without exposing curl
+  codes. The finer DNS/connect/TLS fixture campaign remains below.
+- Body-bearing custom methods suppress curl's invented form content type unless the caller supplied
+  one. The private feature is named `curl-pilot`, avoiding any suggestion that it is a downstream
+  production backend selection.
+- The pinned binding exposes fallible once-recorded global initialization; init failure is an
+  Engine error rather than a poisonable process-wide panic path.
+- Each informational or final response head receives the configured header byte/count budget
+  independently; an intermediate `100 Continue` cannot consume the final response's allowance.
 
 ## Remaining WP2 gates
 

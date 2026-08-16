@@ -28,7 +28,15 @@ pub struct EngineConfig {
     callback_dispatch: CallbackDispatch,
     command_queue_capacity: NonZeroUsize,
     callback_queue_capacity: NonZeroUsize,
+    max_request_body_bytes: usize,
+    max_response_body_bytes: usize,
+    max_header_bytes: usize,
+    max_header_count: usize,
 }
+
+const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const DEFAULT_HEADER_BYTES_LIMIT: usize = 64 * 1024;
+const DEFAULT_HEADER_COUNT_LIMIT: usize = 256;
 
 impl EngineConfig {
     /// Returns the convenient default: an owned reactor and one callback worker.
@@ -39,6 +47,10 @@ impl EngineConfig {
             callback_dispatch: CallbackDispatch::Workers(nonzero(1)),
             command_queue_capacity: nonzero(1_024),
             callback_queue_capacity: nonzero(1_024),
+            max_request_body_bytes: DEFAULT_BODY_LIMIT,
+            max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
+            max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
         }
     }
 
@@ -50,6 +62,10 @@ impl EngineConfig {
             callback_dispatch: CallbackDispatch::Inline,
             command_queue_capacity: nonzero(1_024),
             callback_queue_capacity: nonzero(1_024),
+            max_request_body_bytes: DEFAULT_BODY_LIMIT,
+            max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
+            max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
         }
     }
 
@@ -71,6 +87,34 @@ impl EngineConfig {
     #[must_use]
     pub fn with_callback_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.callback_queue_capacity = capacity;
+        self
+    }
+
+    /// Selects the maximum buffered request-body size. Zero permits only empty bodies.
+    #[must_use]
+    pub fn with_max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_request_body_bytes = bytes;
+        self
+    }
+
+    /// Selects the maximum buffered response-body size. Zero permits only empty bodies.
+    #[must_use]
+    pub fn with_max_response_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_response_body_bytes = bytes;
+        self
+    }
+
+    /// Selects the maximum cumulative bytes in one request or response head.
+    #[must_use]
+    pub fn with_max_header_bytes(mut self, bytes: usize) -> Self {
+        self.max_header_bytes = bytes;
+        self
+    }
+
+    /// Selects the maximum number of fields in one request or response head.
+    #[must_use]
+    pub fn with_max_header_count(mut self, count: usize) -> Self {
+        self.max_header_count = count;
         self
     }
 
@@ -96,6 +140,30 @@ impl EngineConfig {
     #[must_use]
     pub fn callback_queue_capacity(&self) -> NonZeroUsize {
         self.callback_queue_capacity
+    }
+
+    /// Returns the maximum buffered request-body size.
+    #[must_use]
+    pub fn max_request_body_bytes(&self) -> usize {
+        self.max_request_body_bytes
+    }
+
+    /// Returns the maximum buffered response-body size.
+    #[must_use]
+    pub fn max_response_body_bytes(&self) -> usize {
+        self.max_response_body_bytes
+    }
+
+    /// Returns the maximum cumulative request/response header bytes.
+    #[must_use]
+    pub fn max_header_bytes(&self) -> usize {
+        self.max_header_bytes
+    }
+
+    /// Returns the maximum request/response header field count.
+    #[must_use]
+    pub fn max_header_count(&self) -> usize {
+        self.max_header_count
     }
 }
 
@@ -192,7 +260,7 @@ pub enum TlsVerification {
 pub struct RequestOptions {
     /// Maximum time allowed to establish a connection.
     pub connect_timeout: Option<Duration>,
-    /// Maximum time allowed without useful I/O progress.
+    /// Maximum time allowed without useful I/O progress across resolution, connection, and transfer.
     pub inactivity_timeout: Option<Duration>,
     /// Maximum total request duration.
     pub total_timeout: Option<Duration>,
@@ -283,7 +351,7 @@ impl Request {
         &self.options
     }
 
-    #[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
     pub(crate) fn redirected(
         &self,
         url: String,
@@ -441,6 +509,8 @@ pub enum ErrorKind {
     InvalidRequest,
     /// The configured bounded admission or command capacity is exhausted.
     QueueFull,
+    /// A configured request, response, or protocol resource limit was exceeded.
+    Limit,
     /// No production backend implements the operation yet.
     BackendUnavailable,
     /// The selected backend cannot represent the requested portable feature.
@@ -455,11 +525,64 @@ pub enum ErrorKind {
     Internal,
 }
 
+/// Portable timeout category attached to a timeout [`Error`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TimeoutKind {
+    /// Connection establishment, including name resolution where the backend combines them.
+    Connect,
+    /// No useful request or response I/O progress occurred for the configured duration.
+    Inactivity,
+    /// The total request deadline expired.
+    Total,
+    /// The backend reported a timeout but did not provide enough stage evidence to classify it.
+    Unknown,
+}
+
+/// Portable transport stage attached to a transport [`Error`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TransportStage {
+    /// Hostname or proxy-name resolution.
+    Dns,
+    /// TCP connection establishment.
+    Connect,
+    /// TLS configuration or handshake.
+    Tls,
+    /// Request transmission.
+    Send,
+    /// Response reception.
+    Receive,
+    /// HTTP response recognition or framing.
+    Http,
+}
+
+/// Portable resource category attached to a limit [`Error`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum LimitKind {
+    /// Buffered request body bytes.
+    RequestBodyBytes,
+    /// Request header bytes.
+    RequestHeaderBytes,
+    /// Request header field count.
+    RequestHeaderCount,
+    /// Buffered response body bytes.
+    ResponseBodyBytes,
+    /// Response header bytes.
+    ResponseHeaderBytes,
+    /// Response header field count.
+    ResponseHeaderCount,
+}
+
 /// A backend-neutral NBReq error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
     kind: ErrorKind,
     message: String,
+    timeout_kind: Option<TimeoutKind>,
+    transport_stage: Option<TransportStage>,
+    limit_kind: Option<LimitKind>,
 }
 
 impl Error {
@@ -467,7 +590,30 @@ impl Error {
         Self {
             kind,
             message: message.into(),
+            timeout_kind: None,
+            transport_stage: None,
+            limit_kind: None,
         }
+    }
+
+    #[allow(dead_code)] // Used by real transports; the dependency-free scaffold has no timeout.
+    pub(crate) fn timeout(kind: TimeoutKind, message: impl Into<String>) -> Self {
+        let mut error = Self::new(ErrorKind::Timeout, message);
+        error.timeout_kind = Some(kind);
+        error
+    }
+
+    #[allow(dead_code)] // Used by real transports; the dependency-free scaffold has no transport.
+    pub(crate) fn transport(stage: TransportStage, message: impl Into<String>) -> Self {
+        let mut error = Self::new(ErrorKind::Transport, message);
+        error.transport_stage = Some(stage);
+        error
+    }
+
+    pub(crate) fn limit(kind: LimitKind, message: impl Into<String>) -> Self {
+        let mut error = Self::new(ErrorKind::Limit, message);
+        error.limit_kind = Some(kind);
+        error
     }
 
     /// Returns the stable high-level classification.
@@ -480,6 +626,24 @@ impl Error {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns the portable timeout category when this is a timeout error.
+    #[must_use]
+    pub fn timeout_kind(&self) -> Option<TimeoutKind> {
+        self.timeout_kind
+    }
+
+    /// Returns the portable transport stage when one is known.
+    #[must_use]
+    pub fn transport_stage(&self) -> Option<TransportStage> {
+        self.transport_stage
+    }
+
+    /// Returns the violated portable resource limit when this is a limit error.
+    #[must_use]
+    pub fn limit_kind(&self) -> Option<LimitKind> {
+        self.limit_kind
     }
 }
 

@@ -293,7 +293,7 @@ Requirements:
 - Cancellation before backend admission still produces the defined terminal outcome.
 - Completion racing cancellation has one winner. The loser observes the existing terminal state and does nothing.
 - The backend-independent request registry arbitrates that winner and wakes direct waiters synchronously. A winning cancellation then wakes the reactor so backend resource teardown follows; terminal notification does not falsely claim that a remote peer never observed the operation.
-- Cancellation submission wakes the Engine immediately; a long periodic polling interval is never the correctness mechanism. WP2 must measure and set an explicit supported-platform latency gate before the curl/GDS milestone rather than allowing “prompt” to remain subjective.
+- Cancellation submission wakes the Engine immediately; a long periodic polling interval is never the normal correctness mechanism. An interruptible backend must also have a short bounded safety wait so a failed external wake cannot strand the reactor indefinitely. Wake failure is latched as an Engine failure rather than silently ignored. WP2 must measure and set an explicit supported-platform latency gate before the curl/GDS milestone rather than allowing “prompt” to remain subjective.
 - In manual mode, cancelling a submission that has not yet been drained makes the request terminal but does not remove its queued command. Command-queue capacity may therefore continue to report `QueueFull` until the host calls `drive()`; cancellation does not secretly drive a manual Engine.
 - `cancel_and_wait()` returns only once the request is terminal and its network resources are no longer owned by active engine work.
 - `Engine::cancel_all()` affects requests accepted before its cancellation barrier and leaves the Engine running. Its treatment of simultaneously submitted requests must be deterministic.
@@ -426,6 +426,8 @@ The portable curl/native contract initially exposes three monotonic time control
 
 Timeout is a failure, distinct from cancellation. A timeout error identifies the portable category that expired.
 
+The public inactivity timeout means elapsed monotonic time without useful I/O progress across resolution, connection establishment, request send, or response receive; it is not defined as an average transfer-rate threshold. It can therefore expire during slow DNS/connect even when a separate connect timeout is longer. A backend that cannot represent this meaning and duration honestly must reject the option or document a deliberately narrower pilot capability. The curl pilot may use private progress callbacks and bounded reactor passes to implement the clock, but must not expose `CURLOPT_LOW_SPEED_TIME` rounding or low-speed semantics as though they were the portable contract.
+
 The native destination may eventually distinguish:
 
 - queue timeout;
@@ -509,7 +511,9 @@ Initial native milestones may disable reuse until single-request correctness is 
 
 Buffered request and response bodies are required because they cover current GDS JSON, text, and form calls simply.
 
-Proposed defaults and hard maxima must be decided for:
+The buffered pilot starts with conservative configurable Engine limits: 16 MiB request bodies, 16 MiB response bodies, 64 KiB of request or response header bytes, and 256 request or response header fields. These are safety defaults rather than permanent product tuning; the GDS audit may justify smaller defaults before release. Limits are checked before extending owned buffers and produce a specific limit failure.
+
+Defaults and hard maxima must remain deliberate for:
 
 - request body size;
 - response body size;
@@ -547,6 +551,8 @@ Cancellation is preferably a distinct terminal result rather than an error class
 
 Errors may retain backend-specific diagnostic sources for logs and debugging, but callers must not need to match curl error numbers. Error display must redact credentials and sensitive headers.
 
+The initial stable shape keeps a broad `ErrorKind` while attaching backend-neutral detail where it is meaningful: timeout category, transport stage, and violated resource limit. Curl codes remain diagnostic inputs only. WP3 completes the mapping and tests it against controlled DNS, connect, TLS, send, receive, malformed-response, timeout, and oversize cases before the API is described as consumer-ready.
+
 ## 20. Backend contract and migration
 
 The curl backend is a stepping stone and reference implementation:
@@ -573,6 +579,8 @@ The curl backend uses an explicit compatibility profile rather than inheriting w
 - inspect/report relevant runtime curl capabilities and resolver behaviour;
 - prove bounded wakeup, cancellation, resolver cleanup, and Engine shutdown for the exact packaged curl build.
 
+The curl backend may retain private pilot constraints where libcurl cannot exactly model the native destination. Such a constraint must be explicit, tested where practical, and absent from backend-neutral public types. It may not silently redefine cancellation, timeout, limits, errors, ownership, or shutdown. Removing the curl backend later must require only backend construction/packaging changes, not a consumer lifecycle rewrite.
+
 The working conservative redirect table is:
 
 | Status | GET | HEAD | POST | Other methods |
@@ -583,7 +591,7 @@ The working conservative redirect table is:
 
 All automatic redirects have a small configured hop limit. HTTPS-to-HTTP downgrade is blocked by default. `Authorization` and other origin-bound credentials are stripped whenever scheme, host, or effective port changes. A redirect requiring replay of a non-replayable body fails explicitly rather than sending a partial or altered request. This is the accepted portable default; curl/native implementations may not choose independently. Any future browser-compatible or application-specific behaviour must be an explicit opt-in policy.
 
-Curl-global initialization is process/module state, an explicit exception to per-Engine isolation. The upstream Rust `curl` crate normally initializes from a platform constructor, which is loader-sensitive in a Windows DLL. The pinned pilot binding disables that constructor and calls its once-guarded `curl::init()` explicitly when the spawned reactor constructs the backend, outside `DllMain`. Global cleanup is deliberately not scheduled because the binding cannot prove the surrounding process thread state. Engines therefore never call `curl_global_cleanup()` independently or maintain a misleading per-Engine cleanup reference count. The exact pinned crate, local patch, and packaged libcurl behaviour must be recorded.
+Curl-global initialization is process/module state, an explicit exception to per-Engine isolation. The upstream Rust `curl` crate normally initializes from a platform constructor, which is loader-sensitive in a Windows DLL. The pinned pilot binding disables that constructor and adds a fallible, once-recorded `curl::try_init()` used when the spawned reactor constructs the backend outside `DllMain`; initialization failure becomes an Engine error rather than poisoning a `Once` and repeatedly panicking. Global cleanup is deliberately not scheduled because the binding cannot prove the surrounding process thread state. Engines therefore never call `curl_global_cleanup()` independently or maintain a misleading per-Engine cleanup reference count. The exact pinned crate, local patch, and packaged libcurl behaviour must be recorded.
 
 Detached callback domains contain no curl handles, resolver work, TLS state, or backend-owned values and therefore do not extend curl backend lifetime. Before a curl Engine reports its network side stopped, every easy/multi handle and any resolver activity from that Engine must be gone.
 

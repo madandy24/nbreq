@@ -58,7 +58,7 @@
 
 use std::ffi::CStr;
 use std::str;
-use std::sync::Once;
+use std::sync::OnceLock;
 
 pub use crate::error::{Error, FormError, MultiError, ShareError};
 mod error;
@@ -90,17 +90,27 @@ static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// Calling this function more than once is harmless and has no effect.
 #[inline]
 pub fn init() {
-    /// Used to prevent concurrent or duplicate initialization.
-    static INIT: Once = Once::new();
+    try_init().expect("failed to initialize libcurl");
+}
 
-    INIT.call_once(|| {
+/// Fallibly initializes the underlying libcurl library.
+///
+/// This NBReq-local extension records initialization failure without poisoning a `Once`, allowing
+/// the embedding library to turn a global initialization failure into an ordinary Engine error.
+#[inline]
+pub fn try_init() -> Result<(), Error> {
+    /// Used to prevent concurrent or duplicate initialization while retaining the first result.
+    static INIT: OnceLock<Result<(), Error>> = OnceLock::new();
+
+    INIT.get_or_init(|| {
         #[cfg(need_openssl_init)]
         openssl_probe::init_ssl_cert_env_vars();
         #[cfg(need_openssl_init)]
         openssl_sys::init();
 
-        unsafe {
-            assert_eq!(curl_sys::curl_global_init(curl_sys::CURL_GLOBAL_ALL), 0);
+        let result = unsafe { curl_sys::curl_global_init(curl_sys::CURL_GLOBAL_ALL) };
+        if result != 0 {
+            return Err(Error::new(result));
         }
 
         #[cfg(test)]
@@ -117,7 +127,9 @@ pub fn init() {
         //
         // We can't ever be sure of that, so unfortunately we can't call the
         // function.
-    });
+        Ok(())
+    })
+    .clone()
 }
 
 /// An exported constructor function. On supported platforms, this will be

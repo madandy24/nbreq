@@ -28,6 +28,6 @@ These scripts use the installed Visual Studio C++ tools, download and hash-check
 curl source, and place all generated artifacts under `target/curl-pilot`. They do not require a
 global curl or vcpkg installation.
 
-Backend implementation types stay private. Public request, response, lifecycle, cancellation, and error types must compile identically with no backend feature, `curl`, `native`, and both backend features enabled.
+Backend implementation types stay private. Public request, response, lifecycle, cancellation, and error types must compile identically with no backend feature, private `curl-pilot`, `native`, and both backend features enabled.
 
 New dependencies require a recorded reason, supported-platform review, license review, and confirmation that they do not introduce an async runtime or leak backend-specific types into the public API.
