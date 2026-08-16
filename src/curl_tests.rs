@@ -14,8 +14,8 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
 use crate::testing;
 use crate::{
-    Completion, EngineConfig, ErrorKind, LimitKind, Method, Request, RequestOptions, TimeoutKind,
-    TlsVerification, TransportStage,
+    Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Method, Request, RequestOptions,
+    TimeoutKind, TlsVerification, TransportStage,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,7 +84,10 @@ impl Drop for TlsHandshakeStallServer {
             let _wake_listener = TcpStream::connect(self.address);
         }
         if let Some(listener) = self.listener.take() {
-            listener.join().expect("TLS stall listener must join");
+            let joined = listener.join();
+            if !thread::panicking() {
+                joined.expect("TLS stall listener must join");
+            }
         }
     }
 }
@@ -293,7 +296,10 @@ impl Drop for TlsServer {
         self.stopping.store(true, Ordering::Release);
         let _wake_listener = TcpStream::connect(self.address);
         if let Some(listener) = self.listener.take() {
-            listener.join().expect("TLS test listener must join");
+            let joined = listener.join();
+            if !thread::panicking() {
+                joined.expect("TLS test listener must join");
+            }
         }
     }
 }
@@ -545,7 +551,7 @@ fn assert_tls_failure(completion: Completion) {
 #[test]
 fn curl_multi_runs_concurrent_get_status_and_post_requests() {
     let server = LocalServer::start();
-    let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
+    let engine = crate::Engine::new(EngineConfig::spawned()).expect("curl Engine must construct");
     let client = engine.client();
     let ok = client
         .submit(
@@ -583,6 +589,144 @@ fn curl_multi_runs_concurrent_get_status_and_post_requests() {
     assert_eq!(echo.status(), 200);
     assert_eq!(echo.body(), b"hello from HTTP arse");
     engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
+fn public_engine_constructor_serves_callback_and_blocking_callers_over_curl() {
+    let server = LocalServer::start();
+    let engine = crate::Engine::builder()
+        .build()
+        .expect("public curl Engine must construct");
+    let client = engine.client();
+    let (callback_tx, callback_rx) = mpsc::channel();
+    let handle = client
+        .start(
+            Request::get(server.url("/ok"))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("callback request must build"),
+            move |completion| {
+                callback_tx
+                    .send(completion)
+                    .expect("callback receiver must remain");
+            },
+        )
+        .expect("callback request must start");
+
+    let missing = client
+        .execute(
+            Request::get(server.url("/not-found"))
+                .connect_timeout(Duration::from_secs(1))
+                .inactivity_timeout(Duration::from_secs(1))
+                .redirect_limit(0)
+                .build()
+                .expect("blocking request must build"),
+        )
+        .expect("HTTP error status must remain a successful response");
+    assert_eq!(missing.status(), 404);
+
+    let callback = callback_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("callback completion must arrive");
+    let response = completion_response(callback);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"hello");
+    handle
+        .cancel()
+        .expect("late same-request cancellation must be harmless");
+    engine.shutdown().expect("public curl Engine must stop");
+}
+
+#[test]
+fn callback_and_blocking_forms_share_limit_and_timeout_semantics() {
+    let server = LocalServer::start();
+    let limit_engine = crate::Engine::builder()
+        .max_response_body_bytes(4)
+        .build()
+        .expect("limited Engine must construct");
+    let client = limit_engine.client();
+    let (limit_tx, limit_rx) = mpsc::channel();
+    client
+        .start(
+            Request::get(server.url("/ok"))
+                .build()
+                .expect("callback limit request must build"),
+            move |completion| {
+                limit_tx
+                    .send(completion)
+                    .expect("limit receiver must remain");
+            },
+        )
+        .expect("callback limit request must start");
+    match limit_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("callback limit result must arrive")
+    {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Limit);
+            assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+        }
+        other => panic!("expected callback limit failure, got {other:?}"),
+    }
+    match client
+        .execute(
+            Request::get(server.url("/ok"))
+                .build()
+                .expect("blocking limit request must build"),
+        )
+        .expect_err("blocking response limit must fail")
+    {
+        ExecuteError::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Limit);
+            assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+        }
+        other => panic!("expected blocking limit failure, got {other:?}"),
+    }
+    limit_engine.shutdown().expect("limited Engine must stop");
+
+    let timeout_engine =
+        crate::Engine::new(EngineConfig::spawned()).expect("timeout Engine must construct");
+    let client = timeout_engine.client();
+    let (timeout_tx, timeout_rx) = mpsc::channel();
+    client
+        .start(
+            Request::get(server.url("/stall-body"))
+                .total_timeout(Duration::from_millis(100))
+                .build()
+                .expect("callback timeout request must build"),
+            move |completion| {
+                timeout_tx
+                    .send(completion)
+                    .expect("timeout receiver must remain");
+            },
+        )
+        .expect("callback timeout request must start");
+    match timeout_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("callback timeout result must arrive")
+    {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        }
+        other => panic!("expected callback timeout failure, got {other:?}"),
+    }
+    match client
+        .execute(
+            Request::get(server.url("/stall-body"))
+                .total_timeout(Duration::from_millis(100))
+                .build()
+                .expect("blocking timeout request must build"),
+        )
+        .expect_err("blocking total timeout must fail")
+    {
+        ExecuteError::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        }
+        other => panic!("expected blocking timeout failure, got {other:?}"),
+    }
+    timeout_engine.shutdown().expect("timeout Engine must stop");
 }
 
 #[test]

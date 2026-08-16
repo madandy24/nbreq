@@ -87,12 +87,18 @@ impl CallbackDomain {
             return false;
         }
         if state.queue.len() == self.capacity {
-            let progress = state
+            if let Some(progress) = state
                 .queue
                 .iter()
                 .position(|queued| queued.kind == CallbackKind::Progress)
-                .expect("terminal callback capacity invariant was violated");
-            state.queue.remove(progress);
+            {
+                state.queue.remove(progress);
+            }
+            // Public admission holds one permit through terminal callback return and is capped at
+            // this queue's capacity, so a full terminal-only queue is unreachable through the API.
+            // If an internal bug violates that invariant, preserve the terminal event rather than
+            // panicking or silently discarding it; the queue may exceed its configured bound only
+            // on that defensive bug path.
         }
         state.queue.push_back(job);
         self.changed.notify_all();
@@ -517,5 +523,26 @@ mod tests {
             panic!("sealed callback must not run");
         })));
         owner.finish().expect("sealed dispatcher must finish");
+    }
+
+    #[test]
+    fn terminal_only_overflow_is_preserved_without_panicking_or_discarding() {
+        let domain = CallbackDomain::new(1, 1);
+        let (first_tx, first_rx) = mpsc::channel();
+        let (second_tx, second_rx) = mpsc::channel();
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(1), move || {
+            first_tx.send(()).expect("first receiver must remain");
+        })));
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(2), move || {
+            second_tx.send(()).expect("second receiver must remain");
+        })));
+
+        domain.drain_inline();
+        first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first terminal callback must run");
+        second_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("overflow terminal callback must run");
     }
 }

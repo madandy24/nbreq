@@ -1,8 +1,58 @@
 # NBReq
 
-NBReq is a planned Rust HTTP client for programs that need concurrent network access, prompt cancellation, deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async runtime.
+NBReq is a Rust HTTP client for programs that need concurrent network access, prompt cancellation,
+deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async
+runtime.
 
-The architecture contract, WP0 crate skeleton, and WP1 backend-independent lifecycle kernel are complete. WP2 now has a hardened private libcurl Multi transport vertical slice and a pinned Windows Schannel DLL build; cross-platform, DNS/connect, TLS-fixture, and exact GDS packaging gates remain before WP2 closes.
+The architecture contract and backend-independent lifecycle kernel are complete. The feature-gated
+curl Multi pilot now provides the first consumer-usable spawned backend while the Rust-native
+replacement is developed behind the same Engine/Client contract.
+
+## Curl pilot use
+
+Enable the `curl-pilot` feature, construct one independently owned Engine, and issue cheap cloneable
+Clients from it. The feature changes only the private backend selected by `Engine::new`; no curl type
+enters application code.
+
+```rust
+use std::time::Duration;
+
+use nbreq::{Completion, Engine, EngineConfig, Request};
+
+let engine = Engine::new(EngineConfig::spawned())?;
+let client = engine.client();
+
+let callback_handle = client.start(
+    Request::get("https://example.com/")
+        .total_timeout(Duration::from_secs(10))
+        .build()?,
+    |completion| match completion {
+        Completion::Completed(response) => println!("status {}", response.status()),
+        Completion::Failed(error) => eprintln!("request failed: {error}"),
+        Completion::Cancelled => eprintln!("request cancelled"),
+    },
+)?;
+
+let response = client.execute(
+    Request::get("https://example.com/")
+        .connect_timeout(Duration::from_secs(5))
+        .build()?,
+)?;
+
+// HTTP 4xx/5xx are responses. Transport/policy failures are errors.
+println!("{} bytes", response.body().len());
+callback_handle.cancel()?; // harmless if the callback request already completed
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The curl pilot is spawned-only. Pilot deployments should configure finite connect/total deadlines;
+the backend deliberately makes no prompt connect/DNS teardown claim, and the native replacement
+retains that stronger proof obligation.
+Curl-backed modules and the pinned curl DLL remain loaded until process exit.
+Responses are buffered; HTTP error status codes remain responses, and portable trailer exposure is
+not yet defined. Cancellation stops local work but cannot undo a request already acted upon by the
+remote server.
 
 ## Project documents
 
@@ -11,4 +61,6 @@ The architecture contract, WP0 crate skeleton, and WP1 backend-independent lifec
 - [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
 
-The ordinary public constructor still uses the deterministic non-networking scaffold. The curl backend is deliberately exposed only through the private `curl-pilot` feature plus opt-in test support while its proof work is unfinished; experimental backend types do not enter the public API.
+Without a transport feature, the ordinary constructor retains the deterministic non-networking
+scaffold used to test the public lifecycle contract. `test-support` exposes deterministic controls
+for downstream conformance tests; it is not needed by curl-pilot consumers.

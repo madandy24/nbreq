@@ -21,6 +21,7 @@ use curl::multi::{Easy2Handle, Multi};
 
 use super::{Backend, BackendCompletion, BackendFactory, PollMode, ResponseLimits};
 use crate::registry::Shared;
+use crate::types::http_origin;
 use crate::{
     Completion, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId, Response,
     ShutdownError, TimeoutKind, TlsVerification, TransportStage,
@@ -625,23 +626,7 @@ fn configured_easy(
 }
 
 fn validate_request(request: &Request) -> Result<(), Error> {
-    http_origin(request.url(), ErrorKind::InvalidRequest)?;
-    for header in request.headers() {
-        if header.name().is_empty()
-            || header
-                .name()
-                .bytes()
-                .any(|byte| byte == b':' || byte <= 0x20 || byte >= 0x7f)
-            || header.value().contains(&b'\r')
-            || header.value().contains(&b'\n')
-        {
-            return Err(Error::new(
-                ErrorKind::InvalidRequest,
-                "request contains an invalid HTTP header",
-            ));
-        }
-    }
-    Ok(())
+    request.validate()
 }
 
 fn remaining_total_timeout(
@@ -710,79 +695,6 @@ fn redirect_request(
         keep_body,
         cross_origin,
     )))
-}
-
-#[derive(Eq, PartialEq)]
-struct HttpOrigin {
-    scheme: String,
-    host: String,
-    port: u16,
-}
-
-fn http_origin(url: &str, error_kind: ErrorKind) -> Result<HttpOrigin, Error> {
-    let Some((scheme, remainder)) = url.split_once("://") else {
-        return Err(Error::new(error_kind, "HTTP URL has no scheme separator"));
-    };
-    let scheme = scheme.to_ascii_lowercase();
-    let default_port = match scheme.as_str() {
-        "http" => 80,
-        "https" => 443,
-        _ => {
-            return Err(Error::new(
-                error_kind,
-                "NBReq's curl profile permits only HTTP and HTTPS URLs",
-            ));
-        }
-    };
-    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
-    let authority = &remainder[..authority_end];
-    if authority.is_empty() || authority.contains('@') {
-        return Err(Error::new(
-            error_kind,
-            "HTTP URL authority is empty or contains embedded credentials",
-        ));
-    }
-
-    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-        let Some(closing) = bracketed.find(']') else {
-            return Err(Error::new(error_kind, "HTTP URL has an invalid IPv6 host"));
-        };
-        let host = &bracketed[..closing];
-        let suffix = &bracketed[closing + 1..];
-        let port = if suffix.is_empty() {
-            default_port
-        } else if let Some(port) = suffix.strip_prefix(':') {
-            parse_port(port, error_kind)?
-        } else {
-            return Err(Error::new(error_kind, "HTTP URL has an invalid authority"));
-        };
-        (host, port)
-    } else if let Some((host, port)) = authority.rsplit_once(':') {
-        if host.contains(':') {
-            return Err(Error::new(
-                error_kind,
-                "an IPv6 URL host must be enclosed in brackets",
-            ));
-        }
-        (host, parse_port(port, error_kind)?)
-    } else {
-        (authority, default_port)
-    };
-    if host.is_empty() {
-        return Err(Error::new(error_kind, "HTTP URL host is empty"));
-    }
-    Ok(HttpOrigin {
-        scheme,
-        host: host.to_ascii_lowercase(),
-        port,
-    })
-}
-
-fn parse_port(port: &str, error_kind: ErrorKind) -> Result<u16, Error> {
-    port.parse::<u16>()
-        .ok()
-        .filter(|port| *port != 0)
-        .ok_or_else(|| Error::new(error_kind, "HTTP URL port is invalid"))
 }
 
 fn completed_response(easy: &Easy2<ResponseCollector>) -> Result<Response, Error> {

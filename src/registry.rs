@@ -236,6 +236,35 @@ impl CommandQueue {
         *seen_generation = state.generation;
     }
 
+    pub(crate) fn generation(&self) -> u64 {
+        lock_unpoisoned(&self.state).generation
+    }
+
+    pub(crate) fn wait_for_signal_until(
+        &self,
+        seen_generation: u64,
+        stopping: &AtomicBool,
+        deadline: Instant,
+    ) -> bool {
+        let duration = deadline.saturating_duration_since(Instant::now());
+        if duration.is_zero() {
+            return false;
+        }
+        let state = lock_unpoisoned(&self.state);
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, duration, |state| {
+                state.submissions.is_empty()
+                    && state.generation == seen_generation
+                    && !stopping.load(Ordering::Acquire)
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !timeout.timed_out()
+            || !state.submissions.is_empty()
+            || state.generation != seen_generation
+            || stopping.load(Ordering::Acquire)
+    }
+
     pub(crate) fn set_external_waker(&self, waker: Option<ExternalWaker>) {
         *lock_unpoisoned(&self.external_waker) = waker;
     }
@@ -579,11 +608,12 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    use crate::{Engine, EngineConfig, Error, ErrorKind, Request};
+    use crate::{Completion, EngineConfig, Error, ErrorKind, Request};
 
     #[test]
     fn user_callback_observes_registry_unlocked() {
-        let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
+        let (engine, controller) =
+            crate::testing::engine(EngineConfig::spawned()).expect("Engine must construct");
         let shared = engine.shared_for_testing();
         let client = engine.client();
         let (result_tx, result_rx) = mpsc::channel();
@@ -591,13 +621,14 @@ mod tests {
             .build()
             .expect("test request must build");
 
-        client
+        let handle = client
             .start(request, move |_completion| {
                 result_tx
                     .send(shared.core.try_lock().is_ok())
                     .expect("test receiver must remain");
             })
             .expect("request must submit");
+        assert!(controller.complete(handle.id(), Completion::Cancelled));
         assert!(
             result_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -608,7 +639,8 @@ mod tests {
 
     #[test]
     fn external_wakeup_failure_is_latched_for_the_reactor() {
-        let engine = Engine::new(EngineConfig::manual()).expect("Engine must construct");
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::manual()).expect("Engine must construct");
         let shared = engine.shared_for_testing();
         shared.queue.set_external_waker(Some(Arc::new(|| {
             Err(Error::new(

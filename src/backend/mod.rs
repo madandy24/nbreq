@@ -2,15 +2,15 @@
 
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 use crate::EngineConfig;
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 use crate::registry::Shared;
 use crate::{Completion, Error, Request, RequestId, ShutdownError};
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 use std::sync::Arc;
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 mod curl;
 #[cfg(feature = "native")]
 mod native;
@@ -30,7 +30,7 @@ pub(crate) enum PollMode {
     },
 }
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 #[derive(Clone, Copy)]
 pub(crate) struct ResponseLimits {
     pub(crate) body_bytes: usize,
@@ -54,11 +54,12 @@ pub(crate) trait Backend {
     }
 }
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 pub(crate) trait BackendFactory: Send {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
 }
 
+#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
 pub(crate) fn scaffold() -> Box<dyn Backend + Send> {
     Box::new(scaffold::ScaffoldBackend)
 }
@@ -68,7 +69,7 @@ pub(crate) fn held() -> Box<dyn Backend + Send> {
     Box::new(scaffold::HeldBackend)
 }
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 pub(crate) fn curl_factory(config: &EngineConfig) -> Box<dyn BackendFactory> {
     Box::new(curl::CurlFactory::new(ResponseLimits {
         body_bytes: config.max_response_body_bytes(),

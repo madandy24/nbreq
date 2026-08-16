@@ -3,7 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 use crate::backend::BackendFactory;
 use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
 use crate::registry::{RequestState, Shared};
@@ -83,7 +83,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         self.backend.shutdown()
     }
 
-    fn transport_wait(&self) -> Option<std::time::Duration> {
+    pub(crate) fn transport_wait(&self) -> Option<std::time::Duration> {
         if self.active.is_empty() {
             return None;
         }
@@ -120,6 +120,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
     }
 }
 
+#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
 pub(crate) fn spawned_main<B: Backend + ?Sized>(
     shared: Arc<Shared>,
     reactor: ReactorCore<B>,
@@ -161,7 +162,7 @@ fn spawned_main_inner<B: Backend + ?Sized>(
     }
 }
 
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 pub(crate) fn spawned_main_factory(
     shared: Arc<Shared>,
     factory: Box<dyn BackendFactory>,

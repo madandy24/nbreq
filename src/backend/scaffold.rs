@@ -4,8 +4,10 @@ use crate::{Completion, Error, ErrorKind, Request, RequestId, ShutdownError};
 
 use super::{Backend, BackendCompletion};
 
+#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
 pub(super) struct ScaffoldBackend;
 
+#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
 impl Backend for ScaffoldBackend {
     fn submit(
         &mut self,

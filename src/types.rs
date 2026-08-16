@@ -220,7 +220,7 @@ pub struct Header {
 }
 
 impl Header {
-    /// Creates an owned header. Strict protocol validation is added with the HTTP layer.
+    /// Creates an owned header. A containing [`RequestBuilder`] validates it when built.
     #[must_use]
     pub fn new(name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
         Self {
@@ -321,6 +321,30 @@ impl Request {
         Self::builder(Method::Post, url)
     }
 
+    /// Starts a HEAD request builder.
+    #[must_use]
+    pub fn head(url: impl Into<String>) -> RequestBuilder {
+        Self::builder(Method::Head, url)
+    }
+
+    /// Starts a PUT request builder.
+    #[must_use]
+    pub fn put(url: impl Into<String>) -> RequestBuilder {
+        Self::builder(Method::Put, url)
+    }
+
+    /// Starts a PATCH request builder.
+    #[must_use]
+    pub fn patch(url: impl Into<String>) -> RequestBuilder {
+        Self::builder(Method::Patch, url)
+    }
+
+    /// Starts a DELETE request builder.
+    #[must_use]
+    pub fn delete(url: impl Into<String>) -> RequestBuilder {
+        Self::builder(Method::Delete, url)
+    }
+
     /// Returns the method.
     #[must_use]
     pub fn method(&self) -> &Method {
@@ -351,7 +375,31 @@ impl Request {
         &self.options
     }
 
-    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        http_origin(&self.url, ErrorKind::InvalidRequest)?;
+        if matches!(&self.method, Method::Other(method) if !is_http_token(method)) {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "extension HTTP method is not a valid token",
+            ));
+        }
+        for header in &self.headers {
+            if !is_http_token(header.name())
+                || header
+                    .value()
+                    .iter()
+                    .any(|byte| *byte == 0x7f || (*byte < 0x20 && *byte != b'\t'))
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidRequest,
+                    "request contains an invalid HTTP header",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "curl-pilot")]
     pub(crate) fn redirected(
         &self,
         url: String,
@@ -416,22 +464,149 @@ impl RequestBuilder {
         self
     }
 
+    /// Sets the maximum connection-establishment duration.
+    #[must_use]
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the maximum duration without useful I/O progress.
+    #[must_use]
+    pub fn inactivity_timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.inactivity_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the maximum total duration beginning at request acceptance.
+    #[must_use]
+    pub fn total_timeout(mut self, timeout: Duration) -> Self {
+        self.request.options.total_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the maximum number of redirects followed.
+    #[must_use]
+    pub fn redirect_limit(mut self, limit: u8) -> Self {
+        self.request.options.redirect_limit = limit;
+        self
+    }
+
+    /// Sets HTTPS certificate and hostname verification policy.
+    #[must_use]
+    pub fn tls_verification(mut self, verification: TlsVerification) -> Self {
+        self.request.options.tls_verification = verification;
+        self
+    }
+
     /// Validates the backend-independent minimum and returns the request.
     pub fn build(self) -> Result<Request, Error> {
-        if self.request.url.trim().is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidRequest,
-                "request URL is empty",
-            ));
-        }
-        if matches!(&self.request.method, Method::Other(method) if method.trim().is_empty()) {
-            return Err(Error::new(
-                ErrorKind::InvalidRequest,
-                "extension HTTP method is empty",
-            ));
-        }
+        self.request.validate()?;
         Ok(self.request)
     }
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+#[derive(Eq, PartialEq)]
+pub(crate) struct HttpOrigin {
+    pub(crate) scheme: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
+pub(crate) fn http_origin(url: &str, error_kind: ErrorKind) -> Result<HttpOrigin, Error> {
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return Err(Error::new(error_kind, "HTTP URL has no scheme separator"));
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => 80,
+        "https" => 443,
+        _ => {
+            return Err(Error::new(
+                error_kind,
+                "NBReq permits only HTTP and HTTPS URLs",
+            ));
+        }
+    };
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    if authority.is_empty() || authority.contains('@') {
+        return Err(Error::new(
+            error_kind,
+            "HTTP URL authority is empty or contains embedded credentials",
+        ));
+    }
+
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some(closing) = bracketed.find(']') else {
+            return Err(Error::new(error_kind, "HTTP URL has an invalid IPv6 host"));
+        };
+        let host = &bracketed[..closing];
+        let suffix = &bracketed[closing + 1..];
+        let port = if suffix.is_empty() {
+            default_port
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            parse_port(port, error_kind)?
+        } else {
+            return Err(Error::new(error_kind, "HTTP URL has an invalid authority"));
+        };
+        (host, port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.contains(':') {
+            return Err(Error::new(
+                error_kind,
+                "an IPv6 URL host must be enclosed in brackets",
+            ));
+        }
+        (host, parse_port(port, error_kind)?)
+    } else {
+        (authority, default_port)
+    };
+    if host.is_empty() {
+        return Err(Error::new(error_kind, "HTTP URL host is empty"));
+    }
+    if host
+        .bytes()
+        .any(|byte| byte <= 0x20 || byte == 0x7f || byte == b'\\')
+    {
+        return Err(Error::new(error_kind, "HTTP URL host is invalid"));
+    }
+    Ok(HttpOrigin {
+        scheme,
+        host: host.to_ascii_lowercase(),
+        port,
+    })
+}
+
+fn parse_port(port: &str, error_kind: ErrorKind) -> Result<u16, Error> {
+    port.parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| Error::new(error_kind, "HTTP URL port is invalid"))
 }
 
 /// An owned, backend-neutral HTTP response.
@@ -460,6 +635,9 @@ impl Response {
     }
 
     /// Returns the response headers.
+    ///
+    /// The curl pilot buffers the final response head. Portable trailer representation is not yet
+    /// defined; callers must not rely on trailers appearing here.
     #[must_use]
     pub fn headers(&self) -> &[Header] {
         &self.headers
@@ -713,5 +891,63 @@ impl fmt::Display for ShutdownError {
 impl StdError for ShutdownError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_builder_rejects_non_http_urls_invalid_tokens_and_header_injection() {
+        for builder in [
+            Request::get(""),
+            Request::get("ftp://example.test/"),
+            Request::get("http://user@example.test/"),
+            Request::get("http://bad host/"),
+            Request::get("http://example.test:0/"),
+            Request::builder(
+                Method::Other("NOT VALID".to_owned()),
+                "http://example.test/",
+            ),
+            Request::get("http://example.test/").header("bad:name", "value"),
+            Request::get("http://example.test/").header("good-name", b"bad\r\nvalue".to_vec()),
+            Request::get("http://example.test/").header("good-name", b"bad\0value".to_vec()),
+        ] {
+            let error = builder
+                .build()
+                .expect_err("invalid request must fail during construction");
+            assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+        }
+    }
+
+    #[test]
+    fn request_builder_convenience_methods_set_portable_policy() {
+        let request = Request::builder(Method::Other("PURGE".to_owned()), "https://[::1]:8443/")
+            .connect_timeout(Duration::from_millis(100))
+            .inactivity_timeout(Duration::from_millis(200))
+            .total_timeout(Duration::from_millis(300))
+            .redirect_limit(2)
+            .tls_verification(TlsVerification::DangerouslyDisableCertificateVerification)
+            .build()
+            .expect("valid portable request must build");
+
+        assert_eq!(
+            request.options.connect_timeout,
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            request.options.inactivity_timeout,
+            Some(Duration::from_millis(200))
+        );
+        assert_eq!(
+            request.options.total_timeout,
+            Some(Duration::from_millis(300))
+        );
+        assert_eq!(request.options.redirect_limit, 2);
+        assert_eq!(
+            request.options.tls_verification,
+            TlsVerification::DangerouslyDisableCertificateVerification
+        );
     }
 }

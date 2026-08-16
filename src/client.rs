@@ -78,6 +78,9 @@ impl RequestHandle {
     }
 
     /// Requests cancellation. Repeated and post-terminal calls are harmless.
+    ///
+    /// Cancellation stops local processing promptly but cannot undo effects already accepted by a
+    /// remote server.
     pub fn cancel(&self) -> Result<(), Error> {
         self.client.cancel(self.id)
     }

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
-#[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+#[cfg(feature = "curl-pilot")]
 use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
@@ -22,6 +22,7 @@ static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
 
 enum RuntimeOwner {
     Spawned(Option<JoinHandle<Result<(), ShutdownError>>>),
+    #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
     Manual(Option<ReactorCore<dyn Backend + Send>>),
     Stopped,
 }
@@ -59,10 +60,21 @@ impl Drop for DrivingGuard<'_> {
 
 impl Engine {
     /// Creates one independent Engine from backend-neutral configuration.
+    ///
+    /// With the `curl-pilot` feature, the Engine uses the private spawned curl backend. Without a
+    /// transport feature it uses the non-networking scaffold.
     pub fn new(config: EngineConfig) -> Result<Self, Error> {
-        Self::with_backend(config, backend::scaffold())
+        #[cfg(feature = "curl-pilot")]
+        {
+            Self::with_curl_backend(config)
+        }
+        #[cfg(not(feature = "curl-pilot"))]
+        {
+            Self::with_backend(config, backend::scaffold())
+        }
     }
 
+    #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
     pub(crate) fn with_backend(
         config: EngineConfig,
         backend: Box<dyn Backend + Send>,
@@ -119,7 +131,7 @@ impl Engine {
         })
     }
 
-    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+    #[cfg(feature = "curl-pilot")]
     pub(crate) fn with_curl_backend(config: EngineConfig) -> Result<Self, Error> {
         let factory = backend::curl_factory(&config);
         Self::with_curl_factory(config, factory)
@@ -131,7 +143,7 @@ impl Engine {
         Self::with_curl_factory(config, factory)
     }
 
-    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+    #[cfg(feature = "curl-pilot")]
     fn with_curl_factory(
         config: EngineConfig,
         factory: Box<dyn backend::BackendFactory>,
@@ -230,7 +242,25 @@ impl Engine {
         let _driving = DrivingGuard { driving };
         let _context = ContextGuard::enter(self.shared.id, ContextKind::Drive);
         let result = match runtime {
-            RuntimeOwner::Manual(Some(reactor)) => reactor.drive(&self.shared, deadline),
+            RuntimeOwner::Manual(Some(reactor)) => {
+                let seen_generation = self.shared.queue.generation();
+                let mut result = reactor.drive(&self.shared, deadline);
+                if matches!(result, Ok(DriveStatus::Idle))
+                    && reactor.transport_wait().is_none()
+                    && Instant::now() < deadline
+                {
+                    if self.shared.queue.wait_for_signal_until(
+                        seen_generation,
+                        &self.shared.stopped,
+                        deadline,
+                    ) {
+                        result = reactor.drive(&self.shared, deadline);
+                    } else {
+                        result = Ok(DriveStatus::DeadlineReached);
+                    }
+                }
+                result
+            }
             RuntimeOwner::Manual(None) | RuntimeOwner::Stopped => {
                 Err(Error::new(ErrorKind::EngineStopped, "Engine has stopped"))
             }

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use crate::testing;
 use crate::{
-    Completion, DriveStatus, Engine, EngineConfig, ErrorKind, Request, Response, ShutdownOutcome,
-    WaitOutcome,
+    Completion, DriveStatus, Engine, EngineConfig, ErrorKind, ExecuteError, Request, Response,
+    ShutdownOutcome, WaitOutcome,
 };
 
 fn request() -> Request {
@@ -456,7 +456,8 @@ fn callback_pressure_holds_bounded_admission_until_callback_returns() {
 
 #[test]
 fn manual_drive_until_uses_canonical_completion() {
-    let mut engine = Engine::new(EngineConfig::manual()).expect("manual Engine must construct");
+    let mut engine = Engine::with_backend(EngineConfig::manual(), crate::backend::scaffold())
+        .expect("manual Engine must construct");
     let pending = engine
         .client()
         .submit(request())
@@ -484,6 +485,57 @@ fn manual_drive_until_rejects_another_engines_pending_request() {
     assert_eq!(error.kind(), ErrorKind::WrongEngine);
     first.shutdown().expect("first Engine must stop");
     second.shutdown().expect("second Engine must stop");
+}
+
+#[test]
+fn manual_command_driven_drive_waits_and_wakes_without_spinning() {
+    let (mut idle_engine, _idle_controller) =
+        testing::engine(EngineConfig::manual()).expect("idle Engine must construct");
+    let started = Instant::now();
+    let status = idle_engine
+        .drive(started + Duration::from_millis(30))
+        .expect("idle manual drive must return");
+    assert_eq!(status, crate::DriveStatus::DeadlineReached);
+    assert!(started.elapsed() >= Duration::from_millis(20));
+    idle_engine.shutdown().expect("idle Engine must stop");
+
+    let (mut engine, controller) =
+        testing::engine(EngineConfig::manual()).expect("manual Engine must construct");
+    let pending = engine
+        .client()
+        .submit(request())
+        .expect("request must submit");
+    let id = pending.handle().id();
+    let completion_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        assert!(controller.complete(id, response(1)));
+    });
+    let completion = engine
+        .drive_until(pending)
+        .expect("manual drive_until must wake for completion");
+    assert!(matches!(completion, Completion::Completed(_)));
+    completion_thread
+        .join()
+        .expect("completion thread must join");
+    engine.shutdown().expect("manual Engine must stop");
+}
+
+#[test]
+fn blocking_execute_maps_engine_cancellation_distinctly() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("Engine must construct");
+    let client = engine.client();
+    let execute_thread = thread::spawn(move || client.execute(request()));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while controller.active_requests() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(controller.active_requests(), 1);
+
+    engine.cancel_all();
+    let result = execute_thread.join().expect("execute thread must join");
+    assert!(matches!(result, Err(ExecuteError::Cancelled)));
+    engine.shutdown().expect("Engine must stop");
 }
 
 #[test]

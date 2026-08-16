@@ -121,6 +121,11 @@ Multiple Engines are permitted and form independent cancellation and resource do
 
 Every Engine is constructed independently from configuration, for example `Engine::new(config)` or an equivalent builder. Engines do not spawn child/linked Engines. If immutable TLS/provider configuration is reusable, callers clone that configuration into another independent construction; unavoidable process-global backend initialization remains private implementation state rather than Engine ancestry.
 
+During the curl pilot, enabling the crate's `curl-pilot` feature makes that same ordinary
+constructor select the private spawned curl backend. It does not introduce a curl-specific public
+Engine type or constructor and does not change how Clients are issued. No-feature builds retain the
+non-networking lifecycle scaffold; the future native feature replaces only the private backend.
+
 ### 6.2 One terminal outcome
 
 Every accepted request transitions exactly once to one terminal outcome:
