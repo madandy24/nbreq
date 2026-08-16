@@ -45,7 +45,8 @@ struct RequestInner {
     completion: Option<Completion>,
     callback: Option<CompletionCallback>,
     callback_active: bool,
-    permit: Option<AdmissionPermit>,
+    inflight_permit: Option<AdmissionPermit>,
+    callback_permit: Option<AdmissionPermit>,
 }
 
 pub(crate) struct RequestState {
@@ -68,7 +69,8 @@ impl RequestState {
     fn new(
         id: RequestId,
         callback: Option<CompletionCallback>,
-        permit: AdmissionPermit,
+        inflight_permit: AdmissionPermit,
+        callback_permit: Option<AdmissionPermit>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -76,7 +78,8 @@ impl RequestState {
                 completion: None,
                 callback,
                 callback_active: false,
-                permit: Some(permit),
+                inflight_permit: Some(inflight_permit),
+                callback_permit,
             }),
             changed: Condvar::new(),
         })
@@ -133,7 +136,8 @@ impl RequestState {
         self.changed.notify_all();
         let job = Self::take_terminal_job(self.id, &mut inner);
         if inner.callback.is_none() && job.is_none() {
-            drop(inner.permit.take());
+            drop(inner.inflight_permit.take());
+            drop(inner.callback_permit.take());
         }
         (true, job)
     }
@@ -153,12 +157,17 @@ impl RequestState {
             .completion
             .clone()
             .expect("terminal callback requires canonical completion");
-        let permit = inner
-            .permit
+        let inflight_permit = inner
+            .inflight_permit
             .take()
             .expect("terminal callback requires its admission permit");
+        let callback_permit = inner
+            .callback_permit
+            .take()
+            .expect("terminal callback requires its callback-capacity permit");
         Some(CallbackJob::new(id, move || {
-            let _permit = permit;
+            let _inflight_permit = inflight_permit;
+            let _callback_permit = callback_permit;
             callback(completion);
         }))
     }
@@ -305,6 +314,8 @@ pub(crate) struct Shared {
     core: Mutex<CoreState>,
     inflight: Arc<AtomicUsize>,
     inflight_limit: usize,
+    callback_inflight: Arc<AtomicUsize>,
+    callback_inflight_limit: usize,
     max_request_body_bytes: usize,
     max_header_bytes: usize,
     max_header_count: usize,
@@ -355,7 +366,9 @@ impl Shared {
                 requests: HashMap::new(),
             }),
             inflight: Arc::new(AtomicUsize::new(0)),
-            inflight_limit: command_capacity.min(callback_capacity),
+            inflight_limit: config.max_inflight_requests().get(),
+            callback_inflight: Arc::new(AtomicUsize::new(0)),
+            callback_inflight_limit: callback_capacity,
             max_request_body_bytes: config.max_request_body_bytes(),
             max_header_bytes: config.max_header_bytes(),
             max_header_count: config.max_header_count(),
@@ -387,19 +400,32 @@ impl Shared {
         }
         self.validate_request_limits(&request)?;
 
-        let permit =
-            AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit).ok_or_else(|| {
+        let inflight_permit = AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit)
+            .ok_or_else(|| {
                 Error::new(
                     ErrorKind::QueueFull,
-                    "the Engine's bounded request capacity is full",
+                    "the Engine's accepted/inflight request capacity is full",
                 )
             })?;
+        let callback_permit = if has_callback {
+            Some(
+                AdmissionPermit::try_acquire(&self.callback_inflight, self.callback_inflight_limit)
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::QueueFull,
+                            "the Engine's callback request/event capacity is full",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let id = RequestId {
             engine: self.id,
             sequence: core.next_sequence,
         };
         core.next_sequence += 1;
-        let state = RequestState::new(id, callback, permit);
+        let state = RequestState::new(id, callback, inflight_permit, callback_permit);
         core.requests.insert(id, Arc::clone(&state));
 
         let submission = Submission {

@@ -286,6 +286,7 @@ fn cancel_all_has_a_deterministic_acceptance_barrier() {
 fn bounded_admission_recovers_after_terminal_state() {
     let one = NonZeroUsize::new(1).expect("one is non-zero");
     let config = EngineConfig::manual()
+        .with_max_inflight_requests(one)
         .with_command_queue_capacity(one)
         .with_callback_queue_capacity(one);
     let (mut engine, _controller) = testing::engine(config).expect("bounded Engine must construct");
@@ -410,6 +411,7 @@ fn shutdown_delivers_cancelled_callback_with_stopped_client() {
 fn callback_pressure_holds_bounded_admission_until_callback_returns() {
     let one = NonZeroUsize::new(1).expect("one is non-zero");
     let config = EngineConfig::spawned()
+        .with_max_inflight_requests(one)
         .with_command_queue_capacity(one)
         .with_callback_queue_capacity(one);
     let (engine, controller) = testing::engine(config).expect("bounded Engine must construct");
@@ -448,6 +450,76 @@ fn callback_pressure_holds_bounded_admission_until_callback_returns() {
     };
     assert!(returned.load(Ordering::Acquire));
     second
+        .handle()
+        .cancel()
+        .expect("cleanup cancellation must work");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn inflight_and_callback_event_bounds_are_independent_and_strict() {
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let two = NonZeroUsize::new(2).expect("two is non-zero");
+    let config = EngineConfig::spawned()
+        .with_max_inflight_requests(two)
+        .with_command_queue_capacity(two)
+        .with_callback_queue_capacity(one);
+    let (engine, controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    let callback = client
+        .start(request(), move |_completion| {
+            started_tx.send(()).expect("test receiver must remain");
+            release_rx.recv().expect("release must arrive");
+        })
+        .expect("first callback request must submit");
+    assert!(controller.complete(callback.id(), response(1)));
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback must begin");
+
+    let callback_error = client
+        .start(request(), |_completion| {})
+        .expect_err("callback-event capacity must reject a second callback request");
+    assert_eq!(callback_error.kind(), ErrorKind::QueueFull);
+
+    let pending = client
+        .submit(request())
+        .expect("blocking-only traffic may use the remaining inflight slot");
+    let inflight_error = client
+        .submit(request())
+        .expect_err("the explicit total inflight bound must remain strict");
+    assert_eq!(inflight_error.kind(), ErrorKind::QueueFull);
+
+    assert!(controller.complete(pending.handle().id(), response(2)));
+    assert!(matches!(pending.wait(), Completion::Completed(_)));
+    release_tx.send(()).expect("callback must remain alive");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn inflight_limit_rejection_maps_through_callback_and_execute_forms() {
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let config = EngineConfig::spawned().with_max_inflight_requests(one);
+    let (engine, _controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+    let first = client.submit(request()).expect("first request must submit");
+
+    let callback_error = client
+        .start(request(), |_completion| {})
+        .expect_err("callback form must expose admission pressure");
+    assert_eq!(callback_error.kind(), ErrorKind::QueueFull);
+    match client
+        .execute(request())
+        .expect_err("execute must expose the same admission pressure")
+    {
+        ExecuteError::Submission(error) => assert_eq!(error.kind(), ErrorKind::QueueFull),
+        other => panic!("expected execute submission error, got {other:?}"),
+    }
+
+    first
         .handle()
         .cancel()
         .expect("cleanup cancellation must work");
@@ -535,6 +607,42 @@ fn blocking_execute_maps_engine_cancellation_distinctly() {
     engine.cancel_all();
     let result = execute_thread.join().expect("execute thread must join");
     assert!(matches!(result, Err(ExecuteError::Cancelled)));
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
+fn engine_shutdown_releases_blocked_execute_caller() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("Engine must construct");
+    let client = engine.client();
+    let execute_thread = thread::spawn(move || client.execute(request()));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while controller.active_requests() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(controller.active_requests(), 1);
+
+    engine.shutdown().expect("Engine must stop");
+    let result = execute_thread.join().expect("execute thread must join");
+    assert!(matches!(result, Err(ExecuteError::Cancelled)));
+}
+
+#[test]
+fn waiter_local_timeout_retains_the_live_request() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("Engine must construct");
+    let pending = engine
+        .client()
+        .submit(request())
+        .expect("request must submit");
+    let id = pending.handle().id();
+    let pending = match pending.wait_for(Duration::from_millis(10)) {
+        WaitOutcome::TimedOut(pending) => pending,
+        other => panic!("local wait unexpectedly changed request state: {other:?}"),
+    };
+    assert!(!pending.is_complete());
+    assert!(controller.complete(id, response(9)));
+    assert!(matches!(pending.wait(), Completion::Completed(_)));
     engine.shutdown().expect("Engine must stop");
 }
 
@@ -654,6 +762,7 @@ fn simultaneous_submissions_never_exceed_the_admission_limit() {
     const CONTENDERS: usize = 16;
     let one = NonZeroUsize::new(1).expect("one is non-zero");
     let config = EngineConfig::spawned()
+        .with_max_inflight_requests(one)
         .with_command_queue_capacity(one)
         .with_callback_queue_capacity(one);
     let (engine, controller) = testing::engine(config).expect("bounded Engine must construct");

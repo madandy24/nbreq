@@ -54,6 +54,10 @@ Responses are buffered; HTTP error status codes remain responses, and portable t
 not yet defined. Cancellation stops local work but cannot undo a request already acted upon by the
 remote server.
 
+Engine configuration independently bounds accepted/inflight requests, queued commands, and
+callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
+until it returns; blocking-only requests do not consume callback capacity.
+
 ## Project documents
 
 - [Initial product specification](thoughts/nbreq_initial_spec.md)

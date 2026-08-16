@@ -26,6 +26,7 @@ pub enum CallbackDispatch {
 pub struct EngineConfig {
     run_mode: RunMode,
     callback_dispatch: CallbackDispatch,
+    max_inflight_requests: NonZeroUsize,
     command_queue_capacity: NonZeroUsize,
     callback_queue_capacity: NonZeroUsize,
     max_request_body_bytes: usize,
@@ -45,6 +46,7 @@ impl EngineConfig {
         Self {
             run_mode: RunMode::Spawned,
             callback_dispatch: CallbackDispatch::Workers(nonzero(1)),
+            max_inflight_requests: nonzero(1_024),
             command_queue_capacity: nonzero(1_024),
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
@@ -60,6 +62,7 @@ impl EngineConfig {
         Self {
             run_mode: RunMode::Manual,
             callback_dispatch: CallbackDispatch::Inline,
+            max_inflight_requests: nonzero(1_024),
             command_queue_capacity: nonzero(1_024),
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
@@ -76,6 +79,14 @@ impl EngineConfig {
         self
     }
 
+    /// Selects the maximum number of accepted requests that remain nonterminal or have a terminal
+    /// callback still queued or running.
+    #[must_use]
+    pub fn with_max_inflight_requests(mut self, requests: NonZeroUsize) -> Self {
+        self.max_inflight_requests = requests;
+        self
+    }
+
     /// Selects the command queue bound.
     #[must_use]
     pub fn with_command_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
@@ -83,7 +94,7 @@ impl EngineConfig {
         self
     }
 
-    /// Selects the callback event queue bound.
+    /// Selects the callback event queue and callback-bearing request bound.
     #[must_use]
     pub fn with_callback_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.callback_queue_capacity = capacity;
@@ -130,13 +141,19 @@ impl EngineConfig {
         self.callback_dispatch
     }
 
+    /// Returns the configured accepted/inflight request bound.
+    #[must_use]
+    pub fn max_inflight_requests(&self) -> NonZeroUsize {
+        self.max_inflight_requests
+    }
+
     /// Returns the configured command queue bound.
     #[must_use]
     pub fn command_queue_capacity(&self) -> NonZeroUsize {
         self.command_queue_capacity
     }
 
-    /// Returns the configured callback event queue bound.
+    /// Returns the configured callback event queue and callback-bearing request bound.
     #[must_use]
     pub fn callback_queue_capacity(&self) -> NonZeroUsize {
         self.callback_queue_capacity
@@ -685,7 +702,7 @@ pub enum ErrorKind {
     ReentrantOperation,
     /// Request data failed backend-independent validation.
     InvalidRequest,
-    /// The configured bounded admission or command capacity is exhausted.
+    /// A configured accepted/inflight, callback-event, or command capacity is exhausted.
     QueueFull,
     /// A configured request, response, or protocol resource limit was exceeded.
     Limit,

@@ -368,7 +368,7 @@ Callback requirements:
 - event queues are bounded, with progress coalescing rather than unbounded growth;
 - completion events are not silently dropped due to queue pressure.
 
-Bounded admission accounts for terminal callback pressure: an accepted callback request retains its admission permit until that callback returns, while a request without a callback releases its permit at terminal-state commit. This ensures terminal callback events always fit without dropping or invoking inline under pressure. Long-running callbacks therefore apply documented admission backpressure. Pending progress events may be coalesced or displaced to preserve terminal capacity.
+Bounded admission accounts for terminal callback pressure using independent limits. Every accepted request holds one global accepted/inflight permit until terminal commit, except that a request with a callback retains that permit until the callback returns. A callback-bearing request also holds a callback-event permit until return. This ensures terminal callback events always fit without dropping or invoking inline under pressure, while blocking-only traffic is not unnecessarily limited by callback capacity. Long-running callbacks therefore apply documented admission backpressure. Pending progress events may be coalesced or displaced to preserve terminal capacity. The command queue remains a separate bound on submissions not yet drained by the reactor.
 
 Callback activation is tracked across admission. User code is enqueued only after the request registry lock is released, and shutdown waits for any in-progress activation before sealing the callback domain. No fast-completion race may invoke user code while admission or registry state is locked.
 
@@ -539,7 +539,7 @@ Initial native milestones may disable reuse until single-request correctness is 
 
 Buffered request and response bodies are required because they cover current GDS JSON, text, and form calls simply.
 
-The buffered pilot starts with conservative configurable Engine limits: 16 MiB request bodies, 16 MiB response bodies, 64 KiB of request or response header bytes, and 256 request or response header fields. These are safety defaults rather than permanent product tuning; the GDS audit may justify smaller defaults before release. Limits are checked before extending owned buffers and produce a specific limit failure.
+The buffered pilot starts with conservative configurable Engine limits: 1,024 accepted/inflight requests, 1,024 queued commands, 1,024 callback-bearing requests/events, 16 MiB request bodies, 16 MiB response bodies, 64 KiB of request or response header bytes, and 256 request or response header fields. These are safety defaults rather than permanent product tuning; the GDS audit may justify smaller defaults before release. Limits are checked before admission or extending owned buffers and produce a specific queue/limit failure.
 
 Defaults and hard maxima must remain deliberate for:
 

@@ -492,6 +492,13 @@ impl EngineBuilder {
         self
     }
 
+    /// Selects the accepted/inflight request bound.
+    #[must_use]
+    pub fn max_inflight_requests(mut self, requests: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_inflight_requests(requests);
+        self
+    }
+
     /// Selects the bounded command queue capacity.
     #[must_use]
     pub fn command_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
@@ -499,7 +506,7 @@ impl EngineBuilder {
         self
     }
 
-    /// Selects the bounded callback event queue capacity.
+    /// Selects the bounded callback event and callback-bearing request capacity.
     #[must_use]
     pub fn callback_queue_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.config = self.config.with_callback_queue_capacity(capacity);
@@ -742,6 +749,7 @@ mod tests {
         let callback_capacity = NonZeroUsize::new(9).expect("nine is non-zero");
         let engine = EngineBuilder::spawned()
             .callback_workers(workers)
+            .max_inflight_requests(command_capacity)
             .command_queue_capacity(command_capacity)
             .callback_queue_capacity(callback_capacity)
             .build()
@@ -750,6 +758,7 @@ mod tests {
             engine.config.callback_dispatch(),
             CallbackDispatch::Workers(workers)
         );
+        assert_eq!(engine.config.max_inflight_requests(), command_capacity);
         assert_eq!(engine.config.command_queue_capacity(), command_capacity);
         assert_eq!(engine.config.callback_queue_capacity(), callback_capacity);
     }
