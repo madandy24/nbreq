@@ -21,7 +21,7 @@ use curl::multi::{Easy2Handle, Multi};
 
 use super::{Backend, BackendCompletion, BackendFactory, PollMode, ResponseLimits};
 use crate::registry::Shared;
-use crate::types::http_origin;
+use crate::types::{http_origin, is_http_token, is_valid_http_header_value};
 use crate::{
     Completion, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId, Response,
     ShutdownError, TimeoutKind, TlsVerification, TransportStage,
@@ -277,11 +277,15 @@ impl Handler for ResponseCollector {
             self.fail(CollectorFailure::MalformedHeader);
             return false;
         };
-        if name.is_empty() {
+        if !is_http_token(name) {
             self.fail(CollectorFailure::MalformedHeader);
             return false;
         }
         let value = trim_header_value(&line[colon + 1..]);
+        if !is_valid_http_header_value(value) {
+            self.fail(CollectorFailure::MalformedHeader);
+            return false;
+        }
         self.headers.push(Header::new(name, value.to_vec()));
         true
     }
@@ -488,12 +492,7 @@ impl CurlBackend {
                         Ok(None) => completed_response(&easy),
                         Err(error) => Err(error),
                     },
-                    Err(error) => Err(curl_transfer_error(
-                        error,
-                        &easy,
-                        request.options(),
-                        started,
-                    )),
+                    Err(error) => Err(curl_transfer_error(error, &easy, &request, started)),
                 },
             };
             completions.push(BackendCompletion {
@@ -783,10 +782,39 @@ fn curl_error(error: curl::Error) -> Error {
 fn curl_transfer_error(
     error: curl::Error,
     easy: &Easy2<ResponseCollector>,
-    options: &crate::RequestOptions,
+    request: &Request,
     started: Instant,
 ) -> Error {
+    let options = request.options();
     if !error.is_operation_timedout() {
+        if error.is_unsupported_protocol()
+            || error.is_weird_server_reply()
+            || error.is_chunk_failed()
+        {
+            return Error::transport(
+                TransportStage::Http,
+                format!(
+                    "curl rejected malformed HTTP framing: {}",
+                    error.description()
+                ),
+            );
+        }
+        if (error.is_recv_error() || error.is_got_nothing())
+            && request_upload_is_incomplete(easy, request)
+        {
+            return Error::transport(
+                TransportStage::Send,
+                "the connection failed before the buffered request body was fully transmitted",
+            );
+        }
+        if (error.is_recv_error() || error.is_partial_file())
+            && response_uses_chunked_framing(easy.get_ref())
+        {
+            return Error::transport(
+                TransportStage::Http,
+                "the chunked HTTP response ended with invalid or incomplete framing",
+            );
+        }
         return curl_error(error);
     }
     let total_expired = options
@@ -809,6 +837,23 @@ fn curl_transfer_error(
             "curl reported a timeout after connection establishment without an NBReq total deadline",
         )
     }
+}
+
+fn request_upload_is_incomplete(easy: &Easy2<ResponseCollector>, request: &Request) -> bool {
+    !request.body().is_empty()
+        && easy
+            .upload_size()
+            .is_ok_and(|uploaded| uploaded < request.body().len() as f64)
+}
+
+fn response_uses_chunked_framing(collector: &ResponseCollector) -> bool {
+    collector.headers.iter().any(|header| {
+        header.name().eq_ignore_ascii_case("transfer-encoding")
+            && header
+                .value()
+                .split(|byte| *byte == b',')
+                .any(|coding| trim_header_value(coding).eq_ignore_ascii_case(b"chunked"))
+    })
 }
 
 fn collector_error(failure: CollectorFailure, limits: ResponseLimits) -> Error {

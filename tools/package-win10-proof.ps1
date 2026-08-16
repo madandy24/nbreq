@@ -62,8 +62,11 @@ $unitTests = $artifacts |
 $contractTests = $artifacts |
     Where-Object { $_.target.name -eq 'public_contract' -and $_.target.kind -contains 'test' } |
     Select-Object -Last 1
-if ($null -eq $unitTests -or $null -eq $contractTests) {
-    throw 'Cargo did not report both required test executables.'
+$adversarialTests = $artifacts |
+    Where-Object { $_.target.name -eq 'http_adversarial' -and $_.target.kind -contains 'test' } |
+    Select-Object -Last 1
+if ($null -eq $unitTests -or $null -eq $contractTests -or $null -eq $adversarialTests) {
+    throw 'Cargo did not report all required test executables.'
 }
 
 Write-Host 'Building current controlled DLL lifecycle probe...'
@@ -87,6 +90,7 @@ New-Item -ItemType Directory -Force -Path $bundle | Out-Null
 $files = [ordered]@{
     'nbreq-curl-tests.exe' = [string]$unitTests.executable
     'nbreq-public-contract-tests.exe' = [string]$contractTests.executable
+    'nbreq-http-adversarial-tests.exe' = [string]$adversarialTests.executable
     'libcurl.dll' = $curlDll
     'nbreq-curl-dll-host.exe' = Join-Path $probeBuildRoot 'release\nbreq-curl-dll-host.exe'
     'nbreq_curl_dll_probe.dll' = Join-Path $probeBuildRoot 'release\nbreq_curl_dll_probe.dll'
@@ -113,7 +117,7 @@ NBReq Windows 10 proof bundle
 
 No Rust toolchain, Visual Studio, internet access, certificate installation, or machine-wide change
 is required. The runner verifies Windows 10 build range, x64 execution, every bundle hash, the full
-NBReq unit/public-contract suites, and 25 fresh-process DLL load/use/exit iterations.
+NBReq unit/public-contract/adversarial suites, and 25 fresh-process DLL load/use/exit iterations.
 
 Some containment tests deliberately panic inside a callback, reactor, or manual drive and print a
 panic message. Those lines are expected when the named test remains "ok" and the final result is

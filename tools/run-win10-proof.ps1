@@ -66,6 +66,7 @@ try {
 
     $unitTests = Join-Path $bundle 'nbreq-curl-tests.exe'
     $contractTests = Join-Path $bundle 'nbreq-public-contract-tests.exe'
+    $adversarialTests = Join-Path $bundle 'nbreq-http-adversarial-tests.exe'
     $curlDll = Join-Path $bundle 'libcurl.dll'
     $probeDll = Join-Path $bundle 'nbreq_curl_dll_probe.dll'
     $hostExe = Join-Path $bundle 'nbreq-curl-dll-host.exe'
@@ -82,6 +83,12 @@ try {
     & $contractTests --test-threads=1 --nocapture
     if ($LASTEXITCODE -ne 0) {
         throw "NBReq public contract test executable failed with exit code $LASTEXITCODE"
+    }
+
+    Write-Host 'Running public adversarial HTTP tests...'
+    & $adversarialTests --test-threads=1 --nocapture
+    if ($LASTEXITCODE -ne 0) {
+        throw "NBReq adversarial HTTP test executable failed with exit code $LASTEXITCODE"
     }
 
     Write-Host "Running $DllIterations fresh-process DLL load/use/exit iterations..."

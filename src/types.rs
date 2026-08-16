@@ -401,12 +401,7 @@ impl Request {
             ));
         }
         for header in &self.headers {
-            if !is_http_token(header.name())
-                || header
-                    .value()
-                    .iter()
-                    .any(|byte| *byte == 0x7f || (*byte < 0x20 && *byte != b'\t'))
-            {
+            if !is_http_token(header.name()) || !is_valid_http_header_value(header.value()) {
                 return Err(Error::new(
                     ErrorKind::InvalidRequest,
                     "request contains an invalid HTTP header",
@@ -523,7 +518,7 @@ impl RequestBuilder {
     }
 }
 
-fn is_http_token(value: &str) -> bool {
+pub(crate) fn is_http_token(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
@@ -545,6 +540,12 @@ fn is_http_token(value: &str) -> bool {
                         | b'~'
                 )
         })
+}
+
+pub(crate) fn is_valid_http_header_value(value: &[u8]) -> bool {
+    !value
+        .iter()
+        .any(|byte| *byte == 0x7f || (*byte < 0x20 && *byte != b'\t'))
 }
 
 #[derive(Eq, PartialEq)]

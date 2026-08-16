@@ -103,6 +103,7 @@ dependencies = [
  "curl",
  "rcgen",
  "rustls",
+ "socket2",
 ]
 
 [[package]]

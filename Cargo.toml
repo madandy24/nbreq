@@ -20,6 +20,7 @@ curl = { version = "=0.4.50", optional = true, default-features = false, feature
 [dev-dependencies]
 rcgen = "=0.13.2"
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
+socket2 = "=0.6.5"
 
 [patch.crates-io]
 curl = { path = "vendor/curl" }

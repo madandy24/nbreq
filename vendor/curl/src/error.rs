@@ -63,6 +63,12 @@ impl Error {
         self.code == curl_sys::CURLE_COULDNT_CONNECT
     }
 
+    /// Returns whether this error corresponds to CURLE_WEIRD_SERVER_REPLY.
+    pub fn is_weird_server_reply(&self) -> bool {
+        // curl-sys retains libcurl's historical pre-7.51 constant name for code 8.
+        self.code == curl_sys::CURLE_FTP_WEIRD_SERVER_REPLY
+    }
+
     /// Returns whether this error corresponds to CURLE_REMOTE_ACCESS_DENIED.
     pub fn is_remote_access_denied(&self) -> bool {
         self.code == curl_sys::CURLE_REMOTE_ACCESS_DENIED
