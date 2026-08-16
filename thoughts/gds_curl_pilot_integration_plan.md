@@ -1,7 +1,8 @@
-# GDS curl-pilot integration plan — review draft
+# GDS curl-pilot integration plan — G0 freeze candidate
 
 Status: planning only. The GDS tree was inspected read-only on 2026-08-17 and has not been changed.
-No item in this document authorizes a GDS edit until the plan is reviewed and accepted.
+The ownership, request-cancellation, timeout, and first-canary TLS decisions are frozen here for one
+final review. No item in this document authorizes a GDS edit until that review accepts G0.
 
 ## 1. Read-only findings
 
@@ -33,7 +34,8 @@ Observed request requirements are:
 - buffered JSON, text, and URL-encoded form bodies;
 - Basic and Bearer authorization headers;
 - caller-supplied headers;
-- per-call optional timeouts, with DPWebRPC using 25 seconds and GuardLink using 30 seconds;
+- per-call optional timeouts: observed values include 10, 20, 25, and 30 seconds, while the
+  attachment `file_get` path is the one observed caller passing `None`;
 - UTF-8 text/JSON response consumption and success restricted to HTTP 2xx; and
 - long-lived DPWebRPC polling plus retrying outbound POST workers.
 
@@ -43,30 +45,36 @@ still require a controlled parity capture rather than an assumption.
 
 ## 2. Proposed ownership
 
-Use one explicitly owned NBReq Engine for the GDS HTTP service by default:
+Use one explicitly owned NBReq Engine for the GDS HTTP service by default. Keep the selected facade
+and its optional Engine in one mutex-protected lifecycle state so initialization, mock injection,
+shutdown, and recreation cannot observe half-installed ownership:
 
 ```text
 DpSysContext (shared application context)
-  HttpEngineOwner
-    Mutex<Option<nbreq::Engine>>   sole, takeable owner; Engine is never cloned
-    Arc<NbreqDpHttpClient>
-      nbreq::Client                issued by that Engine
+  Mutex<HttpServiceState>
+    Uninitialized
+    Ready
+      Arc<dyn DpHttpClient>         selected ureq/mock/NBReq facade
+      Option<nbreq::Engine>         Some only for NBReq; sole, takeable owner
+    Stopped
 
 DPWebRPC
   Arc<dyn DpHttpClient>            ordinary facade access
-  tracked request handles          poll and POST cancellation, no Client-wide cancel-all
+  WebRpcRequestTracker
+    tracked cancellation controls  poll and POST cancellation, no Client-wide cancel-all
 ```
 
 The mutex exists because `DpSysContext` is shared while `Engine` is `Send` but intentionally not
 `Sync`; it does not make Engine cloneable or hide an Engine inside a Client. Construction remains
 `Engine::new(...)` followed by `engine.client()`. Shutdown takes the unique Engine value from the
-owner and consumes it.
+state and consumes it. Existing facade Arcs then contain stopped Clients and fail new work; they do
+not recreate an Engine behind the owner.
 
 `DPWebRPC` should stop constructing an independent HTTP implementation. It receives the same facade
-from its system context and tracks its own active NBReq request handles. On DPWebRPC stop it cancels
-those IDs only. If later evidence shows that one subsystem genuinely needs bulk isolation, give it
-a separately and explicitly constructed Engine; do not introduce `Client::cancel_all()` or a hidden
-child Engine.
+from the same `default_sys_context()` value and tracks its own active request controls. On DPWebRPC
+stop it cancels those IDs only. If later evidence shows that one subsystem genuinely needs bulk
+isolation, give it a separately and explicitly constructed Engine; do not introduce
+`Client::cancel_all()` or a hidden child Engine.
 
 ## 3. Adapter and request parity
 
@@ -80,20 +88,21 @@ Before switching any caller, add facade-level controlled-server tests for this m
 | GDS operation | Explicit NBReq construction/proof |
 |---|---|
 | `post_json` / JSON general request | serialized bytes plus explicit `Content-Type: application/json` |
-| `post_text` | capture ureq's current wire header/body, then reproduce the accepted content type explicitly |
+| `post_text` | current ureq 2.12 `send_string` adds no Content-Type; deliberately preserve that omission unless the caller supplied one |
 | form body | explicit percent encoding and `application/x-www-form-urlencoded` |
 | GET | no invented body or content type |
 | Basic/Bearer auth | explicit header; never included in error text |
 | caller headers | byte-for-byte accepted UTF-8 values for the curl pilot |
-| HTTP status | only 2xx returned as GDS success; preserve useful redacted status/body diagnostics |
+| HTTP status | only 2xx returned as GDS success; current ureq normally converts 4xx/5xx to `Error::Status` before the facade's response-body branch, so capture and preserve the relied-upon error shape rather than assuming body inclusion |
 | response text | define and test UTF-8/charset behavior rather than relying on ureq conversion magic |
 | redirects | capture current relied-upon behavior and compare with NBReq's conservative table |
-| timeout | map the old optional timeout deliberately to NBReq connect/inactivity/total policy |
-| no timeout supplied | choose finite pilot defaults because curl DNS/connect cancellation is deadline-bounded |
+| timeout | map every `Some(t)` to both NBReq total timeout and connect timeout `t`; do not round 10/20/25-second callers up to 30 seconds |
+| no timeout supplied | apply a 30-second total and connect timeout because curl DNS/connect cancellation is deadline-bounded |
 
-NBReq must not invent curl's form content type. Every body-bearing GDS path supplies its intended
-header through the adapter. This is especially important for GuardLink's token form and JSON API
-calls and for DPWebRPC's raw text POST.
+NBReq must not inherit curl's invented form content type. The adapter explicitly supplies
+`application/json` and `application/x-www-form-urlencoded`; its raw text path deliberately omits
+Content-Type to match current ureq unless the caller supplied one. This is especially important for
+GuardLink's token form and JSON API calls and for DPWebRPC's raw text POST.
 
 Map NBReq's structured failure to the existing `Result<_, String>` only at the GDS facade boundary.
 Logs should retain redacted category/stage/timeout detail without curl numbers, URLs containing
@@ -101,20 +110,30 @@ query secrets, authorization values, or payloads.
 
 ## 4. Cancellable DPWebRPC path
 
-Extend the facade with an internal started-request shape that separates a waitable result from a
-cloneable cancellation control. The exact Rust spelling is a review item, but it must allow this
+Extend the facade with a GDS-owned internal started-request shape that contains no public NBReq
+types. It separates a single waitable result from a cloneable cancellation control and allows this
 sequence without one network thread per request:
 
-1. DPWebRPC submits its poll and retains the request control.
-2. The poller blocks on NBReq's direct waiter, independent of callback workers.
-3. `DPWebRPC::Drop` signals shutdown and cancels the retained poll plus any tracked outbound POSTs.
-4. The poller and POST pool join synchronously after prompt NBReq cancellation.
-5. The existing detached `dpwebrpc-shutdown` workaround is removed only after the bounded join test
-   passes through the Delphi entry point.
+1. The tracker acquires a start-activation permit unless its stopping barrier is already closed.
+2. DPWebRPC submits its poll, registers the cloneable cancellation control, then releases the
+   activation permit. The poller owns the one waiter.
+3. The poller blocks on NBReq's direct waiter, independent of callback workers.
+4. `DPWebRPC::Drop` closes tracker admission, waits for any start activation to register or fail,
+   takes the poll and POST controls under lock, releases the lock, and cancels them individually.
+5. If shutdown raced after NBReq acceptance but before registration, registration sees the closed
+   barrier and cancels the request immediately. Completion versus cancellation remains harmless.
+6. The poller and POST pool join synchronously after prompt NBReq cancellation.
+7. The existing detached `dpwebrpc-shutdown` workaround is removed for the NBReq path only after the
+   bounded join test passes through `dpwebrpc_free`.
 
-The ureq implementation remains selectable. Its started-request compatibility implementation may
-retain the existing timeout-bounded shutdown behavior; it must not weaken the NBReq path or require
-NBReq to emulate ureq's inability to cancel.
+The ureq implementation remains selectable. Its neutral cancellation control reports prompt
+cancellation as unsupported and its waiter retains the existing timeout-bounded blocking behavior.
+The ureq rollback path may retain the detached shutdown waiter; it must not weaken the NBReq path or
+require NBReq to emulate ureq's inability to cancel.
+
+DPWebRPC never calls Engine `cancel_all()`: the context Engine is shared with unrelated GuardLink,
+pager, GDS API, and extension requests. Engine-wide cancellation occurs later during complete
+`DpSysContext` shutdown after HTTP-producing subsystems have stopped.
 
 ## 5. Initialization and shutdown order
 
@@ -126,21 +145,27 @@ Normal GDS shutdown order:
 
 1. stop admission by GDS HTTP-producing subsystems;
 2. cancel and join DPWebRPC poll/POST work and other tracked long-lived calls;
-3. take the unique Engine from `HttpEngineOwner`;
+3. mark the HTTP service stopped and take the unique Engine from `HttpServiceState`;
 4. call Engine bulk cancellation and consuming normal shutdown;
 5. verify callback/reactor threads have exited; and
 6. leave the curl-backed GDS module and preloaded curl DLL pinned until process exit.
 
-Engine restart inside the still-loaded module is supported and tested. `FreeLibrary` unload/reload
-of the curl-backed GDS module is not supported and must not be used as a stop mechanism.
+Engine recreation inside the still-loaded module is supported only after the old service is stopped
+and its facade users are rebuilt. It is not transparent: a DPWebRPC instance holds its facade Arc
+for life and must be recreated rather than having an Engine swapped beneath it. `dpwebrpc_free`
+drops that one instance; it is not `FreeLibrary`. `FreeLibrary` unload/reload of the curl-backed GDS
+module is unsupported and must not be used as a stop mechanism.
 
 ## 6. Packaging and rollout work packages
 
 ### G0 — Review and freeze
 
-- Accept Engine placement, facade started-request shape, shutdown ordering, setting names, and
-  security defaults.
-- Resolve the open questions below. No GDS mutation before this gate.
+- **Freeze candidate:** one atomic context-owned HTTP service state; one unique NBReq
+  Engine; context-issued facade; neutral started request; per-DPWebRPC cancellation tracker;
+  `Some(t)` preservation; finite 30-second `None`; explicitly insecure first canary; ureq default
+  rollback; and consuming Engine shutdown after subsystem joins.
+- Final review must accept the runtime setting source/name and confirm the remaining deployment
+  questions below. No GDS mutation before this gate.
 
 ### G1 — Dependency and selection scaffold
 
@@ -187,21 +212,32 @@ of the curl-backed GDS module is not supported and must not be used as a stop me
 - Never dual-send a real mutation. Differential mutation tests use only controlled fixtures.
 - Make rollback to ureq a setting change and record the decision/health criteria before canary.
 
-## 7. Review questions
+## 7. Frozen decisions and remaining review questions
 
-1. Where should the runtime backend choice live, and what existing configuration mechanism should
-   carry it?
-2. Should the curl pilot initially reproduce today's globally insecure Rust behavior for selected
-   legacy installs, or is there already a reliable GDS setting that can scope no-verify? The NBReq
-   default remains verified either way.
-3. What finite connect and total defaults should the adapter apply when current callers pass
-   `None`?
-4. Does any deployed endpoint rely on environment proxies or ureq redirect behavior?
-5. Is strict UTF-8 response decoding acceptable for every current JSON/text caller, or must a
+Frozen for the first canary:
+
+- The context owns one Engine and issues the shared facade; DPWebRPC no longer creates a second
+  live HTTP implementation.
+- Ureq remains the default rollback backend. An explicit internal backend enum distinguishes
+  `ureq` from `nbreq-curl-pilot`; Cargo feature unification never selects live behavior by itself.
+- Every `Some(t)` maps to total and connect timeout `t`; `None` maps to 30 seconds for both.
+- The first selected NBReq/GDS canary explicitly skips certificate and hostname verification to
+  reproduce current GDS behavior. NBReq's library default remains verified.
+- DPWebRPC uses individual neutral cancellation controls; context shutdown alone uses Engine-wide
+  cancellation.
+- Existing DPWebRPC instances are recreated across Engine recreation. `dpwebrpc_free` is object
+  Drop, while module pinning is a separate Delphi-host/package obligation.
+
+Remaining final-review/deployment questions:
+
+1. Which existing GDS configuration source and public setting name carries the explicit backend
+   enum? The initial/default value is ureq and rollback must remain a setting change.
+2. Does any deployed endpoint rely on environment proxies or ureq redirect behavior?
+3. Is strict UTF-8 response decoding acceptable for every current JSON/text caller, or must a
    legacy charset conversion be preserved?
-6. For Wine 5, does the canary use explicit no-verify, a newer Wine/trust path, or a separately
-   provisioned root? Generated custom trust currently fails through that legacy Schannel.
-7. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
+4. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
+   a separately provisioned root? Generated custom trust currently fails through legacy Schannel.
+5. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
    curl-backed GDS DLL is never `FreeLibrary`-unloaded before process exit?
-8. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
+6. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
    back to ambient search-path selection?
