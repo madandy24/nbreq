@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
+#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
 use crate::{
@@ -20,7 +22,7 @@ static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
 
 enum RuntimeOwner {
     Spawned(Option<JoinHandle<Result<(), ShutdownError>>>),
-    Manual(Option<ReactorCore>),
+    Manual(Option<ReactorCore<dyn Backend + Send>>),
     Stopped,
 }
 
@@ -63,7 +65,7 @@ impl Engine {
 
     pub(crate) fn with_backend(
         config: EngineConfig,
-        backend: Box<dyn Backend>,
+        backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
@@ -116,6 +118,66 @@ impl Engine {
             shared,
             config,
             runtime,
+            dispatcher: Some(dispatcher),
+            shutdown_failure: None,
+            driving: false,
+            _not_sync: PhantomData,
+        })
+    }
+
+    #[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+    pub(crate) fn with_curl_backend(config: EngineConfig) -> Result<Self, Error> {
+        if config.run_mode() != RunMode::Spawned {
+            return Err(Error::new(
+                ErrorKind::WrongMode,
+                "the private curl proving backend supports spawned mode only",
+            ));
+        }
+
+        let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
+        if id == u64::MAX {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "Engine identity space is exhausted",
+            ));
+        }
+        let dispatcher = DispatcherOwner::new(
+            id,
+            config.callback_queue_capacity().get(),
+            config.callback_dispatch(),
+        )?;
+        let shared = Shared::new(
+            id,
+            config.run_mode(),
+            config.command_queue_capacity().get(),
+            config.callback_queue_capacity().get(),
+            dispatcher.domain(),
+        );
+        let reactor_shared = Arc::clone(&shared);
+        let factory = backend::curl_factory();
+        let handle = thread::Builder::new()
+            .name(format!("nbreq-reactor-{id}"))
+            .spawn(move || spawned_main_factory(reactor_shared, factory))
+            .map_err(|error| {
+                shared.begin_shutdown();
+                dispatcher.seal();
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("failed to spawn NBReq curl reactor: {error}"),
+                )
+            });
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _callback_result = dispatcher.finish();
+                return Err(error);
+            }
+        };
+
+        Ok(Self {
+            shared,
+            config,
+            runtime: RuntimeOwner::Spawned(Some(handle)),
             dispatcher: Some(dispatcher),
             shutdown_failure: None,
             driving: false,

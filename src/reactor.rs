@@ -2,17 +2,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::backend::{Backend, BackendCompletion};
+#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+use crate::backend::BackendFactory;
+use crate::backend::{Backend, BackendCompletion, PollMode, long_poll_deadline};
 use crate::registry::{RequestState, Shared};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
-pub(crate) struct ReactorCore {
-    backend: Box<dyn Backend>,
+pub(crate) struct ReactorCore<B: Backend + ?Sized> {
+    backend: Box<B>,
     active: HashMap<RequestId, Arc<RequestState>>,
 }
 
-impl ReactorCore {
-    pub(crate) fn new(backend: Box<dyn Backend>) -> Self {
+impl<B: Backend + ?Sized> ReactorCore<B> {
+    pub(crate) fn new(backend: Box<B>) -> Self {
         Self {
             backend,
             active: HashMap::new(),
@@ -57,6 +59,7 @@ impl ReactorCore {
     }
 
     pub(crate) fn shutdown(&mut self, shared: &Arc<Shared>) -> Result<(), ShutdownError> {
+        shared.queue.set_external_waker(None);
         for submission in shared.queue.drain() {
             if !submission.state.is_terminal() {
                 shared.complete_state(&submission.state, crate::Completion::Cancelled);
@@ -68,6 +71,10 @@ impl ReactorCore {
         }
         self.active.clear();
         self.backend.shutdown()
+    }
+
+    fn can_wait_for_transport(&self) -> bool {
+        !self.active.is_empty() && self.backend.poll_mode() == PollMode::Interruptible
     }
 
     fn reap_cancelled(&mut self) -> bool {
@@ -97,20 +104,22 @@ impl ReactorCore {
     }
 }
 
-pub(crate) fn spawned_main(
+pub(crate) fn spawned_main<B: Backend + ?Sized>(
     shared: Arc<Shared>,
-    mut reactor: ReactorCore,
+    mut reactor: ReactorCore<B>,
 ) -> Result<(), ShutdownError> {
-    // This command-triggered loop is sufficient only for WP1's deterministic non-I/O backends.
-    // WP2 must integrate the backend wait source with the command wakeup; periodic polling is not
-    // an acceptable cancellation mechanism.
     let mut seen_generation = 0;
     loop {
-        shared
-            .queue
-            .wait_for_signal(&mut seen_generation, &shared.stopped);
+        let deadline = if reactor.can_wait_for_transport() {
+            long_poll_deadline()
+        } else {
+            shared
+                .queue
+                .wait_for_signal(&mut seen_generation, &shared.stopped);
+            Instant::now()
+        };
 
-        if let Err(error) = reactor.drive(&shared, Instant::now()) {
+        if let Err(error) = reactor.drive(&shared, deadline) {
             shared.fail_all(error.clone());
             let shutdown = reactor.shutdown(&shared);
             shared.mark_stopped();
@@ -123,6 +132,21 @@ pub(crate) fn spawned_main(
                 shared.mark_stopped();
             }
             return result;
+        }
+    }
+}
+
+#[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+pub(crate) fn spawned_main_factory(
+    shared: Arc<Shared>,
+    factory: Box<dyn BackendFactory>,
+) -> Result<(), ShutdownError> {
+    match factory.create(&shared) {
+        Ok(backend) => spawned_main(shared, ReactorCore::new(backend)),
+        Err(error) => {
+            shared.fail_all(error.clone());
+            shared.mark_stopped();
+            Err(ShutdownError::new(error))
         }
     }
 }

@@ -1,7 +1,8 @@
-//! Deterministic controls for lifecycle and adapter tests.
+//! Controls for lifecycle, adapter, and private transport proof tests.
 //!
 //! This module is available to NBReq's own tests and through the opt-in `test-support` feature. It
-//! exposes no transport implementation types and performs no network access.
+//! exposes no transport implementation types. The ordinary controller is deterministic and
+//! network-free; the curl constructor is an explicitly experimental exception.
 
 use std::sync::{Arc, Weak};
 
@@ -43,4 +44,13 @@ pub fn engine(config: EngineConfig) -> Result<(Engine, TestController), Error> {
         shared: Arc::downgrade(&shared),
     };
     Ok((engine, controller))
+}
+
+/// Creates an Engine using the private curl Multi proving backend.
+///
+/// This is experimental test support rather than a stable backend-selection API. It exists only
+/// when both the `curl` and `test-support` features are enabled (or in NBReq's own curl tests).
+#[cfg(feature = "curl")]
+pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
+    Engine::with_curl_backend(config)
 }

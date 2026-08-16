@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">WP1 complete; WP2 private curl reactor is next</span>
+  Overall status: <span class="gate-partial">WP1 complete; WP2 Windows curl/DLL slice proven, cross-platform gates in progress</span>
 </div>
 
 <div class="panel">
@@ -84,7 +84,7 @@
 </div>
 
 <div class="callout warning">
-  <strong>M1 passed:</strong> the deterministic backend-independent lifecycle kernel now proves request identity, exactly-once terminal arbitration, synchronous waiter wakeup, cancellation barriers, bounded callback dispatch, spawned/manual progression, and normal/timed shutdown. Begin WP2's deliberately private curl Multi wakeup/cancellation/DLL experiment; experimental curl types are not the public API.
+  <strong>M1 passed; WP2 in progress:</strong> the deterministic lifecycle kernel now drives a private curl Multi backend. Windows proves direct Multi wakeup, concurrent HTTP, owner-thread removal, redirects, dynamic Schannel packaging, explicit initialization outside the loader path, and process-lifetime DLL use. Connect/DNS, minimum Windows, Wine, Linux, TLS fixtures, and exact GDS packaging remain; experimental curl types are not the public API.
 </div>
 
 <h2 id="contents">Contents</h2>
@@ -320,7 +320,7 @@
 <p><strong>Acceptance passed:</strong> deterministic tests cover repeated cancel/complete races, exactly one terminal callback, immediate direct waiters behind a blocked callback worker, Engine-scoped IDs, cancellation barriers, handle/drop behavior, strict concurrent bounded admission through callback return, progress coalescing with terminal priority, per-request serialization and cross-request pool concurrency, callback reentrancy and panic containment, registry-lock exclusion, manual inline dispatch and drive-until, spawned shutdown cancellation, normal drain, timed detachment with actual worker join, stopped captured Clients, and rejection/deferred cleanup of synchronous callback-stack shutdown overlapping an admitted callback activation.</p>
 
 <h3>WP2 — Prove the curl Multi reactor</h3>
-<p><span class="status status-progress">Ready to begin</span> First real transport vertical slice.</p>
+<p><span class="status status-progress">In progress — Windows vertical slice proven</span> First real transport vertical slice. Evidence: <span class="mono">thoughts/wp2_curl_pilot_evidence.md</span>.</p>
 <ul>
   <li>Own one curl Multi handle and all easy handles on one engine thread.</li>
   <li>Keep curl <span class="mono">Multi</span> inside the spawned reactor so the public Engine remains Send even though the current Rust binding is not. Do not promise manual curl or add an unsafe Send wrapper during the GDS milestone.</li>
@@ -339,6 +339,7 @@
   <li>Measure cancellation latency during connect, slow headers, and stalled body on each supported target; turn the evidence into an explicit gate before WP3 is accepted.</li>
 </ul>
 <p><strong>Acceptance:</strong> one Engine runs multiple concurrent controlled requests, any request can be cancelled without harming peers, a blocked reactor wakes promptly for commands, normal shutdown joins reactor and callbacks, and timed shutdown stops all network work before returning any detached callback handle.</p>
+<p><strong>Progress:</strong> the exact Windows dynamic package passes concurrent GET/POST/404, redirect, timeout, blocked-Multi wakeup, slow-header/body cancellation, Engine shutdown, and callback-worker join tests. Ten trials per stalled receive stage satisfy a provisional 100 ms socket-release gate (observed maxima below 4 ms). The binding's loader constructor is disabled by a pinned local patch and initialization occurs on the reactor thread. Because the binding deliberately performs no global cleanup, curl-backed DLL unload is explicitly unsupported: a controlled host preloads the exact curl DLL by absolute path and pins both modules until process exit; 25 fresh-process load/use/exit probes pass.</p>
 
 <h3>WP3 — Deliver the callback and blocking APIs over curl</h3>
 <p><span class="status status-open">Open</span> Produces the first consumer-usable library.</p>
@@ -517,17 +518,17 @@
 <table>
 <tr><th>Gate</th><th>Required evidence</th><th>Curl milestone</th><th>Native milestone</th></tr>
 <tr><td>API contract</td><td>Unique non-Arc, Send Engine and consuming shutdown; no initial Sync promise; cloneable Send+Sync Clients/handles; canonical Completion; reviewed cancellation, callbacks, direct blocking wait, timeout, error, and ownership semantics.</td><td class="gate-no">Pending</td><td>Must remain unchanged or use an explicit versioned revision.</td></tr>
-<tr><td>Thread traits</td><td>Compile-time assertions plus runtime tests moving an idle/active spawned Engine owner, PendingRequest, and DetachedCallbacks between threads. Native manual Engine moves only between drive calls; manual curl is excluded or separately audited.</td><td class="gate-no">Pending spawned proof</td><td class="gate-no">Pending native manual proof</td></tr>
+<tr><td>Thread traits</td><td>Compile-time assertions plus runtime tests moving an idle/active spawned Engine owner, PendingRequest, and DetachedCallbacks between threads. Native manual Engine moves only between drive calls; manual curl is excluded or separately audited.</td><td class="gate-partial">Active spawned curl Engine movement passes; manual curl rejects explicitly</td><td class="gate-no">Pending native manual proof</td></tr>
 <tr><td>Lifecycle</td><td>Engine is the sole network/resource owner; exactly one terminal outcome; idempotent cancel/shutdown; normal shutdown joins everything; timed shutdown returns the only observable handle to any sealed callback domain still draining.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
-<tr><td>Cancellation</td><td>Deterministic tests at queue, resolve, connect, TLS, send, headers, body, and completion race; agreed latency bound.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Cancellation</td><td>Deterministic tests at queue, resolve, connect, TLS, send, headers, body, and completion race; agreed latency bound.</td><td class="gate-partial">Queue/header/body pass provisional 100 ms gate; connect/DNS/TLS/platform runs pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>Blocking callers</td><td>Direct terminal-state wakeup independent of callback workers; Completion/execute mapping; passive wait and manual drive-until; individual cancellation and Engine cancel-all/shutdown without per-request network threads.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>HTTP correctness</td><td>Status/headers/body framing, redirects, limits, malformed responses, and connection reuse pass shared tests.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>TLS</td><td>Verified by default; negative certificates fail; existing explicit GDS no-verify configuration preserved and its hostname/chain scope tested; interrupted handshake cancellable.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>DNS</td><td>Reactor never blocks; cancellation prompt; Engine-owned resolver shutdown bounded.</td><td>Inspect packaged curl resolver/capabilities and pass the portable contract.</td><td class="gate-no">Pending</td></tr>
-<tr><td>Callback dispatch</td><td>Owned events after safe state commit; no user code on reactor; bounded queue; per-request order; normal drain/join; timed sealed-domain detachment with status/wait; stopped Clients; explicit DLL-unload prohibition until complete.</td><td class="gate-no">Pending implementation proof</td><td class="gate-no">Pending</td></tr>
-<tr><td>Curl compatibility</td><td>HTTP/1.1 forced; environment proxies/cookies/decompression opt-in or off; Expect suppressed; redirect table/auth/body replay explicit; HTTP error status preserved as response; runtime capabilities and allowed Happy-Eyeballs difference recorded.</td><td class="gate-no">Pending</td><td>Parity target, not a curl dependency.</td></tr>
+<tr><td>Callback dispatch</td><td>Owned events after safe state commit; no user code on reactor; bounded queue; per-request order; normal drain/join; timed sealed-domain detachment with status/wait; stopped Clients; explicit DLL-unload prohibition until complete.</td><td class="gate-partial">WP1 contract and Windows DLL callback/join probe pass; full HTTP pressure suite pending</td><td class="gate-no">Pending</td></tr>
+<tr><td>Curl compatibility</td><td>HTTP/1.1 forced; environment proxies/cookies/decompression opt-in or off; Expect suppressed; redirect table/auth/body replay explicit; HTTP error status preserved as response; runtime capabilities and allowed Happy-Eyeballs difference recorded.</td><td class="gate-partial">Profile and redirect table pass on Windows; TLS fixtures and other targets pending</td><td>Parity target, not a curl dependency.</td></tr>
 <tr><td>Resource bounds</td><td>Configured limits for active/queued requests, bodies, headers, events, connections; overload remains bounded.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
-<tr><td>Packaging</td><td>Curl pilot pins adjacent dynamic dependencies and controlled loading; native aims for one self-contained artifact. Both record clean builds. Curl proves once-only initialization, no per-Engine cleanup, complete resolver/handle stop, and the exact DLL load/unload policy.</td><td class="gate-no">Pending dynamic curl/DLL pilot proof</td><td class="gate-no">Pending native proof</td></tr>
+<tr><td>Packaging</td><td>Curl pilot pins adjacent dynamic dependencies and controlled loading; native aims for one self-contained artifact. Both record clean builds. Curl proves once-only initialization, no per-Engine cleanup, complete resolver/handle stop, and the exact DLL load/unload policy.</td><td class="gate-partial">Pinned Windows Schannel DLL and process-lifetime policy proven; resolver, GDS, Wine/Linux pending</td><td class="gate-no">Pending native proof</td></tr>
 <tr><td>GDS compatibility</td><td>DPWebRPC long poll, POSTs, restart/handoff, watchdog, primary/secondary, shutdown, and rollback tested.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>Observability</td><td>Redacted stage, timing, cancellation, queue, pool, error, and shutdown information without payload leakage.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
 <tr><td>Soak/canary</td><td>Agreed duration under realistic concurrency, network interruption, settings refresh, and repeated process lifecycle.</td><td class="gate-no">Pending</td><td class="gate-no">Pending</td></tr>
@@ -748,11 +749,13 @@
   <li><strong>2026-08-16 — WP0 review nits closed.</strong> Made shutdown failure sealing/retry-safe, made manual-drive state unwind-safe, kept detached callback ownership unique, added direct callback-worker builder sugar, and moved cross-Engine/late-cancel coverage into the default test suite.</li>
   <li><strong>2026-08-16 — WP1 completed.</strong> Implemented Engine-scoped request registry and IDs, canonical terminal arbitration, direct condition-variable waiters, bounded submission and callback pressure, keyed callback serialization/pooling, progress coalescing with terminal priority, spawned reactor and manual drive paths over one core, cancellation barriers, callback panic/reentrancy containment, normal/timed shutdown, detached callback observation, and a deterministic held-request controller for adversarial tests.</li>
   <li><strong>2026-08-16 — WP1 unload-path review closed.</strong> Deferred callback-stack shutdown now waits for overlapping callback activation before sealing; queue-after-seal is non-panicking; detached waits own and join worker handles; deferred-cleanup spawn failure is reported without first losing owned resources; and atomic admission plus simultaneous-start tests make the configured bound explicit.</li>
+  <li><strong>2026-08-16 — WP2 Windows transport slice proven.</strong> Added a private spawned curl Multi backend whose owner-thread handles compose <span class="mono">curl_multi_poll</span> with command <span class="mono">MultiWaker</span>, perform concurrent buffered HTTP, remove cancelled transfers, preserve canonical completion/dispatcher semantics, implement the compatibility and redirect profile, and pass timeout/shutdown tests.</li>
+  <li><strong>2026-08-16 — WP2 Windows package and DLL policy proven.</strong> Added a hash-pinned official curl 8.21.0 Schannel/HTTP-only dynamic build with only Windows system dependencies. Patched the pinned Rust binding to remove loader-constructor initialization and initialize on the reactor thread. Because global cleanup is deliberately absent, in-process curl-backed DLL unload is unsupported; controlled absolute preload plus process-lifetime pinning passed 25 fresh-process callback HTTP lifecycle probes.</li>
 </ul>
 
 <div class="panel">
   <h3>Next implementation step</h3>
-  <p><strong>WP2:</strong> build the deliberately private curl Multi experiment against the accepted lifecycle boundary. Prove external wakeup, request removal cancellation, measured cancellation latency, exact dynamic-library loading and dependency inventory, once-only initialization outside loader-sensitive work, resolver/handle teardown, and the supported DLL load/use/unload policy. Do not donate experimental curl types to the public API.</p>
+  <p><strong>Finish WP2:</strong> retain the proven private curl/API boundary and add deterministic connect and resolver teardown evidence, controlled TLS fixtures including legacy no-verify, Windows 10 minimum-target execution, Ubuntu 20.04 Wine/native packages, notices/security procedure, and then the exact GDS absolute-preload/pinning integration proof. Do not donate experimental curl types to the public API.</p>
 </div>
 
 </body>

@@ -1,0 +1,26 @@
+[package]
+name = "nbreq-windows-curl-dll-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+name = "nbreq_curl_dll_probe"
+path = "src/probe.rs"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "nbreq-curl-dll-host"
+path = "src/host.rs"
+
+[dependencies]
+nbreq = { path = "../..", features = ["curl", "test-support"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
+[patch.crates-io]
+curl = { path = "../../vendor/curl" }
+
+[workspace]

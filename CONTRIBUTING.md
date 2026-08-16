@@ -17,6 +17,17 @@ cargo test --no-default-features
 cargo test --all-features
 ```
 
+On Windows, the exact dynamic curl pilot build and DLL lifecycle proof are run with:
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-curl-windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-curl-dll-windows.ps1
+```
+
+These scripts use the installed Visual Studio C++ tools, download and hash-check the pinned official
+curl source, and place all generated artifacts under `target/curl-pilot`. They do not require a
+global curl or vcpkg installation.
+
 Backend implementation types stay private. Public request, response, lifecycle, cancellation, and error types must compile identically with no backend feature, `curl`, `native`, and both backend features enabled.
 
 New dependencies require a recorded reason, supported-platform review, license review, and confirmation that they do not introduce an async runtime or leak backend-specific types into the public API.

@@ -3,17 +3,22 @@ name = "nbreq"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Runtime-independent cancellable HTTP client (pre-transport)"
+description = "Runtime-independent cancellable HTTP client"
 publish = false
 
 [features]
 default = []
-curl = []
+curl = ["dep:curl"]
+curl-vendored = ["curl", "curl/ssl"]
 native = []
 test-support = []
 ffi = []
 
 [dependencies]
+curl = { version = "=0.4.50", optional = true, default-features = false, features = ["poll_7_68_0", "nbreq-explicit-init"] }
+
+[patch.crates-io]
+curl = { path = "vendor/curl" }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -1,8 +1,8 @@
 //! Runtime-independent HTTP client architecture.
 //!
-//! The WP1 crate implements NBReq's backend-independent ownership and lifecycle kernel. It
-//! intentionally contains no production HTTP backend yet. The private scaffold backend keeps the
-//! state machine deterministic before curl or native transport details are admitted.
+//! The crate implements NBReq's backend-independent ownership and lifecycle kernel. WP2 adds a
+//! deliberately private curl Multi proving backend; the ordinary public constructor still uses the
+//! deterministic scaffold until the transport contract is ready for consumers.
 
 mod backend;
 mod callback;
@@ -17,6 +17,8 @@ mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(all(test, feature = "curl"))]
+mod curl_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 
@@ -26,5 +28,5 @@ pub use engine::{Engine, EngineBuilder};
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,
     Header, Method, Request, RequestBuilder, RequestId, RequestOptions, Response, RunMode,
-    ShutdownError,
+    ShutdownError, TlsVerification,
 };

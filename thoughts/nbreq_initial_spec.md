@@ -583,11 +583,11 @@ The working conservative redirect table is:
 
 All automatic redirects have a small configured hop limit. HTTPS-to-HTTP downgrade is blocked by default. `Authorization` and other origin-bound credentials are stripped whenever scheme, host, or effective port changes. A redirect requiring replay of a non-replayable body fails explicitly rather than sending a partial or altered request. This is the accepted portable default; curl/native implementations may not choose independently. Any future browser-compatible or application-specific behaviour must be an explicit opt-in policy.
 
-Curl-global initialization is process/module state, an explicit exception to per-Engine isolation. With the current Rust `curl` crate, initialization is guarded once and global cleanup is deliberately not scheduled because the crate cannot prove the surrounding process thread state. Engines therefore never call `curl_global_cleanup()` independently or maintain a misleading per-Engine cleanup reference count. The exact pinned crate and packaged libcurl behaviour must be recorded.
+Curl-global initialization is process/module state, an explicit exception to per-Engine isolation. The upstream Rust `curl` crate normally initializes from a platform constructor, which is loader-sensitive in a Windows DLL. The pinned pilot binding disables that constructor and calls its once-guarded `curl::init()` explicitly when the spawned reactor constructs the backend, outside `DllMain`. Global cleanup is deliberately not scheduled because the binding cannot prove the surrounding process thread state. Engines therefore never call `curl_global_cleanup()` independently or maintain a misleading per-Engine cleanup reference count. The exact pinned crate, local patch, and packaged libcurl behaviour must be recorded.
 
 Detached callback domains contain no curl handles, resolver work, TLS state, or backend-owned values and therefore do not extend curl backend lifetime. Before a curl Engine reports its network side stopped, every easy/multi handle and any resolver activity from that Engine must be gone.
 
-Windows DLL use is a specific WP2 proof obligation. libcurl warns that global cleanup does not wait for resolver threads and cautions against unloading a module that still contains such activity; it also cautions against initialization from `DllMain` or a DLL static initializer. The exact GDS artifact must prove safe initialization outside loader-sensitive work, complete handle/resolver teardown, and repeated load/use/unload or document that curl-backed GDS DLL unloading is not supported.
+Windows DLL use is a specific WP2 proof obligation. libcurl warns that global cleanup does not wait for resolver threads and cautions against unloading a module that still contains such activity; it also cautions against initialization from `DllMain` or a DLL static initializer. The pilot decision is conservative: initialize explicitly on the reactor thread, stop and join every Engine-owned handle/resolver activity, preload the pinned curl DLL from a controlled absolute path, and pin both curl and the curl-backed GDS module until process exit. `FreeLibrary`-based unload of the curl-backed GDS DLL is unsupported. Fresh-process load/use/exit repetition is required; in-process unload/reload is not claimed. The native backend is not subject to this pilot restriction.
 
 Lifecycle references: <https://docs.rs/curl/latest/curl/fn.init.html>, <https://curl.se/libcurl/c/libcurl.html>, and <https://curl.se/libcurl/c/curl_global_cleanup.html>.
 
@@ -731,8 +731,7 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 
 16. **Licensing and publication — direction accepted:** Aim for a public crates.io library. Choose MIT, Apache-2.0, or the customary dual `MIT OR Apache-2.0` grant after confirming GDS compatibility and dependency notices; the exact choice remains open.
 
-17. **Cancellation latency gate:** What numeric threshold must the curl/GDS milestone meet for cancellation during controlled connect, header wait, and body stall tests on each supported platform?\
-    Recommendation: establish the value from the private WP2 experiment, then record it before public API implementation; never leave “prompt” as the only acceptance language.
+17. **Cancellation latency gate — provisional Windows value recorded:** The exact dynamic Windows package must release controlled slow-header and stalled-body sockets in less than 100 ms after cancellation; current 10-trial maxima are below 4 ms. The same 100 ms target is provisional for connect and for Windows 10, Wine, and Linux until named-stage measurements run there. Never leave “prompt” as the only acceptance language or silently weaken the gate when another platform is measured.
 
 18. **Engine thread traits — accepted in principle:** Ordinary Engine targets `Send` but does not initially promise `Sync`; Client and RequestHandle target `Send + Sync`; PendingRequest and DetachedCallbacks target at least `Send`. Spawned curl satisfies this without moving `Multi`; manual curl may remain unsupported/thread-bound until audited. User-created shared wrappers are allowed but outside NBReq's ownership contract.
 
@@ -778,7 +777,8 @@ Decisions already accepted in principle:
 - `DetachedCallbacks` is a unique, non-cloneable observation/ownership handle; the sealed callback domain remains self-owned if that handle is dropped;
 - the callback domain is not attached to a Client; captured Clients survive only as stopped command handles;
 - detached callbacks prohibit claiming DLL-unload safety until their handle reports complete;
-- the current curl backend uses once-only process/module initialization with no per-Engine global cleanup; detached callback domains contain no curl state;
+- the current curl backend disables loader-constructor initialization, initializes once explicitly on the spawned reactor, performs no per-Engine global cleanup, and leaves detached callback domains curl-free;
+- the curl-backed Windows DLL pilot is pinned until process exit and does not support `FreeLibrary` unload; the native destination retains the stronger unload goal;
 - curl is a dynamically packaged pilot backend, with pinned adjacent dependencies and ureq configuration rollback retained;
 - initial targets are Windows 10 x64, the Windows build under Ubuntu 20.04's default Wine, and native Ubuntu 20.04 x64;
 - verified TLS remains default while the current explicit GDS no-verify behaviour is preserved and tested;

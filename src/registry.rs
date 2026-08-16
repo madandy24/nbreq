@@ -176,6 +176,7 @@ pub(crate) struct CommandQueue {
     capacity: usize,
     state: Mutex<QueueState>,
     changed: Condvar,
+    external_waker: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
 }
 
 impl CommandQueue {
@@ -187,6 +188,7 @@ impl CommandQueue {
                 generation: 0,
             }),
             changed: Condvar::new(),
+            external_waker: Mutex::new(None),
         }
     }
 
@@ -198,6 +200,8 @@ impl CommandQueue {
         state.submissions.push_back(submission);
         state.generation = state.generation.wrapping_add(1);
         self.changed.notify_one();
+        drop(state);
+        self.wake_external();
         true
     }
 
@@ -209,6 +213,8 @@ impl CommandQueue {
         let mut state = lock_unpoisoned(&self.state);
         state.generation = state.generation.wrapping_add(1);
         self.changed.notify_all();
+        drop(state);
+        self.wake_external();
     }
 
     pub(crate) fn wait_for_signal(&self, seen_generation: &mut u64, stopping: &AtomicBool) {
@@ -223,6 +229,17 @@ impl CommandQueue {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         *seen_generation = state.generation;
+    }
+
+    pub(crate) fn set_external_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync + 'static>>) {
+        *lock_unpoisoned(&self.external_waker) = waker;
+    }
+
+    fn wake_external(&self) {
+        let waker = lock_unpoisoned(&self.external_waker).clone();
+        if let Some(waker) = waker {
+            waker();
+        }
     }
 }
 

@@ -174,8 +174,21 @@ impl Header {
     }
 }
 
-/// Portable request timeout options.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Controls server-certificate and hostname verification for HTTPS requests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TlsVerification {
+    /// Verify the certificate chain and requested hostname.
+    #[default]
+    Verify,
+    /// Disable both certificate-chain and hostname verification.
+    ///
+    /// This exists only for compatibility with deployments that cannot yet present a valid
+    /// certificate. It is deliberately verbose and is never the default.
+    DangerouslyDisableCertificateVerification,
+}
+
+/// Portable request policy and timeout options.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestOptions {
     /// Maximum time allowed to establish a connection.
     pub connect_timeout: Option<Duration>,
@@ -183,6 +196,24 @@ pub struct RequestOptions {
     pub inactivity_timeout: Option<Duration>,
     /// Maximum total request duration.
     pub total_timeout: Option<Duration>,
+    /// Maximum redirects followed under NBReq's conservative redirect policy.
+    ///
+    /// Zero returns the first redirect response without following it.
+    pub redirect_limit: u8,
+    /// HTTPS certificate and hostname verification policy.
+    pub tls_verification: TlsVerification,
+}
+
+impl Default for RequestOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: None,
+            inactivity_timeout: None,
+            total_timeout: None,
+            redirect_limit: 5,
+            tls_verification: TlsVerification::Verify,
+        }
+    }
 }
 
 /// An owned, backend-neutral HTTP request.
@@ -250,6 +281,42 @@ impl Request {
     #[must_use]
     pub fn options(&self) -> &RequestOptions {
         &self.options
+    }
+
+    #[cfg(all(feature = "curl", any(test, feature = "test-support")))]
+    pub(crate) fn redirected(
+        &self,
+        url: String,
+        method: Method,
+        keep_body: bool,
+        cross_origin: bool,
+    ) -> Self {
+        let headers = self
+            .headers
+            .iter()
+            .filter(|header| {
+                let name = header.name();
+                let body_header = name.eq_ignore_ascii_case("content-length")
+                    || name.eq_ignore_ascii_case("transfer-encoding");
+                let origin_bound = name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case("proxy-authorization")
+                    || name.eq_ignore_ascii_case("cookie")
+                    || name.eq_ignore_ascii_case("host");
+                (keep_body || !body_header) && (!cross_origin || !origin_bound)
+            })
+            .cloned()
+            .collect();
+        Self {
+            method,
+            url,
+            headers,
+            body: if keep_body {
+                self.body.clone()
+            } else {
+                Vec::new()
+            },
+            options: self.options.clone(),
+        }
     }
 }
 
@@ -378,6 +445,12 @@ pub enum ErrorKind {
     BackendUnavailable,
     /// The selected backend cannot represent the requested portable feature.
     Unsupported,
+    /// A connection, DNS, TLS, send, receive, or HTTP transport operation failed.
+    Transport,
+    /// A configured request timeout expired.
+    Timeout,
+    /// Redirect policy rejected a redirect or exhausted its configured hop limit.
+    Redirect,
     /// Internal communication ended unexpectedly.
     Internal,
 }
