@@ -522,3 +522,123 @@ fn synchronous_shutdown_from_callback_is_rejected_without_deadlock() {
         .expect_err("deferred cleanup must close admission");
     assert_eq!(error.kind(), ErrorKind::EngineStopped);
 }
+
+#[test]
+fn callback_stack_shutdown_waits_for_concurrent_start_activation_before_sealing() {
+    let (engine, controller) =
+        testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+    let shared = engine.shared_for_testing();
+    let client = engine.client();
+    let owner = Arc::new(Mutex::new(Some(engine)));
+    let callback_owner = Arc::clone(&owner);
+    let (shutdown_result_tx, shutdown_result_rx) = mpsc::channel();
+
+    let first = client
+        .start(request(), move |_completion| {
+            let engine = callback_owner
+                .lock()
+                .expect("test owner must not poison")
+                .take()
+                .expect("callback must own Engine");
+            let result = engine
+                .shutdown()
+                .expect_err("callback-stack shutdown must be rejected");
+            shutdown_result_tx
+                .send(result.error().kind())
+                .expect("test receiver must remain");
+        })
+        .expect("first callback request must submit");
+
+    let (activation_entered_tx, activation_entered_rx) = mpsc::channel();
+    let (release_activation_tx, release_activation_rx) = mpsc::channel();
+    shared.set_callback_activation_hook(move || {
+        activation_entered_tx
+            .send(())
+            .expect("test receiver must remain");
+        release_activation_rx
+            .recv()
+            .expect("activation must be released");
+    });
+
+    let second_client = client.clone();
+    let (second_completion_tx, second_completion_rx) = mpsc::channel();
+    let concurrent_start = thread::spawn(move || {
+        second_client
+            .start(request(), move |completion| {
+                second_completion_tx
+                    .send(completion)
+                    .expect("test receiver must remain");
+            })
+            .map(|_handle| ())
+    });
+    activation_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("concurrent start must pause during callback activation");
+
+    assert!(controller.complete(first.id(), response(1)));
+    assert_eq!(
+        shutdown_result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback shutdown must return"),
+        ErrorKind::ReentrantOperation
+    );
+    release_activation_tx
+        .send(())
+        .expect("activation must remain alive");
+    concurrent_start
+        .join()
+        .expect("start thread must not panic")
+        .expect("already-admitted start must finish without a sealed-queue panic");
+    assert!(matches!(
+        second_completion_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("accepted callback must receive its shutdown result"),
+        Completion::Cancelled
+    ));
+}
+
+#[test]
+fn simultaneous_submissions_never_exceed_the_admission_limit() {
+    const CONTENDERS: usize = 16;
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let config = EngineConfig::spawned()
+        .with_command_queue_capacity(one)
+        .with_callback_queue_capacity(one);
+    let (engine, controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+    let barrier = Arc::new(Barrier::new(CONTENDERS + 1));
+    let mut contenders = Vec::new();
+
+    for _ in 0..CONTENDERS {
+        let contender_client = client.clone();
+        let contender_barrier = Arc::clone(&barrier);
+        contenders.push(thread::spawn(move || {
+            contender_barrier.wait();
+            contender_client.submit(request())
+        }));
+    }
+    barrier.wait();
+
+    let mut accepted = Vec::new();
+    let mut rejected = 0;
+    for contender in contenders {
+        match contender.join().expect("contender must not panic") {
+            Ok(pending) => accepted.push(pending),
+            Err(error) => {
+                assert_eq!(error.kind(), ErrorKind::QueueFull);
+                rejected += 1;
+            }
+        }
+    }
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(rejected, CONTENDERS - 1);
+    assert_eq!(controller.active_requests(), 1);
+
+    accepted
+        .pop()
+        .expect("one request must be accepted")
+        .handle()
+        .cancel()
+        .expect("accepted request must cancel");
+    engine.shutdown().expect("Engine must stop");
+}

@@ -161,7 +161,7 @@ The default spawned mode dispatches callbacks away from the network reactor usin
 
 The callback dispatcher is an Engine-created domain, not something attached to any one Client. Callback closures may naturally capture Client clones. If the Engine has stopped, those Clients remain valid values but every Engine-dependent operation fails with `EngineStopped`.
 
-During normal spawned shutdown, the Engine seals the callback queue after all terminal events have been published, waits for queued and running callbacks to return, and joins the dispatcher. A timed shutdown may transfer a still-draining sealed dispatcher into a `DetachedCallbacks` handle. The detached domain owns only callback jobs, closures, completion data, and its workers: it has no network access and does not keep the Engine alive.
+During normal spawned shutdown, the Engine seals the callback queue after all terminal events have been published, waits for queued and running callbacks to return, and joins the dispatcher. A timed shutdown may transfer a still-draining sealed dispatcher into a `DetachedCallbacks` handle. The detached domain owns only callback jobs, closures, completion data, worker join handles, and its workers: it has no network access and does not keep the Engine alive. `is_complete()` becomes true only after every worker thread has exited; `wait()` additionally joins those threads before returning. A callback merely returning is not yet sufficient for DLL unload.
 
 Manual mode can drain the same queue inline on the thread calling `drive()`, after the current readiness/processing pass has reached a safe point. Inline callbacks may submit/cancel or request deferred shutdown; they may not block waiting on the same Engine, recursively drive it, or synchronously join/destroy it.
 
@@ -294,6 +294,7 @@ Requirements:
 - Completion racing cancellation has one winner. The loser observes the existing terminal state and does nothing.
 - The backend-independent request registry arbitrates that winner and wakes direct waiters synchronously. A winning cancellation then wakes the reactor so backend resource teardown follows; terminal notification does not falsely claim that a remote peer never observed the operation.
 - Cancellation submission wakes the Engine immediately; a long periodic polling interval is never the correctness mechanism. WP2 must measure and set an explicit supported-platform latency gate before the curl/GDS milestone rather than allowing “prompt” to remain subjective.
+- In manual mode, cancelling a submission that has not yet been drained makes the request terminal but does not remove its queued command. Command-queue capacity may therefore continue to report `QueueFull` until the host calls `drive()`; cancellation does not secretly drive a manual Engine.
 - `cancel_and_wait()` returns only once the request is terminal and its network resources are no longer owned by active engine work.
 - `Engine::cancel_all()` affects requests accepted before its cancellation barrier and leaves the Engine running. Its treatment of simultaneously submitted requests must be deterministic.
 - An Engine entering shutdown rejects new submissions through every Client.

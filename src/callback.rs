@@ -1,4 +1,5 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::{Error, ErrorKind, ShutdownError};
@@ -29,6 +30,7 @@ pub enum ShutdownOutcome {
 #[derive(Debug)]
 pub struct DetachedCallbacks {
     state: Arc<CallbackCompletion>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 #[derive(Debug)]
@@ -94,24 +96,58 @@ impl CallbackCompletion {
 }
 
 impl DetachedCallbacks {
-    pub(crate) fn new(state: Arc<CallbackCompletion>) -> Self {
-        Self { state }
+    pub(crate) fn new(state: Arc<CallbackCompletion>, workers: Vec<JoinHandle<()>>) -> Self {
+        Self {
+            state,
+            workers: Mutex::new(workers),
+        }
     }
 
     /// Returns whether all callbacks have returned and workers have exited.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.state.is_complete()
+        self.state.is_complete() && self.workers_finished()
     }
 
     /// Waits without a library-imposed timeout for the sealed domain to complete.
     pub fn wait(&self) -> Result<(), ShutdownError> {
-        self.state.wait()
+        self.state.wait()?;
+        self.join_workers()
     }
 
-    /// Waits up to `duration`, returning `true` only when the domain completed.
+    /// Waits up to `duration`, returning `true` only after callback workers have exited and joined.
     pub fn wait_for(&self, duration: Duration) -> Result<bool, ShutdownError> {
-        self.state.wait_for(duration)
+        let deadline = Instant::now().checked_add(duration);
+        if !self.state.wait_for(duration)? {
+            return Ok(false);
+        }
+
+        while !self.workers_finished() {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(false);
+            }
+            thread::yield_now();
+        }
+        self.join_workers()?;
+        Ok(true)
+    }
+
+    fn workers_finished(&self) -> bool {
+        lock_unpoisoned(&self.workers)
+            .iter()
+            .all(JoinHandle::is_finished)
+    }
+
+    fn join_workers(&self) -> Result<(), ShutdownError> {
+        let mut worker_panicked = false;
+        for worker in lock_unpoisoned(&self.workers).drain(..) {
+            worker_panicked |= worker.join().is_err();
+        }
+        if worker_panicked {
+            Err(callback_worker_panicked())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -125,5 +161,12 @@ fn poisoned_callback_domain() -> ShutdownError {
     ShutdownError::new(Error::new(
         ErrorKind::Internal,
         "detached callback state was poisoned",
+    ))
+}
+
+fn callback_worker_panicked() -> ShutdownError {
+    ShutdownError::new(Error::new(
+        ErrorKind::Internal,
+        "detached callback worker panicked",
     ))
 }

@@ -206,8 +206,10 @@ impl Engine {
     /// Irreversibly stops network work and waits for callback dispatch to drain.
     pub fn shutdown(mut self) -> Result<(), ShutdownError> {
         if crate::context::is_callback(self.shared.id) {
-            self.defer_cleanup();
-            return Err(reentrant_shutdown_error());
+            return match self.defer_cleanup() {
+                Ok(()) => Err(reentrant_shutdown_error()),
+                Err(error) => Err(error),
+            };
         }
         let network = self.stop_network();
         let callbacks = self.finish_callbacks();
@@ -217,8 +219,10 @@ impl Engine {
     /// Irreversibly stops network work, then waits up to `duration` for callback dispatch.
     pub fn shutdown_for(mut self, duration: Duration) -> Result<ShutdownOutcome, ShutdownError> {
         if crate::context::is_callback(self.shared.id) {
-            self.defer_cleanup();
-            return Err(reentrant_shutdown_error());
+            return match self.defer_cleanup() {
+                Ok(()) => Err(reentrant_shutdown_error()),
+                Err(error) => Err(error),
+            };
         }
         if let Err(error) = self.stop_network() {
             let _callback_result = self.finish_callbacks();
@@ -276,15 +280,19 @@ impl Engine {
         }
     }
 
-    fn defer_cleanup(&mut self) {
+    fn defer_cleanup(&mut self) -> Result<(), ShutdownError> {
         self.shared.begin_shutdown();
         let runtime = std::mem::replace(&mut self.runtime, RuntimeOwner::Stopped);
         let dispatcher = self.dispatcher.take();
-        if let Some(dispatcher) = &dispatcher {
-            dispatcher.seal();
-        }
+        let resources = Arc::new(std::sync::Mutex::new(Some((runtime, dispatcher))));
+        let cleanup_resources = Arc::clone(&resources);
         let shared = Arc::clone(&self.shared);
         let cleanup = move || {
+            let (runtime, dispatcher) = cleanup_resources
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("deferred cleanup resources must be present");
             let network = stop_owned_runtime(runtime, &shared);
             if network.is_ok() {
                 shared.mark_stopped();
@@ -294,9 +302,25 @@ impl Engine {
                 let _callback_result = dispatcher.finish();
             }
         };
-        let _cleanup_thread = thread::Builder::new()
+        match thread::Builder::new()
             .name(format!("nbreq-deferred-shutdown-{}", self.shared.id))
-            .spawn(cleanup);
+            .spawn(cleanup)
+        {
+            Ok(_cleanup_thread) => Ok(()),
+            Err(error) => {
+                let (runtime, dispatcher) = resources
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                    .expect("failed spawn must return deferred cleanup resources");
+                self.runtime = runtime;
+                self.dispatcher = dispatcher;
+                Err(ShutdownError::new(Error::new(
+                    ErrorKind::Internal,
+                    format!("failed to spawn NBReq deferred cleanup worker: {error}"),
+                )))
+            }
+        }
     }
 }
 
@@ -304,7 +328,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         if crate::context::is_callback(self.shared.id) {
             if !matches!(self.runtime, RuntimeOwner::Stopped) || self.dispatcher.is_some() {
-                self.defer_cleanup();
+                let _deferred_result = self.defer_cleanup();
             }
             return;
         }

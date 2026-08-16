@@ -1,8 +1,8 @@
 //! Runtime-independent HTTP client architecture.
 //!
-//! This WP0 crate establishes NBReq's public ownership and lifecycle boundary. It intentionally
-//! contains no production HTTP backend yet. The private scaffold backend exists so that the API,
-//! examples, and feature matrix compile before curl or native implementation details are admitted.
+//! The WP1 crate implements NBReq's backend-independent ownership and lifecycle kernel. It
+//! intentionally contains no production HTTP backend yet. The private scaffold backend keeps the
+//! state machine deterministic before curl or native transport details are admitted.
 
 mod backend;
 mod callback;

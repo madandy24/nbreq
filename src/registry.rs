@@ -26,6 +26,19 @@ impl Drop for AdmissionPermit {
     }
 }
 
+impl AdmissionPermit {
+    fn try_acquire(inflight: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        inflight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            })
+            .ok()?;
+        Some(Self {
+            inflight: Arc::clone(inflight),
+        })
+    }
+}
+
 struct RequestInner {
     completion: Option<Completion>,
     callback: Option<CompletionCallback>,
@@ -234,6 +247,8 @@ pub(crate) struct Shared {
     inflight_limit: usize,
     callback_activations: Mutex<usize>,
     callback_activations_done: Condvar,
+    #[cfg(test)]
+    callback_activation_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 struct CallbackActivation<'shared> {
@@ -280,6 +295,8 @@ impl Shared {
             inflight_limit: command_capacity.min(callback_capacity),
             callback_activations: Mutex::new(0),
             callback_activations_done: Condvar::new(),
+            #[cfg(test)]
+            callback_activation_hook: Mutex::new(None),
         })
     }
 
@@ -296,12 +313,6 @@ impl Shared {
                 "the owning Engine has stopped accepting work",
             ));
         }
-        if self.inflight.load(Ordering::Acquire) >= self.inflight_limit {
-            return Err(Error::new(
-                ErrorKind::QueueFull,
-                "the Engine's bounded request capacity is full",
-            ));
-        }
         if core.next_sequence == u64::MAX {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -309,19 +320,19 @@ impl Shared {
             ));
         }
 
-        self.inflight.fetch_add(1, Ordering::AcqRel);
+        let permit =
+            AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::QueueFull,
+                    "the Engine's bounded request capacity is full",
+                )
+            })?;
         let id = RequestId {
             engine: self.id,
             sequence: core.next_sequence,
         };
         core.next_sequence += 1;
-        let state = RequestState::new(
-            id,
-            callback,
-            AdmissionPermit {
-                inflight: Arc::clone(&self.inflight),
-            },
-        );
+        let state = RequestState::new(id, callback, permit);
         core.requests.insert(id, Arc::clone(&state));
 
         let submission = Submission {
@@ -345,8 +356,10 @@ impl Shared {
         drop(core);
 
         if has_callback {
+            #[cfg(test)]
+            self.run_callback_activation_hook();
             if let Some(job) = state.activate_callback() {
-                self.callback_domain.enqueue_terminal(job);
+                let _queued = self.callback_domain.enqueue_terminal(job);
             }
         }
         drop(activation);
@@ -436,7 +449,7 @@ impl Shared {
         }
         lock_unpoisoned(&self.core).requests.remove(&state.id());
         if let Some(job) = job {
-            self.callback_domain.enqueue_terminal(job);
+            let _queued = self.callback_domain.enqueue_terminal(job);
         }
         true
     }
@@ -464,6 +477,18 @@ impl Shared {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn active_count(&self) -> usize {
         lock_unpoisoned(&self.core).requests.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_callback_activation_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *lock_unpoisoned(&self.callback_activation_hook) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_callback_activation_hook(&self) {
+        if let Some(hook) = lock_unpoisoned(&self.callback_activation_hook).take() {
+            hook();
+        }
     }
 }
 

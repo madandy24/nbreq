@@ -101,6 +101,9 @@ pub(crate) fn spawned_main(
     shared: Arc<Shared>,
     mut reactor: ReactorCore,
 ) -> Result<(), ShutdownError> {
+    // This command-triggered loop is sufficient only for WP1's deterministic non-I/O backends.
+    // WP2 must integrate the backend wait source with the command wakeup; periodic polling is not
+    // an acceptable cancellation mechanism.
     let mut seen_generation = 0;
     loop {
         shared

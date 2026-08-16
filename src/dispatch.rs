@@ -57,6 +57,8 @@ pub(crate) struct CallbackDomain {
     changed: Condvar,
     completion: Arc<CallbackCompletion>,
     panic_count: AtomicUsize,
+    #[cfg(test)]
+    worker_exit_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl CallbackDomain {
@@ -74,12 +76,16 @@ impl CallbackDomain {
             changed: Condvar::new(),
             completion: CallbackCompletion::pending(),
             panic_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            worker_exit_hook: Mutex::new(None),
         })
     }
 
-    pub(crate) fn enqueue_terminal(&self, job: CallbackJob) {
+    pub(crate) fn enqueue_terminal(&self, job: CallbackJob) -> bool {
         let mut state = lock_unpoisoned(&self.state);
-        assert!(!state.sealed, "terminal callback queued after domain seal");
+        if state.sealed {
+            return false;
+        }
         if state.queue.len() == self.capacity {
             let progress = state
                 .queue
@@ -90,6 +96,7 @@ impl CallbackDomain {
         }
         state.queue.push_back(job);
         self.changed.notify_all();
+        true
     }
 
     fn worker_started(&self) {
@@ -164,7 +171,11 @@ impl CallbackDomain {
 
             match job {
                 Some(job) => self.run_job(job),
-                None => return,
+                None => {
+                    #[cfg(test)]
+                    self.run_worker_exit_hook();
+                    return;
+                }
             }
         }
     }
@@ -208,6 +219,18 @@ impl CallbackDomain {
     #[cfg(test)]
     pub(crate) fn panic_count(&self) -> usize {
         self.panic_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn set_worker_exit_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *lock_unpoisoned(&self.worker_exit_hook) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_worker_exit_hook(&self) {
+        if let Some(hook) = lock_unpoisoned(&self.worker_exit_hook).take() {
+            hook();
+        }
     }
 }
 
@@ -291,10 +314,10 @@ impl DispatcherOwner {
             self.join_workers();
             Ok(None)
         } else {
-            self.workers.clear();
-            Ok(Some(DetachedCallbacks::new(Arc::clone(
-                &self.domain.completion,
-            ))))
+            Ok(Some(DetachedCallbacks::new(
+                Arc::clone(&self.domain.completion),
+                std::mem::take(&mut self.workers),
+            )))
         }
     }
 
@@ -340,18 +363,18 @@ mod tests {
         let (second_tx, second_rx) = mpsc::channel();
         let (peer_tx, peer_rx) = mpsc::channel();
 
-        domain.enqueue_terminal(CallbackJob::new(id(1), move || {
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(1), move || {
             first_started_tx
                 .send(())
                 .expect("test receiver must remain");
             release_rx.recv().expect("release must arrive");
-        }));
-        domain.enqueue_terminal(CallbackJob::new(id(1), move || {
+        })));
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(1), move || {
             second_tx.send(()).expect("test receiver must remain");
-        }));
-        domain.enqueue_terminal(CallbackJob::new(id(2), move || {
+        })));
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(2), move || {
             peer_tx.send(()).expect("test receiver must remain");
-        }));
+        })));
 
         first_started_rx
             .recv_timeout(Duration::from_secs(1))
@@ -376,12 +399,12 @@ mod tests {
         let observed = Arc::clone(&domain);
         let (survivor_tx, survivor_rx) = mpsc::channel();
 
-        domain.enqueue_terminal(CallbackJob::new(id(1), || {
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(1), || {
             panic!("deliberate callback panic")
-        }));
-        domain.enqueue_terminal(CallbackJob::new(id(2), move || {
+        })));
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(2), move || {
             survivor_tx.send(()).expect("test receiver must remain");
-        }));
+        })));
         survivor_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("worker must survive callback panic");
@@ -419,13 +442,80 @@ mod tests {
                 panic!("displaced progress must not run");
             }))
         );
-        domain.enqueue_terminal(CallbackJob::new(id(2), move || {
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(2), move || {
             terminal_tx.send(()).expect("test receiver must remain");
-        }));
+        })));
         owner.drain_inline();
         terminal_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("terminal callback must survive pressure");
         owner.finish().expect("dispatcher must finish");
+    }
+
+    #[test]
+    fn detached_wait_joins_worker_after_domain_completion() {
+        let workers = std::num::NonZeroUsize::new(1).expect("one is non-zero");
+        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Workers(workers))
+            .expect("dispatcher must construct");
+        let domain = owner.domain();
+        let (callback_started_tx, callback_started_rx) = mpsc::channel();
+        let (release_callback_tx, release_callback_rx) = mpsc::channel();
+        let (exit_hook_tx, exit_hook_rx) = mpsc::channel();
+        let (release_exit_tx, release_exit_rx) = mpsc::channel();
+
+        domain.set_worker_exit_hook(move || {
+            exit_hook_tx.send(()).expect("test receiver must remain");
+            release_exit_rx
+                .recv()
+                .expect("worker exit must be released");
+        });
+        assert!(domain.enqueue_terminal(CallbackJob::new(id(1), move || {
+            callback_started_tx
+                .send(())
+                .expect("test receiver must remain");
+            release_callback_rx
+                .recv()
+                .expect("callback must be released");
+        })));
+        callback_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback must start");
+        let detached = owner
+            .finish_for(Duration::ZERO)
+            .expect("timed finish must succeed")
+            .expect("running callback must detach");
+
+        release_callback_tx
+            .send(())
+            .expect("callback must remain alive");
+        exit_hook_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker must reach its exit boundary");
+        assert!(!detached.is_complete());
+
+        let (waited_tx, waited_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let result = detached.wait();
+            waited_tx.send(result).expect("test receiver must remain");
+        });
+        assert!(waited_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_exit_tx.send(()).expect("worker must remain alive");
+        waited_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached wait must return after worker exit")
+            .expect("detached worker must join cleanly");
+        waiter.join().expect("waiter must join");
+    }
+
+    #[test]
+    fn terminal_enqueue_after_seal_is_rejected_without_panicking() {
+        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Inline)
+            .expect("dispatcher must construct");
+        let domain = owner.domain();
+        domain.seal();
+        assert!(!domain.enqueue_terminal(CallbackJob::new(id(1), || {
+            panic!("sealed callback must not run");
+        })));
+        owner.finish().expect("sealed dispatcher must finish");
     }
 }

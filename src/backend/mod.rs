@@ -18,6 +18,8 @@ pub(crate) struct BackendCompletion {
 pub(crate) trait Backend: Send {
     fn submit(&mut self, id: RequestId, request: Request) -> Option<Completion>;
     fn cancel(&mut self, id: RequestId);
+    // WP2 replaces the scaffold's command-only sleep boundary with a transport-aware wait so this
+    // poll can be interrupted by Client cancellation/submission and Engine shutdown.
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error>;
     fn shutdown(&mut self) -> Result<(), ShutdownError>;
 }
