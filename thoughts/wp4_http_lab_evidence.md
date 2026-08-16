@@ -1,8 +1,8 @@
 # WP4 adversarial HTTP laboratory evidence
 
-Status: curl-pilot protocol/error slice implemented on Windows and proved against Ubuntu 20.04
-system curl on 2026-08-17. A latest-revision Windows 10 rerun, the Wine rerun, and the later
-native-backend corpus remain open; this document does not close all of WP4.
+Status: curl-pilot protocol/error slice proved on Windows 10 and against Ubuntu 20.04 system curl
+on 2026-08-17. The Wine rerun and the later native-backend corpus remain open; this document does
+not close all of WP4.
 
 ## Public test boundary
 
@@ -84,11 +84,20 @@ response framing differently from curl 8.21. NBReq now validates repeated Conten
 Transfer-Encoding/Content-Length ambiguity itself, and the clean revised run above passes. This is
 exactly the backend-neutral normalization the shared laboratory is intended to force.
 
-The upload case performs ten reset trials. A Windows 10 transcript returned during this revision
-passes 58 unit, 5 adversarial, and 4 public-contract tests, but its self-verifying manifest identifies
-the superseded pre-fix bundle rather than commit `072c9d0`; it remains useful historical evidence but
-does not satisfy the latest-revision gate. The revised Windows 10 bundle must be extracted into a
-fresh directory and rerun, followed by the Wine-5 rerun.
+The revised self-verifying bundle for commit `072c9d0` was then extracted into a clean directory and
+run under an ordinary account on Windows 10 Pro 22H2 x64 build 19045.7663:
+
+- every packaged hash passed, including the separately packaged adversarial executable and pinned
+  curl 8.21.0 Schannel DLL;
+- 58 unit, 5 public adversarial, and 4 public-contract tests passed;
+- the generated TLS policy/no-verify fixtures passed;
+- slow-header, stalled-body, and TLS-handshake cancellation maxima were 1.8914 ms, 1.6895 ms, and
+  2.2833 ms respectively; and
+- all 25 fresh-process DLL load/use/exit iterations passed.
+
+The transcript is `target/curl-pilot/win10-proof-1112.txt`, SHA-256
+`7DE1360BA6BBF8CC1215D54997074C6D43B79B20E9C330089E3D06FDF10552C5`. The upload case performs ten
+reset trials. Only the revised Wine-5 rerun remains in the curl-pilot platform pass.
 
 ## Deliberate remainder
 
