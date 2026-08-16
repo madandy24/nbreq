@@ -581,6 +581,14 @@ Errors may retain backend-specific diagnostic sources for logs and debugging, bu
 
 The initial stable shape keeps a broad `ErrorKind` while attaching backend-neutral detail where it is meaningful: timeout category, transport stage, and violated resource limit. Curl codes remain diagnostic inputs only. WP3 freezes and proves the consumer API and representative public mappings needed for the curl pilot: HTTP status versus failure, cancellation, TLS, configured timeout, oversize data, unsupported backend capability, and submission pressure. WP4 owns the adversarial send/receive/malformed-response laboratory; native DNS/connect work owns the deterministic stage mappings that the curl pilot explicitly does not claim. The curl API slice may be used for rollback-protected GDS pilots before that complete transport-stage corpus is finished, but the crate is not described as transport-complete or public-release-ready until those later gates pass.
 
+The first WP4 curl corpus drives only public NBReq types. It classifies an abortive connection failure
+as Send when curl's observed uploaded byte count shows that the buffered body was incomplete; short
+fixed-length and empty responses are Receive; invalid status/header/length/chunk syntax and
+incomplete chunk framing are Http. This is an observable portable policy, not a promise to preserve
+curl result codes. Valid chunk extensions and trailers may complete, but trailer representation is
+still unspecified and callers may not rely on trailers appearing in the ordinary response-header
+collection.
+
 ## 20. Backend contract and migration
 
 The curl backend is a stepping stone and reference implementation:
