@@ -167,6 +167,10 @@ of the curl-backed GDS module is not supported and must not be used as a stop me
 - Build the exact GDS artifact with the pinned curl DLL and audited Wine-5 `ProcessPrng` shim only
   where required.
 - Preload curl by verified absolute path and reject ambient-PATH substitution.
+- Do not assume the private Windows proof host's exact-path `LoadLibraryExW` strategy works under
+  stock Wine 5: its extended-path load fails there even though adjacent-DLL NBReq execution passes.
+  Prove a Wine-compatible controlled preload/pin route using the exact GDS host/package, without
+  weakening the native Windows absolute-path check.
 - Pin curl and GDS modules until process exit; document this in the Delphi host/package procedure.
 - Include dependency notices and the curl security-update checklist.
 
@@ -199,3 +203,5 @@ of the curl-backed GDS module is not supported and must not be used as a stop me
    provisioned root? Generated custom trust currently fails through that legacy Schannel.
 7. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
    curl-backed GDS DLL is never `FreeLibrary`-unloaded before process exit?
+8. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
+   back to ambient search-path selection?

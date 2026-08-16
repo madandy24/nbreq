@@ -1,8 +1,8 @@
 # WP4 adversarial HTTP laboratory evidence
 
-Status: curl-pilot protocol/error slice proved on Windows 10 and against Ubuntu 20.04 system curl
-on 2026-08-17. The Wine rerun and the later native-backend corpus remain open; this document does
-not close all of WP4.
+Status: curl-pilot protocol/error slice accepted on Windows 10, Ubuntu 20.04 system curl, and stock
+Wine 5 on 2026-08-17. The later native-backend corpus remains open; this document closes the curl
+WP4 platform gate, not all of WP4.
 
 ## Public test boundary
 
@@ -22,10 +22,12 @@ The local scripted server supports:
 - two sequential HTTP/1.1 responses on one accepted keep-alive connection.
 
 All fixtures use loopback sockets, finite deadlines, and protocol/socket events rather than remote
-services. The upload-abort case uses an abortive close and a 64 MiB configured body so Windows
-cannot normally finish queueing the body before the reset; ten trials run in one test. NBReq also
-uses curl's observed uploaded-byte count to classify a receive-coded reset as `Send` when the
-buffered request body was not fully transmitted.
+services. The upload-abort case uses an abortive close and a 64 MiB configured body; before closing,
+the server must observe the complete request head and at least one body byte. Ten trials run in one
+test. This barrier was added after Wine correctly exposed that merely accepting and immediately
+resetting a socket did not prove a send-stage failure. NBReq also uses curl's observed uploaded-byte
+count to classify a receive-coded reset as `Send` when the buffered request body was not fully
+transmitted.
 
 ## Portable mappings now proved
 
@@ -76,28 +78,43 @@ On updated Ubuntu 20.04 using Rust 1.85 and dynamic system libcurl 7.68.0/OpenSS
 - all-target curl-pilot clippy with warnings denied and formatting checks pass;
 - the runtime capability probe records asynchronous DNS and IPv6 support without a vendored curl;
   and
-- slow-header, stalled-body, and TLS-handshake cancellation maxima are approximately 0.297 ms,
-  0.300 ms, and 1.684 ms respectively, all comfortably inside the provisional 100 ms gate.
+- slow-header, stalled-body, and TLS-handshake cancellation maxima are approximately 0.060 ms,
+  0.234 ms, and 1.146 ms respectively, all comfortably inside the provisional 100 ms gate.
 
 The first Ubuntu run exposed a real portability difference: curl 7.68 classified conflicting
 response framing differently from curl 8.21. NBReq now validates repeated Content-Length and
 Transfer-Encoding/Content-Length ambiguity itself, and the clean revised run above passes. This is
 exactly the backend-neutral normalization the shared laboratory is intended to force.
 
-The revised self-verifying bundle for commit `072c9d0` was then extracted into a clean directory and
+The final self-verifying bundle for commit `6eb5206` was then extracted into a clean directory and
 run under an ordinary account on Windows 10 Pro 22H2 x64 build 19045.7663:
 
 - every packaged hash passed, including the separately packaged adversarial executable and pinned
   curl 8.21.0 Schannel DLL;
 - 58 unit, 5 public adversarial, and 4 public-contract tests passed;
 - the generated TLS policy/no-verify fixtures passed;
-- slow-header, stalled-body, and TLS-handshake cancellation maxima were 1.8914 ms, 1.6895 ms, and
-  2.2833 ms respectively; and
+- slow-header, stalled-body, and TLS-handshake cancellation maxima were 1.7733 ms, 1.7408 ms, and
+  2.3908 ms respectively; and
 - all 25 fresh-process DLL load/use/exit iterations passed.
 
-The transcript is `target/curl-pilot/win10-proof-1112.txt`, SHA-256
-`7DE1360BA6BBF8CC1215D54997074C6D43B79B20E9C330089E3D06FDF10552C5`. The upload case performs ten
-reset trials. Only the revised Wine-5 rerun remains in the curl-pilot platform pass.
+The transcript is `target/curl-pilot/win10-proof-6eb5206.txt`, SHA-256
+`7902CD119FEC21CA6686C7E4908BE36965B9CA7F14E360F8748ECF7882E1708C`.
+
+The same authenticated Windows artifacts were run through the audited 3,584-byte ProcessPrng shim
+under stock Wine 5.0 on Ubuntu 20.04:
+
+- 57 unit tests passed with only the already-recorded verified-custom-trust fixture filtered out;
+- all 5 public adversarial and 4 public-contract tests passed;
+- explicit no-verify passed, while a separate run reconfirmed that Wine 5 Schannel rejects the
+  generated custom trust anchor;
+- slow-header, stalled-body, and TLS-handshake cancellation maxima were approximately 0.378 ms,
+  0.372 ms, and 1.456 ms respectively; and
+- all ten upload-reset trials passed after the server-side upload-progress barrier was added.
+
+The private Windows DLL host's exact-path `LoadLibraryExW` call does not load its extended path under
+Wine 5. This does not affect the adjacent-DLL public HTTP corpus and is not expanded into curl-only
+infrastructure here. It is now an explicit WP5 obligation: the exact GDS package must prove a
+Wine-compatible controlled preload/pin path rather than assuming the Windows proof host is portable.
 
 ## Deliberate remainder
 
