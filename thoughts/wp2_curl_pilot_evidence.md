@@ -1,10 +1,10 @@
 # WP2 Curl Pilot Evidence
 
-Status: Windows x64 transport, TLS certificate-policy, and process-lifetime DLL slices, native
+Status: Windows 10 x64 transport, TLS certificate-policy, and process-lifetime DLL slices, native
 Ubuntu 20.04 transport/TLS compatibility, and stock-Wine-5 transport/no-verify compatibility proven
-on 2026-08-16. The stepping-stone explicitly does not claim prompt connect/DNS network teardown;
-WP2 remains in progress for Windows 10, packaging/notices, exact GDS integration, and Wine's
-verified-trust limitation.
+by 2026-08-17. The stepping-stone explicitly does not claim prompt connect/DNS network teardown;
+WP2 remains in progress for packaging/notices, exact GDS integration, and Wine's verified-trust
+limitation.
 
 ## What now exists
 
@@ -101,8 +101,8 @@ machine:
   Codex execution token deterministically failed all three Schannel fixtures; the stalled-handshake
   barrier observed its connection close before ClientHello. Re-running outside that restricted
   context passed the full matrix; the latest normal-account cleanup run passes 58 unit tests, 4
-  public-contract tests, and 2 doctests. The restricted result
-  is an execution-environment limitation rather than product evidence; the precise denied Windows
+  public-contract tests, and 2 doctests. The restricted result is an execution-environment
+  limitation rather than product evidence; the precise denied Windows
   facility has not been isolated or claimed.
 
 - command submission woke a reactor already blocked in curl Multi and completed its peer request;
@@ -122,6 +122,25 @@ machine:
 The 100 ms value is provisional until the same named-stage tests run on every supported target.
 Waiter notification is earlier than socket release because WP1 commits terminal state synchronously;
 the measurement above intentionally covers backend teardown as well.
+
+### Windows 10 minimum-target proof
+
+The portable bundle produced by `tools/package-win10-proof.ps1` from commit
+`f14bfc872d6d22007a5f51324a6640ccb2144276` ran under an ordinary user on Windows 10 Pro 22H2 x64,
+build `19045.7663`, using Windows PowerShell 5.1. Every transferred bundle hash matched. Runtime
+capabilities reported the pinned dynamic libcurl 8.21.0 with Schannel, asynchronous DNS, IPv6,
+no zlib, and `vendored=false`.
+
+- 58 unit tests and 4 public-contract tests passed;
+- ten slow-header trials observed a 1.8148 ms maximum socket-release latency;
+- ten stalled-body trials observed a 1.8458 ms maximum;
+- ten TLS-handshake trials observed a 2.0508 ms maximum after the ClientHello barrier;
+- 25 fresh-process absolute-preload/load/use/exit DLL probe iterations passed.
+
+The returned transcript has SHA-256
+`7FA7E080728323AF861B006581E50C2E81DD3CFDDB38E6E6A85C2B099E896F37`. This closes the native
+Windows 10 platform gate for the curl pilot; exact GDS packaging and trust configuration remain
+separate WP5 gates.
 
 ## Measured Ubuntu 20.04 native results
 
@@ -215,9 +234,9 @@ The post-slice review was applied before consumer API work:
   gate: building firewall/backlog fixtures or a separate curl resolver solely for the stepping-stone
   is intentionally deferred. The native backend must still prove deterministic connect cancellation
   and cancellable/bounded resolver teardown.
-- Run the same package/tests on the minimum Windows 10 x64 target. Stock Wine 5 transport,
-  cancellation, and explicit no-verify are now proven; decide whether the exact GDS canary accepts
-  the recorded verified-custom-trust limitation or needs a newer Wine/trust path.
+- Decide whether the exact GDS canary accepts the recorded Wine-5 verified-custom-trust limitation
+  or needs a newer Wine/trust path. Windows 10, stock Wine 5 transport/cancellation/no-verify, and
+  native Ubuntu 20.04 are proven separately.
 - Apply the absolute-path preload/pinning rule to the exact GDS artifact during WP5 packaging.
 - Produce the final dependency notices and pilot security-update checklist.
 
