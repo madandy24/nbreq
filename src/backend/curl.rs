@@ -5,7 +5,15 @@
 //! `MultiWaker` is installed in the Engine command queue.
 
 use std::collections::HashMap;
+#[cfg(test)]
+use std::fs::OpenOptions;
+#[cfg(test)]
+use std::io::{ErrorKind as IoErrorKind, Write};
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use curl::easy::{Easy2, Handler, HttpVersion, List, WriteError};
@@ -52,6 +60,8 @@ impl BackendFactory for CurlFactory {
                 format!("failed to initialize libcurl: {}", error.description()),
             )
         })?;
+        #[cfg(test)]
+        let test_ca = self.test_ca_pem.map(TestCa::new).transpose()?;
         let multi = Multi::new();
         let waker = multi.waker();
         shared
@@ -61,7 +71,7 @@ impl BackendFactory for CurlFactory {
             multi,
             limits: self.limits,
             #[cfg(test)]
-            test_ca_pem: self.test_ca_pem,
+            test_ca,
             handles: HashMap::new(),
             id_to_token: HashMap::new(),
             token_to_id: HashMap::new(),
@@ -75,12 +85,82 @@ struct CurlBackend {
     multi: Multi,
     limits: ResponseLimits,
     #[cfg(test)]
-    test_ca_pem: Option<Vec<u8>>,
+    test_ca: Option<TestCa>,
     handles: HashMap<RequestId, ActiveTransfer>,
     id_to_token: HashMap<RequestId, usize>,
     token_to_id: HashMap<usize, RequestId>,
     next_token: usize,
     fatal_error: Option<Error>,
+}
+
+#[cfg(test)]
+enum TestCa {
+    Blob(Vec<u8>),
+    File(TestCaFile),
+}
+
+#[cfg(test)]
+impl TestCa {
+    fn new(pem: Vec<u8>) -> Result<Self, Error> {
+        const CAINFO_BLOB_MINIMUM: u32 = 0x07_4d_00;
+        if curl::Version::get().version_num() >= CAINFO_BLOB_MINIMUM {
+            Ok(Self::Blob(pem))
+        } else {
+            TestCaFile::new(&pem).map(Self::File)
+        }
+    }
+}
+
+#[cfg(test)]
+struct TestCaFile {
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl TestCaFile {
+    fn new(pem: &[u8]) -> Result<Self, Error> {
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "nbreq-test-ca-{}-{sequence}.pem",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == IoErrorKind::AlreadyExists => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "the generated curl test CA path already exists",
+                ));
+            }
+            Err(error) => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    format!("failed to create the curl test CA file: {error}"),
+                ));
+            }
+        };
+        if let Err(error) = file.write_all(pem) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("failed to write the curl test CA file: {error}"),
+            ));
+        }
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestCaFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 struct ActiveTransfer {
@@ -276,10 +356,10 @@ impl Backend for CurlBackend {
         self.token_to_id.clear();
         let mut failure = self.fatal_error.take();
         for (_id, active) in handles {
-            if let Err(error) = self.multi.remove2(active.handle)
-                && failure.is_none()
-            {
-                failure = Some(multi_error(error));
+            if let Err(error) = self.multi.remove2(active.handle) {
+                if failure.is_none() {
+                    failure = Some(multi_error(error));
+                }
             }
         }
         if let Some(error) = failure {
@@ -308,7 +388,7 @@ impl CurlBackend {
             started,
             self.limits,
             #[cfg(test)]
-            self.test_ca_pem.as_deref(),
+            self.test_ca.as_ref(),
         )?;
         let token = self.allocate_token()?;
         let mut handle = self.multi.add2(easy).map_err(multi_error)?;
@@ -459,7 +539,7 @@ fn configured_easy(
     request: &Request,
     started: Instant,
     limits: ResponseLimits,
-    #[cfg(test)] test_ca_pem: Option<&[u8]>,
+    #[cfg(test)] test_ca: Option<&TestCa>,
 ) -> Result<Easy2<ResponseCollector>, Error> {
     validate_request(request)?;
     let mut easy = Easy2::new(ResponseCollector::new(
@@ -522,8 +602,11 @@ fn configured_easy(
 
     let options = request.options();
     #[cfg(test)]
-    if let Some(ca_pem) = test_ca_pem {
-        easy.ssl_cainfo_blob(ca_pem).map_err(curl_error)?;
+    if let Some(test_ca) = test_ca {
+        match test_ca {
+            TestCa::Blob(pem) => easy.ssl_cainfo_blob(pem).map_err(curl_error)?,
+            TestCa::File(file) => easy.cainfo(file.path()).map_err(curl_error)?,
+        }
     }
     if options.tls_verification == TlsVerification::DangerouslyDisableCertificateVerification {
         easy.ssl_verify_host(false).map_err(curl_error)?;

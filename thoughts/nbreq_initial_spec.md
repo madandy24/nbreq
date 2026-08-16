@@ -451,6 +451,14 @@ Shutdown of outstanding system resolver calls is a hard lifecycle concern. Befor
 - use cancellable platform resolver APIs; or
 - provide a nonblocking DNS implementation.
 
+The curl pilot does not redefine this requirement. A controlled Ubuntu 20.04 test of distribution
+libcurl 7.68's threaded resolver proves Engine shutdown joins the resolver and leaves no extra
+thread, but cancel-to-network-shutdown follows the blocking `getaddrinfo` duration (1.703 seconds
+for a deliberate 1.5-second stall). That package therefore has an explicit pilot limitation and
+cannot claim the provisional prompt-cancellation gate for DNS. A curl pilot that needs that claim
+must select and prove a cancellable resolver such as c-ares; the Rust-native destination still owns
+the stronger contract above.
+
 DNS caching, expiry, IPv4/IPv6 ordering, and Happy Eyeballs belong to the native-backend work plan.
 
 ## 15. HTTP/1.1 correctness requirements
@@ -485,7 +493,7 @@ Requirements:
 - platform/native roots or bundled roots as an accepted build choice;
 - SNI and ALPN configured deliberately;
 - no global insecure mode;
-- the existing GDS no-verify configuration remains supported for deployments that still require it; the bypass is explicit, prominently named, never the library default, and recorded in safe diagnostics;
+- the existing GDS no-verify configuration remains supported for deployments that still require it; the bypass is explicit, prominently named, never the library default, and recorded in safe diagnostics. The likely legacy motivation is an older installation's trust store or TLS backend not recognising a newer issuing chain/root, but WP4/WP5 must confirm that history rather than encoding the recollection as security policy;
 - integration tests must determine whether the legacy switch disables chain validation, hostname validation, or both, and map that behaviour deliberately rather than broadening it accidentally;
 - TLS errors are distinguishable from TCP and HTTP errors;
 - cancellation works during handshake and encrypted reads/writes.
@@ -495,10 +503,15 @@ direct trust anchor, wrong-host rejection, unknown-root rejection, expired-certi
 and the explicit chain-and-hostname no-verify compatibility path against both the SSL-enabled test
 build and the exact pinned Windows Schannel DLL. It does not modify the OS trust store or check in a
 private key. Ten deliberately stalled Windows TLS-handshake trials also prove cancellation closes
-the peer socket inside the provisional 100 ms gate. Exact GDS setting parity and the other target
-platforms remain open named-stage proofs; the native backend must reuse the same policy cases.
+the peer socket inside the provisional 100 ms gate. Native Ubuntu 20.04 with system libcurl
+7.68/OpenSSL 1.1.1f now passes the same policy and interruption matrix; test-only custom trust falls
+back to a uniquely owned CA file because libcurl's in-memory CA option begins at 7.77. The exact
+Windows package under stock Wine 5 passes explicit no-verify and TLS-handshake interruption, but
+Wine 5 Schannel rejects the generated custom trust anchor; that legacy trust limitation remains a
+named compatibility constraint rather than a relaxation of verified-by-default policy. Exact GDS
+setting parity remains open; the native backend must reuse the same policy cases.
 
-The desired full native packaging is a self-contained executable or DLL. Platform libraries and statically linked cryptographic implementation details are acceptable. The curl stepping-stone is a pilot deployment and may ship a pinned curl DLL plus its audited runtime dependencies beside GDS.
+The desired full native packaging is a self-contained executable or DLL. Platform libraries and statically linked cryptographic implementation details are acceptable. The curl stepping-stone is a pilot deployment and may ship a pinned curl DLL plus its audited runtime dependencies beside GDS. Windows 10 already provides `bcryptprimitives.dll!ProcessPrng`; stock Wine 5 does not. If the final Rust-built Windows GDS artifact imports that API, the Ubuntu 20.04/Wine-5 deployment may carry NBReq's audited one-export compatibility shim beside it. That shim delegates to Wine 5's existing `BCryptGenRandom`, is independent of libcurl, and is not needed on supported native Windows.
 
 ## 17. Connection pooling
 

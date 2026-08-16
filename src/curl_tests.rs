@@ -586,7 +586,7 @@ fn curl_multi_runs_concurrent_get_status_and_post_requests() {
 }
 
 #[test]
-fn curl_tls_fixture_proves_trust_name_expiry_and_explicit_no_verify() {
+fn curl_tls_fixture_proves_trust_name_and_expiry() {
     if !curl::Version::get().feature_ssl() {
         eprintln!("skipping TLS fixture because the selected curl pilot has no TLS backend");
         return;
@@ -637,19 +637,6 @@ fn curl_tls_fixture_proves_trust_name_expiry_and_explicit_no_verify() {
         .shutdown()
         .expect("unknown-root Engine must stop");
 
-    let no_verify = testing::curl_engine(EngineConfig::spawned())
-        .expect("no-verify curl Engine must construct");
-    let response = no_verify
-        .client()
-        .execute(tls_request(
-            valid_server.url("localhost"),
-            TlsVerification::DangerouslyDisableCertificateVerification,
-        ))
-        .expect("explicitly unverified TLS request must complete");
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.body(), b"secure");
-    no_verify.shutdown().expect("no-verify Engine must stop");
-
     let expired_identity = TestIdentity::localhost(true);
     let expired_server = TlsServer::start(&expired_identity);
     let expired =
@@ -665,6 +652,28 @@ fn curl_tls_fixture_proves_trust_name_expiry_and_explicit_no_verify() {
         .wait();
     assert_tls_failure(completion);
     expired.shutdown().expect("expired-cert Engine must stop");
+}
+
+#[test]
+fn curl_tls_fixture_proves_explicit_no_verify() {
+    if !curl::Version::get().feature_ssl() {
+        eprintln!("skipping TLS fixture because the selected curl pilot has no TLS backend");
+        return;
+    }
+    let identity = TestIdentity::localhost(false);
+    let server = TlsServer::start(&identity);
+    let engine = testing::curl_engine(EngineConfig::spawned())
+        .expect("no-verify curl Engine must construct");
+    let response = engine
+        .client()
+        .execute(tls_request(
+            server.url("localhost"),
+            TlsVerification::DangerouslyDisableCertificateVerification,
+        ))
+        .expect("explicitly unverified TLS request must complete");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"secure");
+    engine.shutdown().expect("no-verify Engine must stop");
 }
 
 #[test]
@@ -696,6 +705,75 @@ fn curl_cancellation_latency_gate_covers_tls_handshake() {
         "curl TLS-handshake cancellation gate={GATE:?} trials={TRIALS} socket-release-max={max_removal:?}"
     );
     engine.shutdown().expect("curl Engine must stop");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn curl_threaded_dns_shutdown_is_joined_and_measured() {
+    let Some(url) = std::env::var_os("NBREQ_DNS_STALL_URL") else {
+        return;
+    };
+    let Some(marker) = std::env::var_os("NBREQ_DNS_STALL_MARKER") else {
+        return;
+    };
+    let marker = std::path::PathBuf::from(marker);
+    let started_marker = marker.with_extension("started");
+    let finished_marker = marker.with_extension("finished");
+    let _ = std::fs::remove_file(&started_marker);
+    let _ = std::fs::remove_file(&finished_marker);
+    let baseline_threads = std::fs::read_dir("/proc/self/task")
+        .expect("Linux task directory must be readable")
+        .count();
+
+    let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
+    let pending = engine
+        .client()
+        .submit(
+            Request::get(url.to_string_lossy())
+                .build()
+                .expect("DNS stall request must build"),
+        )
+        .expect("DNS stall request must submit");
+    let marker_deadline = Instant::now() + Duration::from_secs(2);
+    while !started_marker.exists() && Instant::now() < marker_deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(started_marker.exists(), "resolver stall must be entered");
+
+    pending
+        .handle()
+        .cancel()
+        .expect("DNS request cancellation must commit");
+    assert!(matches!(pending.wait(), Completion::Cancelled));
+    let shutdown_started = Instant::now();
+    engine.shutdown().expect("curl Engine must stop");
+    let shutdown_elapsed = shutdown_started.elapsed();
+
+    assert!(
+        finished_marker.exists(),
+        "Engine shutdown returned before the resolver fixture completed"
+    );
+    let thread_deadline = Instant::now() + Duration::from_millis(100);
+    let mut remaining_threads = usize::MAX;
+    while Instant::now() < thread_deadline {
+        remaining_threads = std::fs::read_dir("/proc/self/task")
+            .expect("Linux task directory must remain readable")
+            .count();
+        if remaining_threads <= baseline_threads {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        remaining_threads <= baseline_threads,
+        "resolver/reactor thread remained after shutdown: baseline={baseline_threads} remaining={remaining_threads}"
+    );
+    eprintln!(
+        "curl threaded-DNS cancel-to-network-shutdown={shutdown_elapsed:?} baseline-threads={baseline_threads} remaining-threads={remaining_threads}"
+    );
+
+    let _ = std::fs::remove_file(started_marker);
+    let _ = std::fs::remove_file(finished_marker);
 }
 
 #[test]

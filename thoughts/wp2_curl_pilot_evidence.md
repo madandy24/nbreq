@@ -1,8 +1,9 @@
 # WP2 Curl Pilot Evidence
 
-Status: Windows x64 transport, TLS certificate-policy, and process-lifetime DLL slices proven on
-2026-08-16; WP2 remains in progress for controlled connect/DNS proof, Windows 10, Ubuntu 20.04/Wine,
-and native Ubuntu 20.04.
+Status: Windows x64 transport, TLS certificate-policy, and process-lifetime DLL slices, native
+Ubuntu 20.04 transport/TLS compatibility, and stock-Wine-5 transport/no-verify compatibility proven
+on 2026-08-16; WP2 remains in progress for controlled connect proof, prompt curl-pilot DNS
+teardown, Windows 10, and Wine's verified-trust limitation.
 
 ## What now exists
 
@@ -112,6 +113,65 @@ The 100 ms value is provisional until the same named-stage tests run on every su
 Waiter notification is earlier than socket release because WP1 commits terminal state synchronously;
 the measurement above intentionally covers backend teardown as well.
 
+## Measured Ubuntu 20.04 native results
+
+The native minimum-target run used an updated Ubuntu 20.04 installation, x86-64 kernel
+`5.4.0-216-generic`, the declared Rust 1.85.0 MSRV, GCC 9.4, and Ubuntu's dynamically linked
+libcurl 7.68.0 with OpenSSL 1.1.1f. Curl reports asynchronous DNS and IPv6; the distribution build
+configuration confirms `--enable-threaded-resolver` and no c-ares dependency.
+
+- The dependency-free/default matrix passed 31 unit tests, 4 public-contract tests, and 2 compile-fail
+  doctests.
+- The system-curl matrix passed 44 unit tests, 4 public-contract tests, and 2 compile-fail doctests;
+  Rust 1.85 `cargo fmt --check` and clippy with warnings denied also pass.
+- The 13 named curl transport tests pass against the non-vendored distribution library. Ten
+  slow-header and stalled-body trials observed maxima below 0.1 ms on this host; ten TLS-handshake
+  trials observed a 1.173882 ms maximum. All remain below the provisional 100 ms gate.
+- The generated certificate fixture proves trusted success, wrong-host rejection, unknown-root
+  rejection, expiry rejection, and explicit no-verify success through OpenSSL without modifying the
+  machine trust store.
+
+The minimum-target run found and closed two compatibility defects. The curl shutdown loop used an
+`if let` chain newer than the declared Rust 1.85 MSRV; equivalent nested control flow now compiles
+on 1.85. The test-only in-memory CA option (`CURLOPT_CAINFO_BLOB`) was added in libcurl 7.77, so the
+fixture now uses a uniquely owned temporary CA file on older curl while retaining the blob path on
+newer curl. This is test infrastructure only and does not alter production trust or no-verify policy.
+
+The controlled DNS teardown probe deliberately holds one `getaddrinfo` call for 1.5 seconds. A
+cancelled request becomes canonically terminal immediately, Engine shutdown waits for the resolver
+to finish, and the process returns from 2 threads to its 2-thread baseline; there is no abandoned
+resolver thread. However, cancel-to-network-shutdown measured **1.703454775 seconds**. The stock
+threaded-resolver package is therefore joined and lifecycle-safe, but it cannot satisfy NBReq's
+prompt DNS cancellation goal. This is an explicit curl-pilot limitation, not a relaxation of the
+native destination: an exact pilot package needs a cancellable resolver such as c-ares before it may
+claim the 100 ms DNS gate. The opt-in reproducer is under `experiments/linux-curl-resolver`.
+
+## Measured Ubuntu 20.04 Wine 5 results
+
+The exact Rust-1.85 Windows test executable and pinned curl 8.21.0 Schannel DLL were run with
+`wine64 5.0` on the same Ubuntu 20.04 host. The executable initially failed in the loader because it
+imports `bcryptprimitives.dll!ProcessPrng`; the adjacent libcurl DLL does not import that library and
+depends only on normal Windows bcrypt/CryptoAPI/Schannel/Winsock/kernel APIs. Windows has supplied
+`ProcessPrng` since Windows 8, but Wine 5 predates Wine's implementation.
+
+`experiments/wine5-bcryptprimitives` therefore provides a test/deployment compatibility shim with
+one export, `ProcessPrng`, implemented by calling Wine 5's existing
+`bcrypt.dll!BCryptGenRandom`. The final MSVC build has no DLL entry point or C runtime dependency;
+its only imported DLL is `bcrypt.dll`. It is independent of curl and is needed only when a produced
+Windows Rust artifact itself imports `ProcessPrng`. The installed Delphi `gds.exe` inspected on this
+host does not. The final shim is 3,584 bytes with SHA-256
+`F7E01246997953A71E2EE819ED90AD044AEA0CAD4BA0D8677AB57A773EFE18B3`.
+
+With the shim adjacent, 13 of 14 curl-focused tests pass under stock Wine 5. Concurrent HTTP,
+redirects, limits, wakeup, shutdown, header/body cancellation, TLS-handshake cancellation, and the
+explicit chain-and-hostname no-verify path all pass. Ten receive-stage trials remained below 0.4 ms;
+ten TLS-handshake trials observed a 1.5505 ms maximum, well within the provisional 100 ms gate. The
+single failure is verified use of the generated local trust anchor: Wine 5 Schannel reports a TLS
+certificate rejection where native Windows Schannel and Ubuntu OpenSSL accept the same generated
+trust policy. This is an explicit legacy-Wine trust limitation and supports retaining the existing
+prominently named no-verify compatibility setting; it does not change NBReq's verified-by-default
+contract. WP4/WP5 must still audit the real GDS endpoint and setting scope.
+
 ## Hardening seam completed
 
 The post-slice review was applied before consumer API work:
@@ -142,11 +202,13 @@ The post-slice review was applied before consumer API work:
 
 - Add a deterministic connect-stage fixture and measure actual backend removal, not only canonical
   waiter cancellation.
-- Exercise controlled DNS/resolver cancellation and prove shutdown leaves no resolver thread for
-  the exact package.
-- Run the same package/tests on the minimum Windows 10 x64 target and the Windows artifact under
-  Ubuntu 20.04's default Wine.
-- Build/inventory the native Ubuntu 20.04 shared-libcurl package and run the same contract suite.
+- Select and prove a cancellable resolver for any curl pilot package that claims prompt DNS
+  cancellation. The Ubuntu 20.04 threaded-resolver baseline is now measured and explicitly fails
+  that latency goal despite joining cleanly; the exact Windows threaded package still needs the
+  same controlled-stage proof.
+- Run the same package/tests on the minimum Windows 10 x64 target. Stock Wine 5 transport,
+  cancellation, and explicit no-verify are now proven; decide whether the exact GDS canary accepts
+  the recorded verified-custom-trust limitation or needs a newer Wine/trust path.
 - Apply the absolute-path preload/pinning rule to the exact GDS artifact during WP5 packaging.
 - Produce the final dependency notices and pilot security-update checklist.
 
