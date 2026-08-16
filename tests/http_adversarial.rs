@@ -182,6 +182,12 @@ fn fragmented_and_chunked_responses_complete_through_the_public_api() {
     .expect("chunk extension and trailer response must complete");
     assert_eq!(chunked.status(), 200);
     assert_eq!(chunked.body(), b"hello");
+
+    let repeated_length = execute(Script::Bytes(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+    ))
+    .expect("identical repeated content lengths must complete");
+    assert_eq!(repeated_length.body(), b"hello");
 }
 
 #[test]
@@ -220,6 +226,10 @@ fn malformed_status_headers_lengths_and_chunks_map_to_http() {
         (
             "conflicting content lengths",
             &b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx"[..],
+        ),
+        (
+            "transfer encoding with content length",
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n1\r\nx\r\n0\r\n\r\n"[..],
         ),
         (
             "invalid chunk size",

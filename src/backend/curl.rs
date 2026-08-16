@@ -177,6 +177,8 @@ struct ResponseCollector {
     limits: ResponseLimits,
     header_bytes: usize,
     header_count: usize,
+    content_length: Option<u64>,
+    has_transfer_encoding: bool,
     failure: Option<CollectorFailure>,
     inactivity_timeout: Option<Duration>,
     last_activity: Instant,
@@ -199,6 +201,8 @@ impl ResponseCollector {
             limits,
             header_bytes: 0,
             header_count: 0,
+            content_length: None,
+            has_transfer_encoding: false,
             failure: None,
             inactivity_timeout,
             last_activity: Instant::now(),
@@ -246,6 +250,8 @@ impl Handler for ResponseCollector {
             self.headers.clear();
             self.header_bytes = data.len();
             self.header_count = 0;
+            self.content_length = None;
+            self.has_transfer_encoding = false;
             if self.header_bytes > self.limits.header_bytes {
                 self.fail(CollectorFailure::Limit(LimitKind::ResponseHeaderBytes));
                 return false;
@@ -285,6 +291,27 @@ impl Handler for ResponseCollector {
         if !is_valid_http_header_value(value) {
             self.fail(CollectorFailure::MalformedHeader);
             return false;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let Some(length) = parse_content_length(value) else {
+                self.fail(CollectorFailure::MalformedHeader);
+                return false;
+            };
+            if self.has_transfer_encoding
+                || self
+                    .content_length
+                    .is_some_and(|existing| existing != length)
+            {
+                self.fail(CollectorFailure::MalformedHeader);
+                return false;
+            }
+            self.content_length = Some(length);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            if self.content_length.is_some() {
+                self.fail(CollectorFailure::MalformedHeader);
+                return false;
+            }
+            self.has_transfer_encoding = true;
         }
         self.headers.push(Header::new(name, value.to_vec()));
         true
@@ -739,6 +766,22 @@ fn trim_header_value(mut value: &[u8]) -> &[u8] {
         value = &value[..value.len() - 1];
     }
     value
+}
+
+fn parse_content_length(value: &[u8]) -> Option<u64> {
+    let mut parsed = None;
+    for item in value.split(|byte| *byte == b',') {
+        let item = trim_header_value(item);
+        if item.is_empty() || !item.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        let item = std::str::from_utf8(item).ok()?.parse::<u64>().ok()?;
+        if parsed.is_some_and(|existing| existing != item) {
+            return None;
+        }
+        parsed = Some(item);
+    }
+    parsed
 }
 
 fn curl_error(error: curl::Error) -> Error {

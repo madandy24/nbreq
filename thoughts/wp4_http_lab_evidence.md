@@ -14,7 +14,8 @@ The local scripted server supports:
 
 - byte-at-a-time response output;
 - valid fixed-length and chunked responses, including a chunk extension and trailer;
-- invalid status lines, header names, header values, conflicting content lengths, and chunk sizes;
+- invalid status lines, header names, header values, conflicting content lengths,
+  transfer-encoding/content-length ambiguity, and chunk sizes;
 - fixed-length and chunked premature EOF plus a response that closes without sending any bytes;
 - an abortive close while a large buffered POST is still transmitting; and
 - two sequential HTTP/1.1 responses on one accepted keep-alive connection.
@@ -39,7 +40,10 @@ buffered request body was not fully transmitted.
 | Two sequential requests on one accepted HTTP/1.1 socket | both complete, proving pilot reuse |
 
 Response header names and values now receive the same backend-neutral token/control-byte checks as
-request headers. The pinned curl binding exposes its missing named predicate for libcurl's stable
+request headers. NBReq also rejects differing repeated content lengths and any response carrying
+both transfer encoding and content length while permitting repeated identical lengths; this avoids
+the different curl 7.68/8.21 classifications observed by the Ubuntu/Windows corpus. The pinned curl
+binding exposes its missing named predicate for libcurl's stable
 `CURLE_WEIRD_SERVER_REPLY` code; the underlying `curl-sys` constant retains its historical
 FTP-prefixed name. Curl codes remain private diagnostics and do not enter public assertions.
 
