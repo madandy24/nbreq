@@ -585,7 +585,7 @@ fn configured_easy(
     for header in request.headers() {
         let value = std::str::from_utf8(header.value()).map_err(|_| {
             Error::new(
-                ErrorKind::InvalidRequest,
+                ErrorKind::Unsupported,
                 "curl pilot request header values must be UTF-8",
             )
         })?;

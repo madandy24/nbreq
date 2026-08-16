@@ -527,6 +527,48 @@ fn inflight_limit_rejection_maps_through_callback_and_execute_forms() {
 }
 
 #[test]
+fn command_queue_capacity_does_not_cap_inflight_requests_after_drain() {
+    let one = NonZeroUsize::new(1).expect("one is non-zero");
+    let two = NonZeroUsize::new(2).expect("two is non-zero");
+    let config = EngineConfig::manual()
+        .with_max_inflight_requests(two)
+        .with_command_queue_capacity(one);
+    let (mut engine, controller) = testing::engine(config).expect("bounded Engine must construct");
+    let client = engine.client();
+
+    let first = client.submit(request()).expect("first request must queue");
+    let queue_error = client
+        .submit(request())
+        .expect_err("a full command queue must reject before it is drained");
+    assert_eq!(queue_error.kind(), ErrorKind::QueueFull);
+    engine
+        .drive(Instant::now())
+        .expect("manual drive must drain the first command");
+
+    let second = client
+        .submit(request())
+        .expect("draining must reopen the one-slot command queue");
+    engine
+        .drive(Instant::now())
+        .expect("manual drive must drain the second command");
+    assert_eq!(controller.active_requests(), 2);
+    let inflight_error = client
+        .submit(request())
+        .expect_err("the independent two-request inflight bound must now reject");
+    assert_eq!(inflight_error.kind(), ErrorKind::QueueFull);
+
+    first
+        .handle()
+        .cancel()
+        .expect("first cleanup cancellation must work");
+    second
+        .handle()
+        .cancel()
+        .expect("second cleanup cancellation must work");
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
 fn manual_drive_until_uses_canonical_completion() {
     let mut engine = Engine::with_backend(EngineConfig::manual(), crate::backend::scaffold())
         .expect("manual Engine must construct");

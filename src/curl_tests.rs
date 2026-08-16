@@ -1089,6 +1089,32 @@ fn curl_custom_method_body_does_not_invent_a_content_type() {
 }
 
 #[test]
+fn curl_pilot_reports_non_utf8_request_header_values_as_unsupported() {
+    let server = LocalServer::start();
+    let request = Request::get(server.url("/ok"))
+        .header("X-Opaque", vec![0x80])
+        .build()
+        .expect("portable opaque header value must build");
+    let engine = crate::Engine::new(EngineConfig::spawned()).expect("curl Engine must construct");
+
+    match engine
+        .client()
+        .execute(request)
+        .expect_err("curl pilot cannot represent a non-UTF-8 header value")
+    {
+        ExecuteError::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Unsupported);
+            assert_eq!(
+                error.message(),
+                "curl pilot request header values must be UTF-8"
+            );
+        }
+        other => panic!("expected curl pilot unsupported failure, got {other:?}"),
+    }
+    engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
 fn curl_header_budget_resets_for_each_informational_or_final_head() {
     let server = LocalServer::start();
     let engine = testing::curl_engine(EngineConfig::spawned().with_max_header_count(2))

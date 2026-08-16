@@ -579,7 +579,7 @@ Cancellation is preferably a distinct terminal result rather than an error class
 
 Errors may retain backend-specific diagnostic sources for logs and debugging, but callers must not need to match curl error numbers. Error display must redact credentials and sensitive headers.
 
-The initial stable shape keeps a broad `ErrorKind` while attaching backend-neutral detail where it is meaningful: timeout category, transport stage, and violated resource limit. Curl codes remain diagnostic inputs only. WP3 completes the mapping and tests it against controlled DNS, connect, TLS, send, receive, malformed-response, timeout, and oversize cases before the API is described as consumer-ready.
+The initial stable shape keeps a broad `ErrorKind` while attaching backend-neutral detail where it is meaningful: timeout category, transport stage, and violated resource limit. Curl codes remain diagnostic inputs only. WP3 freezes and proves the consumer API and representative public mappings needed for the curl pilot: HTTP status versus failure, cancellation, TLS, configured timeout, oversize data, unsupported backend capability, and submission pressure. WP4 owns the adversarial send/receive/malformed-response laboratory; native DNS/connect work owns the deterministic stage mappings that the curl pilot explicitly does not claim. The curl API slice may be used for rollback-protected GDS pilots before that complete transport-stage corpus is finished, but the crate is not described as transport-complete or public-release-ready until those later gates pass.
 
 ## 20. Backend contract and migration
 
@@ -603,6 +603,9 @@ The curl backend uses an explicit compatibility profile rather than inheriting w
 - disable automatic response decompression and do not advertise compression unless it becomes an accepted portable feature;
 - implement the accepted redirect method/body/authentication table explicitly;
 - return HTTP 4xx/5xx as completed HTTP responses rather than transport failures;
+- accept backend-neutral byte-valued request headers, while documenting the current curl Rust
+  binding's UTF-8-only submission constraint; a valid non-UTF-8 value fails as `Unsupported` rather
+  than being reclassified as an invalid portable request;
 - select and record the TLS backend/trust-root behaviour used by supported Windows/Wine and Linux builds;
 - inspect/report relevant runtime curl capabilities and resolver behaviour;
 - prove bounded wakeup, cancellation, resolver cleanup, and Engine shutdown for the exact packaged curl build.
@@ -629,7 +632,7 @@ Lifecycle references: <https://docs.rs/curl/latest/curl/fn.init.html>, <https://
 
 Curl may internally use IPv6 racing or Happy Eyeballs even before the native backend implements the same connection strategy. This is an allowed backend implementation difference, not a portable scheduling guarantee, provided address-family correctness, cancellation, timeout classification, and externally observable request semantics pass the shared contract.
 
-The Rust-native backend will be accepted when it passes the same black-box contract suite. Both backends may coexist behind Cargo features during development and can be selected explicitly.
+The Rust-native backend will be accepted when it passes the same black-box contract suite. Both backends may coexist behind Cargo features during development. Feature-implicit curl selection is accepted only for the private pilot. Before public crate release, Cargo features determine which backends are available while Engine configuration explicitly selects the backend (or an unambiguous documented default); dependency feature unification must not silently change which transport `Engine::new(config)` constructs.
 
 Mutating requests must never be sent to both backends merely to compare results. Backend differential tests use controlled test servers, recorded fixtures, or idempotent synthetic requests.
 

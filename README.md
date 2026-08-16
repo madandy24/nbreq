@@ -54,6 +54,10 @@ Responses are buffered; HTTP error status codes remain responses, and portable t
 not yet defined. Cancellation stops local work but cannot undo a request already acted upon by the
 remote server.
 
+Portable request header values remain byte strings. The curl pilot's Rust binding can currently
+submit only UTF-8 header values; selecting that backend completes an otherwise valid opaque value
+as `Failed(Unsupported)`. The native backend must not inherit this pilot-only narrowing.
+
 Engine configuration independently bounds accepted/inflight requests, queued commands, and
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
 until it returns; blocking-only requests do not consume callback capacity.

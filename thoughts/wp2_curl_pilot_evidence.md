@@ -96,6 +96,15 @@ The exact dynamic package ran concurrent GET, POST, HTTP 404, redirects, total t
 individual cancellation, TLS certificate-policy, and Engine shutdown tests. On the recorded
 machine:
 
+- Schannel verification must run under a normal Windows process token. At the 56-test checkpoint,
+  the exact same compiled vendored test binary passed under the normal account but a restricted
+  Codex execution token deterministically failed all three Schannel fixtures; the stalled-handshake
+  barrier observed its connection close before ClientHello. Re-running outside that restricted
+  context passed the full matrix; the latest normal-account cleanup run passes 58 unit tests, 4
+  public-contract tests, and 2 doctests. The restricted result
+  is an execution-environment limitation rather than product evidence; the precise denied Windows
+  facility has not been isolated or claimed.
+
 - command submission woke a reactor already blocked in curl Multi and completed its peer request;
 - individual cancellation did not harm the peer transfer;
 - 10 slow-header cancellation trials had a latest maximum observed socket-release latency of 2.6216 ms;
