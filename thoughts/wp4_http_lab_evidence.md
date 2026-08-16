@@ -1,7 +1,8 @@
 # WP4 adversarial HTTP laboratory evidence
 
-Status: curl-pilot protocol/error slice implemented on Windows on 2026-08-17. Cross-platform
-reruns and the later native-backend corpus remain open; this document does not close all of WP4.
+Status: curl-pilot protocol/error slice implemented on Windows and proved against Ubuntu 20.04
+system curl on 2026-08-17. A latest-revision Windows 10 rerun, the Wine rerun, and the later
+native-backend corpus remain open; this document does not close all of WP4.
 
 ## Public test boundary
 
@@ -69,8 +70,25 @@ On the Windows development host:
   Windows account; and
 - all-target/all-feature clippy with warnings denied, formatting, and diff whitespace checks pass.
 
-The upload case performs ten reset trials. Supported-platform reruns remain required and the
-updated Windows 10 proof bundle now carries the adversarial test executable separately.
+On updated Ubuntu 20.04 using Rust 1.85 and dynamic system libcurl 7.68.0/OpenSSL 1.1.1f:
+
+- the full curl-pilot build passes 59 unit, 5 public adversarial, 4 public-contract, and 2 doctests;
+- all-target curl-pilot clippy with warnings denied and formatting checks pass;
+- the runtime capability probe records asynchronous DNS and IPv6 support without a vendored curl;
+  and
+- slow-header, stalled-body, and TLS-handshake cancellation maxima are approximately 0.297 ms,
+  0.300 ms, and 1.684 ms respectively, all comfortably inside the provisional 100 ms gate.
+
+The first Ubuntu run exposed a real portability difference: curl 7.68 classified conflicting
+response framing differently from curl 8.21. NBReq now validates repeated Content-Length and
+Transfer-Encoding/Content-Length ambiguity itself, and the clean revised run above passes. This is
+exactly the backend-neutral normalization the shared laboratory is intended to force.
+
+The upload case performs ten reset trials. A Windows 10 transcript returned during this revision
+passes 58 unit, 5 adversarial, and 4 public-contract tests, but its self-verifying manifest identifies
+the superseded pre-fix bundle rather than commit `072c9d0`; it remains useful historical evidence but
+does not satisfy the latest-revision gate. The revised Windows 10 bundle must be extracted into a
+fresh directory and rerun, followed by the Wine-5 rerun.
 
 ## Deliberate remainder
 
