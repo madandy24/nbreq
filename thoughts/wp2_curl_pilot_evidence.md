@@ -2,8 +2,9 @@
 
 Status: Windows x64 transport, TLS certificate-policy, and process-lifetime DLL slices, native
 Ubuntu 20.04 transport/TLS compatibility, and stock-Wine-5 transport/no-verify compatibility proven
-on 2026-08-16; WP2 remains in progress for controlled connect proof, prompt curl-pilot DNS
-teardown, Windows 10, and Wine's verified-trust limitation.
+on 2026-08-16. The stepping-stone explicitly does not claim prompt connect/DNS network teardown;
+WP2 remains in progress for Windows 10, packaging/notices, exact GDS integration, and Wine's
+verified-trust limitation.
 
 ## What now exists
 
@@ -200,12 +201,11 @@ The post-slice review was applied before consumer API work:
 
 ## Remaining WP2 gates
 
-- Add a deterministic connect-stage fixture and measure actual backend removal, not only canonical
-  waiter cancellation.
-- Select and prove a cancellable resolver for any curl pilot package that claims prompt DNS
-  cancellation. The Ubuntu 20.04 threaded-resolver baseline is now measured and explicitly fails
-  that latency goal despite joining cleanly; the exact Windows threaded package still needs the
-  same controlled-stage proof.
+- Carry the curl-only connect/DNS limitation into pilot release notes and retain finite connect and
+  total deadlines. The pilot does not claim the native backend's prompt stage-by-stage cancellation
+  gate: building firewall/backlog fixtures or a separate curl resolver solely for the stepping-stone
+  is intentionally deferred. The native backend must still prove deterministic connect cancellation
+  and cancellable/bounded resolver teardown.
 - Run the same package/tests on the minimum Windows 10 x64 target. Stock Wine 5 transport,
   cancellation, and explicit no-verify are now proven; decide whether the exact GDS canary accepts
   the recorded verified-custom-trust limitation or needs a newer Wine/trust path.

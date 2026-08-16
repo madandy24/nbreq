@@ -457,7 +457,9 @@ thread, but cancel-to-network-shutdown follows the blocking `getaddrinfo` durati
 for a deliberate 1.5-second stall). That package therefore has an explicit pilot limitation and
 cannot claim the provisional prompt-cancellation gate for DNS. A curl pilot that needs that claim
 must select and prove a cancellable resolver such as c-ares; the Rust-native destination still owns
-the stronger contract above.
+the stronger contract above. The current stepping-stone deliberately accepts this named limitation,
+uses finite connect and total deadlines, and does not add curl-only resolver machinery merely to
+imitate the eventual native design.
 
 DNS caching, expiry, IPv4/IPv6 ordering, and Happy Eyeballs belong to the native-backend work plan.
 
