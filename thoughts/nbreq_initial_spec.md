@@ -490,6 +490,14 @@ Requirements:
 - TLS errors are distinguishable from TCP and HTTP errors;
 - cancellation works during handshake and encrypted reads/writes.
 
+The curl pilot's generated local fixture already proves verified success with a request-scoped
+direct trust anchor, wrong-host rejection, unknown-root rejection, expired-certificate rejection,
+and the explicit chain-and-hostname no-verify compatibility path against both the SSL-enabled test
+build and the exact pinned Windows Schannel DLL. It does not modify the OS trust store or check in a
+private key. Ten deliberately stalled Windows TLS-handshake trials also prove cancellation closes
+the peer socket inside the provisional 100 ms gate. Exact GDS setting parity and the other target
+platforms remain open named-stage proofs; the native backend must reuse the same policy cases.
+
 The desired full native packaging is a self-contained executable or DLL. Platform libraries and statically linked cryptographic implementation details are acceptable. The curl stepping-stone is a pilot deployment and may ship a pinned curl DLL plus its audited runtime dependencies beside GDS.
 
 ## 17. Connection pooling

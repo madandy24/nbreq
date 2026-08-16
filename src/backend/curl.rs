@@ -20,11 +20,25 @@ use crate::{
 
 pub(super) struct CurlFactory {
     limits: ResponseLimits,
+    #[cfg(test)]
+    test_ca_pem: Option<Vec<u8>>,
 }
 
 impl CurlFactory {
     pub(super) fn new(limits: ResponseLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            #[cfg(test)]
+            test_ca_pem: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_test_ca(limits: ResponseLimits, ca_pem: Vec<u8>) -> Self {
+        Self {
+            limits,
+            test_ca_pem: Some(ca_pem),
+        }
     }
 }
 
@@ -46,6 +60,8 @@ impl BackendFactory for CurlFactory {
         Ok(Box::new(CurlBackend {
             multi,
             limits: self.limits,
+            #[cfg(test)]
+            test_ca_pem: self.test_ca_pem,
             handles: HashMap::new(),
             id_to_token: HashMap::new(),
             token_to_id: HashMap::new(),
@@ -58,6 +74,8 @@ impl BackendFactory for CurlFactory {
 struct CurlBackend {
     multi: Multi,
     limits: ResponseLimits,
+    #[cfg(test)]
+    test_ca_pem: Option<Vec<u8>>,
     handles: HashMap<RequestId, ActiveTransfer>,
     id_to_token: HashMap<RequestId, usize>,
     token_to_id: HashMap<usize, RequestId>,
@@ -285,7 +303,13 @@ impl CurlBackend {
         redirect_hops: u8,
         started: Instant,
     ) -> Result<(), Error> {
-        let easy = configured_easy(&request, started, self.limits)?;
+        let easy = configured_easy(
+            &request,
+            started,
+            self.limits,
+            #[cfg(test)]
+            self.test_ca_pem.as_deref(),
+        )?;
         let token = self.allocate_token()?;
         let mut handle = self.multi.add2(easy).map_err(multi_error)?;
         if let Err(error) = handle.set_token(token) {
@@ -435,6 +459,7 @@ fn configured_easy(
     request: &Request,
     started: Instant,
     limits: ResponseLimits,
+    #[cfg(test)] test_ca_pem: Option<&[u8]>,
 ) -> Result<Easy2<ResponseCollector>, Error> {
     validate_request(request)?;
     let mut easy = Easy2::new(ResponseCollector::new(
@@ -445,6 +470,10 @@ fn configured_easy(
     easy.proxy("").map_err(curl_error)?;
     easy.http_version(HttpVersion::V11).map_err(curl_error)?;
     easy.follow_location(false).map_err(curl_error)?;
+    #[cfg(test)]
+    if std::env::var_os("NBREQ_CURL_VERBOSE").is_some() {
+        easy.verbose(true).map_err(curl_error)?;
+    }
 
     let body = request.body();
     match request.method() {
@@ -492,6 +521,10 @@ fn configured_easy(
     easy.http_headers(headers).map_err(curl_error)?;
 
     let options = request.options();
+    #[cfg(test)]
+    if let Some(ca_pem) = test_ca_pem {
+        easy.ssl_cainfo_blob(ca_pem).map_err(curl_error)?;
+    }
     if options.tls_verification == TlsVerification::DangerouslyDisableCertificateVerification {
         easy.ssl_verify_host(false).map_err(curl_error)?;
         easy.ssl_verify_peer(false).map_err(curl_error)?;

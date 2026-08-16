@@ -5,18 +5,88 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+    date_time_ymd,
+};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
+
 use crate::testing;
 use crate::{
     Completion, EngineConfig, ErrorKind, LimitKind, Method, Request, RequestOptions, TimeoutKind,
-    TlsVerification,
+    TlsVerification, TransportStage,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ServerEvent {
+    TlsHandshake,
+    TlsHandshakeClosed,
     SlowHeaders,
     SlowHeadersClosed,
     StalledBody,
     StalledBodyClosed,
+}
+
+struct TlsHandshakeStallServer {
+    address: SocketAddr,
+    stopping: Arc<AtomicBool>,
+    accepted: Arc<AtomicBool>,
+    listener: Option<JoinHandle<()>>,
+    events: mpsc::Receiver<ServerEvent>,
+}
+
+impl TlsHandshakeStallServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS stall listener must bind");
+        let address = listener.local_addr().expect("TLS stall listener address");
+        let stopping = Arc::new(AtomicBool::new(false));
+        let listener_stopping = Arc::clone(&stopping);
+        let accepted = Arc::new(AtomicBool::new(false));
+        let listener_accepted = Arc::clone(&accepted);
+        let (events_tx, events) = mpsc::channel();
+        let listener_thread = thread::spawn(move || {
+            let (stream, _peer) = listener.accept().expect("TLS stall must accept");
+            listener_accepted.store(true, Ordering::Release);
+            if !listener_stopping.load(Ordering::Acquire) {
+                watch_stalled_tls_handshake(stream, &listener_stopping, &events_tx);
+            }
+        });
+        Self {
+            address,
+            stopping,
+            accepted,
+            listener: Some(listener_thread),
+            events,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("https://localhost:{}/", self.address.port())
+    }
+
+    fn expect_event(&self, expected: ServerEvent, timeout: Duration) -> Duration {
+        let started = Instant::now();
+        assert_eq!(
+            self.events
+                .recv_timeout(timeout)
+                .expect("TLS stall event must arrive"),
+            expected
+        );
+        started.elapsed()
+    }
+}
+
+impl Drop for TlsHandshakeStallServer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        if !self.accepted.load(Ordering::Acquire) {
+            let _wake_listener = TcpStream::connect(self.address);
+        }
+        if let Some(listener) = self.listener.take() {
+            listener.join().expect("TLS stall listener must join");
+        }
+    }
 }
 
 struct LocalServer {
@@ -120,6 +190,114 @@ impl Drop for LocalServer {
     }
 }
 
+struct TestIdentity {
+    chain: Vec<CertificateDer<'static>>,
+    key: Vec<u8>,
+    ca_pem: Vec<u8>,
+}
+
+impl TestIdentity {
+    fn localhost(expired: bool) -> Self {
+        let key = KeyPair::generate().expect("test TLS key must generate");
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).expect("TLS params");
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::CrlSign,
+        ];
+        if expired {
+            params.not_before = date_time_ymd(2010, 1, 1);
+            params.not_after = date_time_ymd(2011, 1, 1);
+        }
+        let cert = params.self_signed(&key).expect("test TLS cert must sign");
+        Self {
+            chain: vec![cert.der().clone()],
+            key: key.serialize_der(),
+            ca_pem: cert.pem().into_bytes(),
+        }
+    }
+}
+
+struct TlsServer {
+    address: SocketAddr,
+    stopping: Arc<AtomicBool>,
+    listener: Option<JoinHandle<()>>,
+}
+
+impl TlsServer {
+    fn start(identity: &TestIdentity) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS test listener must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("TLS test listener must become nonblocking");
+        let address = listener.local_addr().expect("TLS listener address");
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("TLS protocol versions must configure")
+            .with_no_client_auth()
+            .with_single_cert(
+                identity.chain.clone(),
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key.clone())),
+            )
+            .expect("TLS identity must configure");
+        let config = Arc::new(config);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let listener_stopping = Arc::clone(&stopping);
+        let listener_thread = thread::spawn(move || {
+            while !listener_stopping.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _peer)) => {
+                        if listener_stopping.load(Ordering::Acquire) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted TLS test stream must become blocking");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("TLS test stream read timeout must configure");
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(2)))
+                            .expect("TLS test stream write timeout must configure");
+                        let connection =
+                            ServerConnection::new(Arc::clone(&config)).expect("TLS server state");
+                        let mut stream = StreamOwned::new(connection, stream);
+                        if read_request_result(&mut stream).is_ok() {
+                            write_response(&mut stream, 200, b"secure", &[]);
+                        }
+                    }
+                    Err(error) if error.kind() == IoErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("TLS test listener failed: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            stopping,
+            listener: Some(listener_thread),
+        }
+    }
+
+    fn url(&self, host: &str) -> String {
+        format!("https://{host}:{}/", self.address.port())
+    }
+}
+
+impl Drop for TlsServer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        let _wake_listener = TcpStream::connect(self.address);
+        if let Some(listener) = self.listener.take() {
+            listener.join().expect("TLS test listener must join");
+        }
+    }
+}
+
 fn serve_connection(
     mut stream: TcpStream,
     stopping: &AtomicBool,
@@ -201,19 +379,28 @@ fn serve_connection(
     }
 }
 
-fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+fn read_request(stream: &mut impl Read) -> Vec<u8> {
+    read_request_result(stream).expect("test request must read")
+}
+
+fn read_request_result(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
     let mut content_length = None;
     loop {
-        let read = stream.read(&mut buffer).expect("test request must read");
-        assert_ne!(read, 0, "client closed before sending a request");
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                IoErrorKind::UnexpectedEof,
+                "client closed before sending a request",
+            ));
+        }
         request.extend_from_slice(&buffer[..read]);
         if let Some(header_end) = find_bytes(&request, b"\r\n\r\n") {
             let body_start = header_end + 4;
             let length = *content_length.get_or_insert_with(|| parse_content_length(&request));
             if request.len() >= body_start + length {
-                return request;
+                return Ok(request);
             }
         }
     }
@@ -248,7 +435,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, body: &[u8], headers: &[(&str, &str)]) {
+fn write_response(stream: &mut impl Write, status: u16, body: &[u8], headers: &[(&str, &str)]) {
     let reason = if status == 200 { "OK" } else { "Not Found" };
     let mut response = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -264,7 +451,7 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &[u8], headers: &[(
     stream.write_all(body).expect("response body must write");
 }
 
-fn write_redirect(stream: &mut TcpStream, status: u16, location: &str) {
+fn write_redirect(stream: &mut impl Write, status: u16, location: &str) {
     let response = format!(
         "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
@@ -300,11 +487,58 @@ fn watch_stalled_connection(
     }
 }
 
+fn watch_stalled_tls_handshake(
+    mut stream: TcpStream,
+    stopping: &AtomicBool,
+    events: &mpsc::Sender<ServerEvent>,
+) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("TLS stall read timeout must configure");
+    let mut client_hello = [0_u8; 4096];
+    let read = stream
+        .read(&mut client_hello)
+        .expect("TLS stall must receive ClientHello bytes");
+    assert_ne!(
+        read, 0,
+        "TLS client closed before sending ClientHello bytes"
+    );
+    watch_stalled_connection(
+        stream,
+        stopping,
+        events,
+        ServerEvent::TlsHandshake,
+        ServerEvent::TlsHandshakeClosed,
+    );
+}
+
 fn completion_response(completion: Completion) -> crate::Response {
     match completion {
         Completion::Completed(response) => response,
         Completion::Failed(error) => panic!("request unexpectedly failed: {error}"),
         Completion::Cancelled => panic!("request unexpectedly cancelled"),
+    }
+}
+
+fn tls_request(url: String, verification: TlsVerification) -> Request {
+    Request::get(url)
+        .options(RequestOptions {
+            connect_timeout: Some(Duration::from_secs(1)),
+            total_timeout: Some(Duration::from_secs(2)),
+            tls_verification: verification,
+            ..RequestOptions::default()
+        })
+        .build()
+        .expect("TLS request must build")
+}
+
+fn assert_tls_failure(completion: Completion) {
+    match completion {
+        Completion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Transport);
+            assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+        }
+        other => panic!("expected TLS failure, got {other:?}"),
     }
 }
 
@@ -348,6 +582,119 @@ fn curl_multi_runs_concurrent_get_status_and_post_requests() {
     let echo = completion_response(echo.wait());
     assert_eq!(echo.status(), 200);
     assert_eq!(echo.body(), b"hello from HTTP arse");
+    engine.shutdown().expect("curl Engine must stop");
+}
+
+#[test]
+fn curl_tls_fixture_proves_trust_name_expiry_and_explicit_no_verify() {
+    if !curl::Version::get().feature_ssl() {
+        eprintln!("skipping TLS fixture because the selected curl pilot has no TLS backend");
+        return;
+    }
+    let valid_identity = TestIdentity::localhost(false);
+    let valid_server = TlsServer::start(&valid_identity);
+
+    let trusted =
+        testing::curl_engine_with_test_ca(EngineConfig::spawned(), valid_identity.ca_pem.clone())
+            .expect("trusted curl Engine must construct");
+    let response = trusted
+        .client()
+        .execute(tls_request(
+            valid_server.url("localhost"),
+            TlsVerification::Verify,
+        ))
+        .expect("locally trusted TLS request must complete");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"secure");
+    trusted.shutdown().expect("trusted Engine must stop");
+
+    let wrong_host =
+        testing::curl_engine_with_test_ca(EngineConfig::spawned(), valid_identity.ca_pem.clone())
+            .expect("wrong-host curl Engine must construct");
+    let completion = wrong_host
+        .client()
+        .submit(tls_request(
+            valid_server.url("127.0.0.1"),
+            TlsVerification::Verify,
+        ))
+        .expect("wrong-host request must submit")
+        .wait();
+    assert_tls_failure(completion);
+    wrong_host.shutdown().expect("wrong-host Engine must stop");
+
+    let unknown_root = testing::curl_engine(EngineConfig::spawned())
+        .expect("unknown-root curl Engine must construct");
+    let completion = unknown_root
+        .client()
+        .submit(tls_request(
+            valid_server.url("localhost"),
+            TlsVerification::Verify,
+        ))
+        .expect("unknown-root request must submit")
+        .wait();
+    assert_tls_failure(completion);
+    unknown_root
+        .shutdown()
+        .expect("unknown-root Engine must stop");
+
+    let no_verify = testing::curl_engine(EngineConfig::spawned())
+        .expect("no-verify curl Engine must construct");
+    let response = no_verify
+        .client()
+        .execute(tls_request(
+            valid_server.url("localhost"),
+            TlsVerification::DangerouslyDisableCertificateVerification,
+        ))
+        .expect("explicitly unverified TLS request must complete");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"secure");
+    no_verify.shutdown().expect("no-verify Engine must stop");
+
+    let expired_identity = TestIdentity::localhost(true);
+    let expired_server = TlsServer::start(&expired_identity);
+    let expired =
+        testing::curl_engine_with_test_ca(EngineConfig::spawned(), expired_identity.ca_pem.clone())
+            .expect("expired-cert curl Engine must construct");
+    let completion = expired
+        .client()
+        .submit(tls_request(
+            expired_server.url("localhost"),
+            TlsVerification::Verify,
+        ))
+        .expect("expired-cert request must submit")
+        .wait();
+    assert_tls_failure(completion);
+    expired.shutdown().expect("expired-cert Engine must stop");
+}
+
+#[test]
+fn curl_cancellation_latency_gate_covers_tls_handshake() {
+    if !curl::Version::get().feature_ssl() {
+        eprintln!("skipping TLS cancellation fixture because curl has no TLS backend");
+        return;
+    }
+    const GATE: Duration = Duration::from_millis(100);
+    const TRIALS: usize = 10;
+
+    let engine = testing::curl_engine(EngineConfig::spawned()).expect("curl Engine must construct");
+    let client = engine.client();
+    let mut max_removal = Duration::ZERO;
+    for _trial in 0..TRIALS {
+        let server = TlsHandshakeStallServer::start();
+        let pending = client
+            .submit(tls_request(server.url(), TlsVerification::Verify))
+            .expect("TLS stall request must submit");
+        server.expect_event(ServerEvent::TlsHandshake, Duration::from_secs(2));
+        pending
+            .handle()
+            .cancel()
+            .expect("TLS handshake request must cancel");
+        assert!(matches!(pending.wait(), Completion::Cancelled));
+        max_removal = max_removal.max(server.expect_event(ServerEvent::TlsHandshakeClosed, GATE));
+    }
+    eprintln!(
+        "curl TLS-handshake cancellation gate={GATE:?} trials={TRIALS} socket-release-max={max_removal:?}"
+    );
     engine.shutdown().expect("curl Engine must stop");
 }
 

@@ -54,3 +54,11 @@ pub fn engine(config: EngineConfig) -> Result<(Engine, TestController), Error> {
 pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
     Engine::with_curl_backend(config)
 }
+
+#[cfg(all(test, feature = "curl-pilot"))]
+pub(crate) fn curl_engine_with_test_ca(
+    config: EngineConfig,
+    ca_pem: Vec<u8>,
+) -> Result<Engine, Error> {
+    Engine::with_curl_test_ca(config, ca_pem)
+}

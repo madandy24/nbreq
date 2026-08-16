@@ -77,6 +77,21 @@ pub(crate) fn curl_factory(config: &EngineConfig) -> Box<dyn BackendFactory> {
     }))
 }
 
+#[cfg(all(test, feature = "curl-pilot"))]
+pub(crate) fn curl_factory_with_test_ca(
+    config: &EngineConfig,
+    ca_pem: Vec<u8>,
+) -> Box<dyn BackendFactory> {
+    Box::new(curl::CurlFactory::new_with_test_ca(
+        ResponseLimits {
+            body_bytes: config.max_response_body_bytes(),
+            header_bytes: config.max_header_bytes(),
+            header_count: config.max_header_count(),
+        },
+        ca_pem,
+    ))
+}
+
 pub(crate) fn interruptible_poll_deadline(max_wait: Duration) -> Instant {
     Instant::now()
         .checked_add(max_wait)

@@ -121,6 +121,21 @@ impl Engine {
 
     #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
     pub(crate) fn with_curl_backend(config: EngineConfig) -> Result<Self, Error> {
+        let factory = backend::curl_factory(&config);
+        Self::with_curl_factory(config, factory)
+    }
+
+    #[cfg(all(test, feature = "curl-pilot"))]
+    pub(crate) fn with_curl_test_ca(config: EngineConfig, ca_pem: Vec<u8>) -> Result<Self, Error> {
+        let factory = backend::curl_factory_with_test_ca(&config, ca_pem);
+        Self::with_curl_factory(config, factory)
+    }
+
+    #[cfg(all(feature = "curl-pilot", any(test, feature = "test-support")))]
+    fn with_curl_factory(
+        config: EngineConfig,
+        factory: Box<dyn backend::BackendFactory>,
+    ) -> Result<Self, Error> {
         if config.run_mode() != RunMode::Spawned {
             return Err(Error::new(
                 ErrorKind::WrongMode,
@@ -142,7 +157,6 @@ impl Engine {
         )?;
         let shared = Shared::new(id, &config, dispatcher.domain());
         let reactor_shared = Arc::clone(&shared);
-        let factory = backend::curl_factory(&config);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
             .spawn(move || spawned_main_factory(reactor_shared, factory))

@@ -1,7 +1,8 @@
 # WP2 Curl Pilot Evidence
 
-Status: Windows x64 transport and process-lifetime DLL slice proven on 2026-08-16; WP2 remains in
-progress for controlled connect/DNS proof, Windows 10, Ubuntu 20.04/Wine, and native Ubuntu 20.04.
+Status: Windows x64 transport, TLS certificate-policy, and process-lifetime DLL slices proven on
+2026-08-16; WP2 remains in progress for controlled connect/DNS proof, Windows 10, Ubuntu 20.04/Wine,
+and native Ubuntu 20.04.
 
 ## What now exists
 
@@ -31,8 +32,10 @@ progress for controlled connect/DNS proof, Windows 10, Ubuntu 20.04/Wine, and na
   origins; total timeout spans redirect hops; and a bounded hop limit is enforced.
 - TLS certificate-chain and hostname verification remain the default. The explicit
   `DangerouslyDisableCertificateVerification` compatibility setting disables both checks for the
-  legacy GDS cases that still require it. Controlled certificate fixtures remain a WP4/GDS audit
-  item.
+  legacy GDS cases that still require it. A generated local TLS fixture now proves trusted success,
+  wrong-host rejection, unknown-root rejection, expired-certificate rejection, and explicit
+  no-verify success without changing an OS trust store or checking in private material. The exact
+  GDS configuration mapping remains a WP4/WP5 audit item.
 
 ## Pinned Windows package
 
@@ -60,7 +63,8 @@ hash and build recipe are the stable pin.
 
 The curl source uses the curl license. The Rust transport/build dependency set currently reports
 MIT, `MIT OR Apache-2.0`, or `MIT/Apache-2.0`; exact notices must be copied into the eventual pilot
-package before GDS deployment.
+package before GDS deployment. `rcgen`, `rustls`, and their locked dependencies are test-only TLS
+fixture tooling; they do not enter NBReq's runtime dependency graph or the GDS curl pilot package.
 
 ## Loader and shutdown decision
 
@@ -87,14 +91,22 @@ misrepresented as in-process unload/reload.
 ## Measured Windows results
 
 The exact dynamic package ran concurrent GET, POST, HTTP 404, redirects, total timeout, peer wakeup,
-individual cancellation, and Engine shutdown tests. On the recorded machine:
+individual cancellation, TLS certificate-policy, and Engine shutdown tests. On the recorded
+machine:
 
 - command submission woke a reactor already blocked in curl Multi and completed its peer request;
 - individual cancellation did not harm the peer transfer;
-- 10 slow-header cancellation trials had a latest maximum observed socket-release latency of 1.6264 ms;
-- 10 stalled-body cancellation trials had a latest maximum observed socket-release latency of 3.3578 ms;
+- 10 slow-header cancellation trials had a latest maximum observed socket-release latency of 2.6216 ms;
+- 10 stalled-body cancellation trials had a latest maximum observed socket-release latency of 5.8288 ms;
 - the provisional supported-platform gate is **less than 100 ms** from cancellation request to the
   controlled peer observing socket closure.
+- the generated direct trust anchor succeeded through Schannel; wrong host, unknown root, and
+  expiry all produced portable `TransportStage::Tls` failures; the explicit no-verify request
+  succeeded. This direct-anchor fixture proves policy without modifying the machine trust store;
+- 10 deliberately stalled TLS-handshake cancellation trials had a latest maximum observed
+  socket-release latency of 1.6263 ms, satisfying the same provisional 100 ms gate. The barrier
+  observes ClientHello bytes before cancellation, so this is a TLS-stage rather than merely an
+  accepted TCP socket.
 
 The 100 ms value is provisional until the same named-stage tests run on every supported target.
 Waiter notification is earlier than socket release because WP1 commits terminal state synchronously;
@@ -136,7 +148,6 @@ The post-slice review was applied before consumer API work:
   Ubuntu 20.04's default Wine.
 - Build/inventory the native Ubuntu 20.04 shared-libcurl package and run the same contract suite.
 - Apply the absolute-path preload/pinning rule to the exact GDS artifact during WP5 packaging.
-- Add controlled TLS certificate fixtures proving verified-default and explicit no-verify behavior.
 - Produce the final dependency notices and pilot security-update checklist.
 
 Security updates retain the version/hash constants, review curl and Rust-binding advisories plus
