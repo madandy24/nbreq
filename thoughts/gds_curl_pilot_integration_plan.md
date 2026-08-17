@@ -2,8 +2,10 @@
 
 Status: G0-G4 were accepted on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot`
 feature. Ureq remains the runtime default. The final clean x86 package passed native and stock-Wine-5
-exact-host load/pin proofs. Selected-NBReq endpoint behavior, public setting, and rollback drill
-remain G5-G6 gates rather than being inferred from unit or loader tests.
+exact-host load/pin proofs, and the G5 stock-Wine selected-NBReq live slice passed primary/backup
+gateway traffic, live refresh/cancellation/recreation, real response POSTs, sustained interactive
+use, and normal process shutdown. G5's named target/retry/restart remainder and G6's public setting
+and rollback drill remain open rather than being inferred from this successful slice.
 
 ## 1. G0 read-only findings (historical baseline)
 
@@ -264,6 +266,28 @@ declared Windows-10 target behavior remains G5 evidence. See `gds_curl_pilot_g4_
 - Include dependency notices and the curl security-update checklist.
 
 ### G5 — Target and live verification
+
+**Stock-Wine selected-backend slice passed.** Clean GDS `35902c4` and NBReq `ced1323` produced the
+15,908,632-byte authenticated archive whose SHA-256 is
+`8E2F7FD8BEE7CB42C374405E47C521718DAC926EE4105E80F4C33089C589218D`. The copied Ubuntu archive and
+all fourteen extracted payloads verified. The exact `#C` host selected NBReq only through the
+process-local `/nbreqcurlpilottest` switch, loaded/pinned its exact adjacent DLLs under stock Wine
+5, and then changed both CAT gateway channels from Delphi to Rust through the existing live module
+setting refresh.
+
+Primary and backup Rust pollers completed repeated real long polls. A second live refresh cancelled
+and joined the two in-flight GET paths in 9 ms and 2 ms, recreated both WebRPC instances, and resumed
+polling. Real login/settings traffic arrived through the Rust poller and both response POSTs returned
+`OK`; sustained website traffic followed. Normal owner close later cancelled and joined both active
+pollers in 4 ms and 2 ms and left no `gds.exe`. The observed responsiveness is not attributed to
+NBReq because the test host and gateway placement were not controlled. Full evidence and the
+remaining claim boundary are in `gds_curl_pilot_g5_evidence.md`.
+
+G5 remains open for the exact Windows-10 selected-GDS live run, the disposition or execution of a
+controlled exact-host POST retry/failure case, and the planned Engine/process restart observation.
+The existing G3 suite already covers simultaneous in-flight poll/POST cancellation without risking
+a duplicate real mutation. Whether a native-Ubuntu GDS bridge run is meaningful must be decided
+explicitly rather than treating the Windows-hosted Delphi executable under Wine as native Linux.
 
 - Run focused Rust facade/DPWebRPC tests, the Delphi bridge test, and the test gateway.
 - Repeat on Windows 10, native Ubuntu 20.04, and the supported Ubuntu 20.04/Wine environment.
