@@ -234,11 +234,12 @@ curl-backed DLL and Delphi bridge remain G4/G5 proof rather than a unit-test cla
 
 ### G4 — Exact DLL lifecycle and packaging
 
-**Implemented; exact Wine-5 host proof pending.** GDS commit `96cf352` and NBReq commit `ee04fb9`
+**Implemented; exact Wine-5 host proof pending.** GDS commit `7a1a7e7` and NBReq commit `f81169b`
 produce a clean, self-verifying x86 package containing separate native-Windows and Wine-5 folders.
-The latter adds only the audited `ProcessPrng` shim. The package records both clean source commits,
-hashes every payload, checks every shipped DLL is x86 PE, includes the curl license and incremental
-dependency notice, and carries a Windows verifier plus Ubuntu `sha256sum` instructions.
+Both include the exact clean Delphi proof host; the latter adds only the audited `ProcessPrng` shim.
+The package records both clean source commits, hashes every payload, checks every shipped executable
+and DLL is x86 PE, includes the curl license and incremental dependency notice, and carries a
+Windows verifier plus a portable ZIP/LF manifest for direct Ubuntu `sha256sum` verification.
 
 The Delphi host resolves the configured Rust DLL to an absolute path. Native Windows uses
 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`; stock Wine uses the absolute

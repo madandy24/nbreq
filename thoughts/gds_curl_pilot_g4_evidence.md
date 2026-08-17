@@ -6,21 +6,30 @@ HTTP canary or authorization to select NBReq in production.
 
 ## Frozen source and artifact
 
-- GDS commit: `96cf352a69050349b3244d2a150c41468a3eb4c6`
-- NBReq commit: `ee04fb9539a493b837790c3d7f47e506fb4c72d1`
+- GDS commit: `7a1a7e7a029bc496ba34a800e869c6001efcff0f`
+- NBReq commit: `f81169b8fd476ddde72d10317304875560415201`
 - both repositories recorded `clean: True` before the evidence build;
-- archive: `target/curl-pilot/gds-nbreq-curl-pilot-g4-96cf352.zip`;
-- archive size: 6,310,192 bytes;
-- archive SHA-256: `4BD111342FCFFF4FF2BD63549F8D910A5F461268490F70F603B56A60C5A70047`;
+- archive: `target/curl-pilot/gds-nbreq-curl-pilot-g4-7a1a7e7.zip`;
+- archive size: 15,893,355 bytes;
+- archive SHA-256: `1B9CA0711F9A3CD868B0EE80B8A3F7AE6A0AE062AD07A9D033CC02557FE5F47A`;
+- Delphi GDS host SHA-256:
+  `EAE99204FABAC0123E7ACE00F24B42FC25F0D8720C770DAEE5394FAE0F35E4A1`;
 - GDS DLL SHA-256: `593DDFC50D3EFB9BE3E9CDFF5D82C34EEC7C8F6F2E6A49D3800F703F62A1ACE8`;
 - libcurl 8.21.0 SHA-256: `C9DF3A41B6CBD3230B9BAD63E4FCEAE31667CBA15C9033B544E1500BCD2E0530`;
 - clean-build Wine-5 shim SHA-256:
   `E021C0DDCA643F6EF9F1FCE686D789D7DE774B844AB6EFB44A461F27D592F344`.
 
-The archive contains `windows-10-x86` (`gds.dll`, `libcurl.dll`) and `wine5-x86` (the same pair plus
-`bcryptprimitives.dll`). It also contains `BUILD-INFO.txt`, a complete SHA-256 manifest, a Windows
-verification script, the curl license, pilot notices, and handling instructions. The verifier checks
-all ten manifest entries and the PE machine field of all five DLL copies.
+The archive contains `windows-10-x86` (`gds.exe`, `gds.dll`, `libcurl.dll`) and `wine5-x86` (the same
+trio plus `bcryptprimitives.dll`). It also contains `BUILD-INFO.txt`, a complete SHA-256 manifest, a
+Windows verification script, the curl license, pilot notices, and handling instructions. The
+verifier checks all twelve manifest entries and the PE machine field of all seven executable/DLL
+copies. The portable ZIP uses forward-slash entries and its manifest is LF-only, so ordinary Linux
+`unzip` and `sha256sum -c manifest.sha256` work without normalization.
+
+An initial target-host extraction rehearsal caught PowerShell `Compress-Archive` backslash entries
+and a CRLF manifest before any host launch. GDS commit `7a1a7e7` replaced that archive path with a
+portable ZIP writer, emitted an LF manifest, and added the exact clean-build Delphi host. The initial
+archive is superseded and is not evidence.
 
 The Wine shim is built from NBReq's one-export source and delegates `ProcessPrng` to
 `bcrypt.dll!BCryptGenRandom`; it contains no copied Windows/Wine implementation and is absent from
@@ -48,8 +57,9 @@ The marker test passed in both configurations: ordinary/no-feature returned zero
 and 1,746 existing hints; none came from the modified loader file. The clean x86 pilot release built
 successfully with its existing warning baseline and exported the marker.
 
-On the local native host (`Microsoft Windows NT 10.0.26200.0`), the real Delphi `gds.exe` was started
-with `/rustdll` naming the clean packaged DLL. At 2026-08-17 18:01:01 the GDS log recorded:
+On the local native host (`Microsoft Windows NT 10.0.26200.0`), the exact clean packaged Delphi
+`gds.exe` was started as the `#C` client with `/rustdll` naming its adjacent packaged DLL. At
+2026-08-17 19:48:27 the GDS log recorded:
 
 - the requested clean-package `windows-10-x86/gds.dll` absolute path;
 - the loaded Rust DLL at that exact path; and
