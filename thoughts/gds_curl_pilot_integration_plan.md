@@ -315,11 +315,25 @@ and handoff remain unit/adversarial-suite claims rather than invented live failu
 
 ### G6 — Canary and rollback
 
+**Implementation in review; live drill pending.** GDS `581f069` adds the persisted system setting
+and redacted diagnostics. The setting is `DSHTTPBACKEND`, exposed by the existing CAT settings API
+as `system_DSHTTPBACKEND`. Absent/`ureq`
+preserves the default; `nbreq-curl-pilot` selects the pilot before first HTTP use. Unknown,
+unavailable, or late selection fails closed, and changes take effect only after process restart.
+The Rust DLL exports a backend-neutral early selector while retaining the private G5 wrapper. GDS
+logs the selected backend and policy without request data, and NBReq adapter failures now expose
+only portable kind/stage/timeout/limit detail rather than raw backend messages. The exact
+activation, health, direct-connect eligibility, and rollback procedure is frozen in
+`gds_curl_pilot_g6_runbook.md`. G6 is not accepted until an authenticated package completes that
+live activation and rollback drill.
+
 - Start with an explicitly selected pilot deployment and redacted stage/timing logs.
 - Never dual-send a real mutation. Differential mutation tests use only controlled fixtures.
-- Choose the existing configuration source and public backend-setting name before canary.
+- Use the existing system DPConfig source and the accepted `DSHTTPBACKEND` name.
 - Make rollback to ureq a setting change followed by the documented HTTP-service recreation or
-  process restart; record activation steps and decision/health criteria before canary.
+  process restart; the pilot chooses process restart and does not promise in-process replacement.
+- Execute the reviewed runbook on the chosen canary target and record the exact package hashes,
+  log markers, health interval, shutdown joins, and successful ureq rollback.
 
 ## 7. Frozen decisions and remaining review questions
 
