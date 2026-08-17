@@ -1,9 +1,10 @@
-# GDS curl-pilot integration plan — G1–G3 implemented
+# GDS curl-pilot integration plan — G4 implementation ready
 
-Status: G0 was accepted on 2026-08-17. G1–G3 were implemented in the GDS Rust tree on 2026-08-17
-behind an internal, default-off `nbreq-curl-pilot` feature. Ureq remains the runtime default. The
-exact packaged GDS artifact, Delphi host preload/pin rule, live endpoint behavior, public setting,
-and rollback drill remain G4–G6 gates rather than being inferred from unit tests.
+Status: G0 was accepted on 2026-08-17. G1–G3 and the G4 packaging/Delphi-loader implementation were
+completed on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot` feature. Ureq remains the
+runtime default. A clean exact x86 package and local Delphi-host load/pin proof exist; the stock
+Wine-5 exact-host run still gates G4 acceptance. Live endpoint behavior, public setting, and rollback
+drill remain G5–G6 gates rather than being inferred from unit or loader tests.
 
 ## 1. G0 read-only findings (historical baseline)
 
@@ -233,6 +234,22 @@ curl-backed DLL and Delphi bridge remain G4/G5 proof rather than a unit-test cla
 
 ### G4 — Exact DLL lifecycle and packaging
 
+**Implemented; exact Wine-5 host proof pending.** GDS commit `96cf352` and NBReq commit `ee04fb9`
+produce a clean, self-verifying x86 package containing separate native-Windows and Wine-5 folders.
+The latter adds only the audited `ProcessPrng` shim. The package records both clean source commits,
+hashes every payload, checks every shipped DLL is x86 PE, includes the curl license and incremental
+dependency notice, and carries a Windows verifier plus Ubuntu `sha256sum` instructions.
+
+The Delphi host resolves the configured Rust DLL to an absolute path. Native Windows uses
+`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`; stock Wine uses the absolute
+`LOAD_WITH_ALTERED_SEARCH_PATH` compatibility route. The loaded Rust module is path-verified. A
+feature-marker export then distinguishes pilot DLLs from ordinary/older ureq DLLs: only pilot DLLs
+must have resolved the exact adjacent `libcurl.dll`, after which the host takes a separate retained
+curl reference. `TdsRustInterface` owns both handles and never calls `FreeLibrary`, so both remain
+pinned until process exit. A real local Delphi GDS process loaded the clean package and logged both
+exact paths; this machine is Windows NT 10.0.26200, so it is useful native-host evidence but not the
+remaining stock-Wine or Windows-10 target run. See `gds_curl_pilot_g4_evidence.md`.
+
 - Build the exact GDS artifact with the pinned curl DLL and audited Wine-5 `ProcessPrng` shim only
   where required.
 - Preload curl by verified absolute path and reject ambient-PATH substitution.
@@ -283,7 +300,5 @@ Remaining deployment questions:
    legacy charset conversion be preserved?
 3. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
    a separately provisioned root? Generated custom trust currently fails through legacy Schannel.
-4. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
-   curl-backed GDS DLL is never `FreeLibrary`-unloaded before process exit?
-5. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
-   back to ambient search-path selection?
+4. Does the exact clean package complete the same verified-path/pinned-handle load under the target
+   stock Wine 5 host? The mechanism is implemented; the target-host transcript is still required.
