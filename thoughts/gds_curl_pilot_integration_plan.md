@@ -5,14 +5,17 @@ behind an internal, default-off `nbreq-curl-pilot` feature. Ureq remains the run
 exact packaged GDS artifact, Delphi host preload/pin rule, live endpoint behavior, public setting,
 and rollback drill remain G4–G6 gates rather than being inferred from unit tests.
 
-## 1. Read-only findings
+## 1. G0 read-only findings (historical baseline)
+
+This section records the tree as inspected for G0. It is intentionally historical; the G1–G3
+implementation status under section 6 supersedes these observations where the code has now moved.
 
 The HTTP facade is concentrated in
 `gds/rust/gds/src/dplib/dphttpclient.rs`. `DpHttpClient` exposes blocking JSON POST, text POST, text
 GET, and a general GET/POST request. `MockDpHttpClient` is widely used and is the right compatibility
 seam to preserve.
 
-There are presently two creation/ownership paths:
+At G0 acceptance there were two creation/ownership paths:
 
 1. `DpSysContext` lazily stores `Arc<dyn DpHttpClient>` and creates the ureq implementation from
    `ensure_http_client()`.
