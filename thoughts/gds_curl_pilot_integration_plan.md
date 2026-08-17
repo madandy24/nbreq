@@ -1,10 +1,9 @@
-# GDS curl-pilot integration plan — G4 implementation ready
+# GDS curl-pilot integration plan — G4 accepted
 
-Status: G0 was accepted on 2026-08-17. G1–G3 and the G4 packaging/Delphi-loader implementation were
-completed on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot` feature. Ureq remains the
-runtime default. A clean exact x86 package and local Delphi-host load/pin proof exist; the stock
-Wine-5 exact-host run still gates G4 acceptance. Live endpoint behavior, public setting, and rollback
-drill remain G5–G6 gates rather than being inferred from unit or loader tests.
+Status: G0-G4 were accepted on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot`
+feature. Ureq remains the runtime default. The final clean x86 package passed native and stock-Wine-5
+exact-host load/pin proofs. Selected-NBReq endpoint behavior, public setting, and rollback drill
+remain G5-G6 gates rather than being inferred from unit or loader tests.
 
 ## 1. G0 read-only findings (historical baseline)
 
@@ -234,12 +233,13 @@ curl-backed DLL and Delphi bridge remain G4/G5 proof rather than a unit-test cla
 
 ### G4 — Exact DLL lifecycle and packaging
 
-**Implemented; exact Wine-5 host proof pending.** GDS commit `7a1a7e7` and NBReq commit `f81169b`
-produce a clean, self-verifying x86 package containing separate native-Windows and Wine-5 folders.
-Both include the exact clean Delphi proof host; the latter adds only the audited `ProcessPrng` shim.
-The package records both clean source commits, hashes every payload, checks every shipped executable
-and DLL is x86 PE, includes the curl license and incremental dependency notice, and carries a
-Windows verifier plus a portable ZIP/LF manifest for direct Ubuntu `sha256sum` verification.
+**Accepted.** GDS commit `51269a0` and NBReq commit `81d5fd9` produce a clean, self-verifying x86
+package containing separate native-Windows and Wine-5 folders. Both include the exact clean Delphi
+proof host and required adjacent `PDFFontData.dat`; the latter adds only the audited `ProcessPrng`
+shim. The package records both clean source commits, hashes every payload, checks every shipped
+executable and DLL is x86 PE, includes the curl license and incremental dependency notice, and
+carries a Windows verifier plus a portable ZIP/LF manifest for direct Ubuntu `sha256sum`
+verification.
 
 The Delphi host resolves the configured Rust DLL to an absolute path. Native Windows uses
 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`; stock Wine uses the absolute
@@ -247,9 +247,11 @@ The Delphi host resolves the configured Rust DLL to an absolute path. Native Win
 feature-marker export then distinguishes pilot DLLs from ordinary/older ureq DLLs: only pilot DLLs
 must have resolved the exact adjacent `libcurl.dll`, after which the host takes a separate retained
 curl reference. `TdsRustInterface` owns both handles and never calls `FreeLibrary`, so both remain
-pinned until process exit. A real local Delphi GDS process loaded the clean package and logged both
-exact paths; this machine is Windows NT 10.0.26200, so it is useful native-host evidence but not the
-remaining stock-Wine or Windows-10 target run. See `gds_curl_pilot_g4_evidence.md`.
+pinned until process exit. A real Delphi GDS process loaded the final binary set and logged both
+exact paths on native Windows. The complete final archive then passed all fourteen hashes on Ubuntu
+20.04.6/stock Wine 5.0, started the `#C` host normally with bundled font data, logged `Wine=True`,
+and left no GDS process after owner termination. The native machine is Windows NT 10.0.26200, so the
+declared Windows-10 target behavior remains G5 evidence. See `gds_curl_pilot_g4_evidence.md`.
 
 - Build the exact GDS artifact with the pinned curl DLL and audited Wine-5 `ProcessPrng` shim only
   where required.
@@ -301,5 +303,3 @@ Remaining deployment questions:
    legacy charset conversion be preserved?
 3. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
    a separately provisioned root? Generated custom trust currently fails through legacy Schannel.
-4. Does the exact clean package complete the same verified-path/pinned-handle load under the target
-   stock Wine 5 host? The mechanism is implemented; the target-host transcript is still required.
