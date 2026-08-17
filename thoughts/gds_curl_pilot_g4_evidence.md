@@ -60,6 +60,9 @@ runtime HTTP selection throughout; this proved loader/package behavior only.
 
 ## Remaining G4 target proof
 
+Bridge preflight confirmed the owner-selected target is Ubuntu 20.04.6 LTS with stock
+Wine 5.0 (`Ubuntu 5.0-3ubuntu1`). No application configuration or customer data was inspected.
+
 Copy the authenticated archive unchanged to the Ubuntu 20.04 host, verify its archive hash, extract
 into a new isolated directory, and run `sha256sum -c manifest.sha256` from the package root. Start
 the existing Delphi GDS host under stock Wine 5 with `/rustdll` naming the absolute Wine path to
