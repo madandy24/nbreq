@@ -1,8 +1,9 @@
-# GDS curl-pilot integration plan — G0 accepted
+# GDS curl-pilot integration plan — G1–G3 implemented
 
-Status: G0 accepted on 2026-08-17. The GDS tree was inspected read-only and had not been changed at
-acceptance. The ownership, request-cancellation, timeout, and first-canary TLS decisions are frozen;
-G1–G3 may now implement them. G4–G6 retain their separate packaging and rollout gates.
+Status: G0 was accepted on 2026-08-17. G1–G3 were implemented in the GDS Rust tree on 2026-08-17
+behind an internal, default-off `nbreq-curl-pilot` feature. Ureq remains the runtime default. The
+exact packaged GDS artifact, Delphi host preload/pin rule, live endpoint behavior, public setting,
+and rollback drill remain G4–G6 gates rather than being inferred from unit tests.
 
 ## 1. Read-only findings
 
@@ -186,6 +187,12 @@ operator rollback procedure; changing a setting never hot-swaps an Engine beneat
 
 ### G1 — Dependency and selection scaffold
 
+**Implemented.** The GDS crate has an optional local NBReq dependency and internal backend enum.
+`DpSysContext` owns one mutex-protected HTTP-service state containing the issued facade and unique
+Engine. Context-issued facades share a stopped-admission gate, so an Arc obtained before shutdown
+rejects fresh ureq, mock, or NBReq work after shutdown begins. Ureq remains the default and no
+persisted setting was invented.
+
 - Add NBReq as a local/path dependency with the controlled curl-pilot feature.
 - Add compile-time availability plus the internal explicit `ureq` / `nbreq-curl-pilot` enum and
   constructor/test injection; do not invent a persisted or Delphi setting here.
@@ -194,6 +201,13 @@ operator rollback procedure; changing a setting never hot-swaps an Engine beneat
 
 ### G2 — Wire-compatible adapter
 
+**Implemented for the frozen pilot surface.** The adapter maps GET/POST, JSON, raw text, form data,
+Basic/caller authorization headers, caller headers, exact `Some(t)` and finite 30-second `None`
+timeouts, strict UTF-8 response text, 2xx success, and the existing explicit insecure GDS policy.
+Controlled loopback comparisons prove form encoding, JSON bytes/content type, raw-text omission of
+content type, Basic auth, and caller headers for ureq and NBReq. Source audit found no raw byte-header
+path around Rust `String`; proxy/redirect reliance and deployed charset evidence remain G5 checks.
+
 - Implement the blocking adapter and explicit body/header encoding.
 - Add ureq-versus-NBReq controlled-server parity tests without sending duplicate production
   mutations.
@@ -201,6 +215,13 @@ operator rollback procedure; changing a setting never hot-swaps an Engine beneat
   and Delphi-originated/non-UTF-8 header assumptions.
 
 ### G3 — DPWebRPC cancellation
+
+**Implemented at the Rust seam.** DPWebRPC now obtains the context facade, starts neutral waiters,
+tracks individual cancellation controls behind a shutdown activation barrier, and synchronously
+joins prompt-cancellable poll/POST workers. Ureq and ordinary mocks retain the detached compatibility
+fallback. Tests cover shutdown racing request activation, simultaneous long-poll and outbound-POST
+cancellation, rapid create/free, and the existing restart/handoff/poller-recovery suite. The exact
+curl-backed DLL and Delphi bridge remain G4/G5 proof rather than a unit-test claim.
 
 - Add started requests and per-DPWebRPC handle tracking.
 - Prove cancel during long poll, outbound POST, restart/handoff, rapid create/free, and watchdog
