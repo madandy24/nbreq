@@ -1,9 +1,9 @@
 # GDS curl-pilot G5 selected-backend evidence
 
-Status: the stock-Wine selected-NBReq live slice passed on 2026-08-17, and the exact selected-GDS
-Windows-10 plus full process-restart slice passed on 2026-08-18. G5 remains open only for the
-explicit retry/native-Ubuntu and deployed-policy decisions below. This is not a public-setting
-decision or production-canary authorization; ureq remains the default.
+Status: accepted on 2026-08-18. The stock-Wine selected-NBReq live slice, exact selected-GDS
+Windows-10 slice, full process-restart slice, controlled real-NBReq POST retry, and deployed-policy
+audit all passed or received an explicit disposition. This is not a public-setting decision or
+production-canary authorization; ureq remains the default and G6 owns those controls.
 
 ## Frozen source and artifact
 
@@ -134,8 +134,15 @@ the native DLL/curl load and NBReq initialization. Both pollers started again; a
 at 00:42:45 cancelled, joined, and recreated them. An attempted browser login during the normal GDS
 warm-up did not succeed, matching established non-NBReq behavior. Without touching the executable,
 a second login at 00:43:10 succeeded and normal website use continued. Across the restarted run,
-166 non-empty requests were fetched and 159 response POSTs recorded `OK`, with no transport or
-poller error. Final normal close at 01:01:27 cancelled both active GETs, joined both pollers, drained
+166 unique non-empty requests were fetched and 159 unique responses were submitted. The apparent
+seven-request gap was reconciled against the CAT and CAT2 logs: every one of the 159 `Respond <id>`
+records maps to exactly one successful `OK` POST, with no duplicate, missing, or
+response-without-fetch ID. The seven fetched IDs without `Respond` were application `longpoll`
+calls. Delphi deliberately retains those calls for a later signal/expiry response; in this run the
+browser replaced each held poll before `RespondRPC` was called. They therefore never entered the
+HTTP POST path and are not failed NBReq responses. The earlier 47/42 observation was a live mid-run
+snapshot and is not used as a final delivery count. No transport or poller error was recorded.
+Final normal close at 01:01:27 cancelled both active GETs, joined both pollers, drained
 outbound workers, and completed the two Drops in 2 ms and 1 ms. The owner confirmed the application
 had closed; a remote exact-process query was unavailable because DMOUSE2 rejected the caller's
 remote-management credentials, so no stronger process-list claim is made.
@@ -144,7 +151,40 @@ This closes both the declared Windows-10 selected-GDS target slice and the plann
 process-stop/restart/use/stop observation. It also reconfirms the live settings-refresh path on
 native Windows without relying on the Wine result.
 
-## Accepted claim and open remainder
+## Controlled retry and policy close-out
+
+GDS commit `17ad136` adds a non-destructive loopback proof through the real NBReq/curl facade and
+the production DPWebRPC retry loop. The controlled server returns HTTP 503 twice and `200 OK` on the
+third POST. DPWebRPC makes exactly three attempts, preserves the identical encrypted request body,
+and observes both five-second retry waits through its deterministic test clock. The pilot-enabled
+DPWebRPC suite passes all 62 tests; the default suite passes all 61 applicable tests. This closes
+retry-after-failure without risking a duplicate live gateway mutation. The full pilot-enabled GDS
+suite also reached 1,012 passing tests but retained three unrelated database/global-state failures;
+no DPWebRPC or HTTP test failed.
+
+The deployed-policy audit produced these dispositions:
+
+- **Proxy:** no GDS HTTP proxy setting or proxy-aware call path exists. Ureq can inherit process
+  proxy environment variables while NBReq deliberately disables them. Pilot selection therefore
+  requires direct endpoint access; both selected live targets proved it. G6 must make a required
+  proxy a preflight rejection rather than silently changing this rule.
+- **Redirects:** no GDS-specific redirect policy or observed live gateway redirect exists. NBReq's
+  tested conservative redirect table is accepted for the pilot. A deployment requiring different
+  redirect semantics is not eligible for selection.
+- **Response text:** GDS builds ureq without its optional charset decoder, so the old path did not
+  intentionally convert declared legacy character sets; it replaced malformed UTF-8 lossily.
+  WebRPC traffic is ASCII/base64 plus `OK`, while the other production facade callers consume
+  JSON/form API responses. Strict UTF-8 is accepted as the fail-closed pilot behavior. A discovered
+  invalid-byte dependency blocks selection rather than adding implicit conversion.
+- **Native Ubuntu GDS:** not applicable to this Windows Delphi consumer. Native Ubuntu remains
+  NBReq-library evidence from WP4; stock Wine 5 is the supported Ubuntu-hosted consumer proof.
+- **Restart scope:** process stop/restart is the supported pilot activation and rollback boundary.
+  Live settings refresh proves WebRPC cancellation/recreation on the existing Engine, not
+  in-process HTTP-service Engine replacement. G6 need not promise the latter.
+- **Watchdog/handoff:** the adversarial G3 suite remains the acceptance evidence. The live runs
+  exercised ordinary two-channel refresh/handoff, but did not manufacture a watchdog fault.
+
+## Accepted claim and G6 boundary
 
 Together the stock-Wine and native-Windows runs pass the selected-NBReq GDS target/lifecycle slice:
 exact authenticated package, explicit backend selection, primary/backup real long polling,
@@ -152,14 +192,7 @@ successful real application POST responses, live settings refresh, prompt reques
 WebRPC recreation, sustained interactive traffic, normal process shutdown, and a complete native
 process restart. The Wine run additionally proved an exact-name post-close process check.
 
-It does not by itself close all of G5. Remaining work is deliberately explicit:
-
-- deciding whether a separate native-Ubuntu GDS consumer run is meaningful for this Windows-hosted
-  Delphi bridge, rather than relabeling the already-passed Wine run as native Linux;
-- a controlled exact-host POST retry/failure observation if the existing G3 simultaneous
-  poll/POST cancellation test is not accepted as sufficient for the destructive live case;
-- deployed proxy/redirect and non-UTF-8 response dependence checks; and
-- G6's persisted public setting, restart-based activation procedure, redacted operational logging,
-  decision thresholds, and ureq rollback drill.
-
-The G5 process-local selector stays private until those rollout decisions are reviewed.
+G5 is accepted. It does not authorize a canary. G6 still owns the persisted public setting,
+restart-based activation procedure, direct-connect eligibility check, redacted operational logging,
+decision thresholds, health observation, and ureq rollback drill. The process-local selector stays
+private until those rollout controls are reviewed.

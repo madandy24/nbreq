@@ -1,12 +1,13 @@
-# GDS curl-pilot integration plan — G5 target/lifecycle slices passed
+# GDS curl-pilot integration plan — G5 accepted; G6 next
 
 Status: G0-G4 were accepted on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot`
 feature. Ureq remains the runtime default. The final clean x86 package passed native and stock-Wine-5
 exact-host load/pin proofs. G5 selected-NBReq live slices now pass stock Wine 5 and the declared
 Windows-10 target, including primary/backup gateway traffic, live refresh/cancellation/recreation,
 real response POSTs, sustained interactive use, normal shutdown, and a full native process restart.
-G5's retry/native-Ubuntu and deployed-policy decisions plus G6's public setting and rollback drill
-remain open rather than being inferred from these successful slices.
+A controlled real-NBReq retry fixture and source/deployment-policy audit close the bounded G5
+remainder. G6's public setting, activation procedure, health criteria, and rollback drill remain
+open rather than being inferred from these successful slices.
 
 ## 1. G0 read-only findings (historical baseline)
 
@@ -212,7 +213,9 @@ Basic/caller authorization headers, caller headers, exact `Some(t)` and finite 3
 timeouts, strict UTF-8 response text, 2xx success, and the existing explicit insecure GDS policy.
 Controlled loopback comparisons prove form encoding, JSON bytes/content type, raw-text omission of
 content type, Basic auth, and caller headers for ureq and NBReq. Source audit found no raw byte-header
-path around Rust `String`; proxy/redirect reliance and deployed charset evidence remain G5 checks.
+path around Rust `String`. G5 accepted direct-connect-only pilot eligibility, NBReq's conservative
+redirect policy, and strict UTF-8 after confirming that this ureq build has no charset decoder and
+that production callers consume WebRPC ASCII/base64 or JSON/form API responses.
 
 - Implement the blocking adapter and explicit body/header encoding.
 - Add ureq-versus-NBReq controlled-server parity tests without sending duplicate production
@@ -268,7 +271,7 @@ declared Windows-10 target behavior remains G5 evidence. See `gds_curl_pilot_g4_
 
 ### G5 — Target and live verification
 
-**Stock-Wine and native-Windows selected-backend slices passed.** Clean GDS `35902c4` and NBReq
+**Accepted.** Clean GDS `35902c4` and NBReq
 `ced1323` produced the 15,908,632-byte authenticated archive whose SHA-256 is
 `8E2F7FD8BEE7CB42C374405E47C521718DAC926EE4105E80F4C33089C589218D`. The copied Ubuntu archive and
 all fourteen extracted payloads verified. The exact `#C` host selected NBReq only through the
@@ -289,17 +292,24 @@ files matched their frozen hashes; `Wine=False`, exact adjacent curl, and proces
 selection were logged. Both real gateway channels repeatedly polled and POSTed successfully. Live
 refresh cancelled/joined/recreated both pollers, first normal close joined them in 15 ms and less
 than 1 ms, and a fresh process then loaded NBReq again, handled a successful login plus sustained
-traffic, and finally joined both pollers in 2 ms and 1 ms. No transport/poller error appeared. This
-closes the Windows-10 selected-GDS and Engine/process restart items.
+traffic, and finally joined both pollers in 2 ms and 1 ms. No transport/poller error appeared. The
+restarted-run count is reconciled: all 159 `Respond` IDs produced one `OK` POST, while the seven
+fetched requests without a response were deliberately held application long-polls replaced before
+Delphi called `RespondRPC`. This closes the Windows-10 selected-GDS and process-restart items without
+claiming in-process Engine replacement.
 
-G5 remains open for the disposition or execution of a controlled exact-host POST retry/failure
-case. The existing G3 suite already covers simultaneous in-flight poll/POST cancellation without
-risking a duplicate real mutation. Whether a native-Ubuntu GDS bridge run is meaningful must be
-decided explicitly rather than treating the Windows-hosted Delphi executable under Wine as native
-Linux. Deployed proxy/redirect and non-UTF-8 dependence checks also remain rollout inputs.
+GDS `17ad136` closes retry-after-failure through a controlled real NBReq/curl fixture: two HTTP 503
+responses are followed by `200 OK`, with exactly three identical encrypted POST bodies and the two
+production retry waits. No live mutation was duplicated. The G5 audit also accepts direct access as
+a pilot eligibility requirement, the conservative NBReq redirect table, and strict UTF-8. Ureq was
+built without charset conversion; the current production surface is WebRPC ASCII/base64 plus JSON
+and form APIs. Native Ubuntu GDS is not applicable to the Windows Delphi consumer; WP4's native
+Ubuntu library proof and G5's stock-Wine consumer proof remain distinct. Watchdog fault injection
+and handoff remain unit/adversarial-suite claims rather than invented live failures.
 
 - Run focused Rust facade/DPWebRPC tests, the Delphi bridge test, and the test gateway.
-- Repeat on Windows 10, native Ubuntu 20.04, and the supported Ubuntu 20.04/Wine environment.
+- Repeat on Windows 10 and the supported Ubuntu 20.04/Wine environment; native Ubuntu is an NBReq
+  library gate, not a GDS Delphi-consumer target.
 - Exercise primary/secondary endpoints, settings refresh, long poll, POST retry, Engine restart, and
   process shutdown.
 
@@ -329,10 +339,7 @@ Frozen for the first canary:
 - `Stopped` rejects facade acquisition and new work through ureq, mocks, and NBReq; it never creates
   a fallback implementation. GDS uses direct waiters and installs no NBReq callbacks.
 
-Remaining deployment questions:
+Remaining deployment question:
 
-1. Does any deployed endpoint rely on environment proxies or ureq redirect behavior?
-2. Is strict UTF-8 response decoding acceptable for every current JSON/text caller, or must a
-   legacy charset conversion be preserved?
-3. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
+1. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
    a separately provisioned root? Generated custom trust currently fails through legacy Schannel.
