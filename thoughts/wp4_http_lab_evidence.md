@@ -74,6 +74,9 @@ On the Windows development host:
 
 On updated Ubuntu 20.04 using Rust 1.85 and dynamic system libcurl 7.68.0/OpenSSL 1.1.1f:
 
+The figures below are from the final clean `6eb5206` rerun after the upload-progress barrier fix,
+not the earlier superseded fixture run.
+
 - the full curl-pilot build passes 59 unit, 5 public adversarial, 4 public-contract, and 2 doctests;
 - all-target curl-pilot clippy with warnings denied and formatting checks pass;
 - the runtime capability probe records asynchronous DNS and IPv6 support without a vendored curl;

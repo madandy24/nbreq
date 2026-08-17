@@ -1,8 +1,8 @@
-# GDS curl-pilot integration plan — G0 freeze candidate
+# GDS curl-pilot integration plan — G0 accepted
 
-Status: planning only. The GDS tree was inspected read-only on 2026-08-17 and has not been changed.
-The ownership, request-cancellation, timeout, and first-canary TLS decisions are frozen here for one
-final review. No item in this document authorizes a GDS edit until that review accepts G0.
+Status: G0 accepted on 2026-08-17. The GDS tree was inspected read-only and had not been changed at
+acceptance. The ownership, request-cancellation, timeout, and first-canary TLS decisions are frozen;
+G1–G3 may now implement them. G4–G6 retain their separate packaging and rollout gates.
 
 ## 1. Read-only findings
 
@@ -70,6 +70,12 @@ The mutex exists because `DpSysContext` is shared while `Engine` is `Send` but i
 state and consumes it. Existing facade Arcs then contain stopped Clients and fail new work; they do
 not recreate an Engine behind the owner.
 
+`Uninitialized` may atomically construct or inject exactly the configured facade and, when selected,
+its Engine. `Stopped` rejects facade acquisition, injection, and every new request for ureq, mocks,
+and NBReq alike; it never lazily reinitializes and never falls back to a private second client.
+Consequently DPWebRPC construction obtains the context facade (initializing it if permitted) or
+fails when the HTTP service is stopped.
+
 `DPWebRPC` should stop constructing an independent HTTP implementation. It receives the same facade
 from the same `default_sys_context()` value and tracks its own active request controls. On DPWebRPC
 stop it cancels those IDs only. If later evidence shows that one subsystem genuinely needs bulk
@@ -79,9 +85,10 @@ isolation, give it a separately and explicitly constructed Engine; do not introd
 ## 3. Adapter and request parity
 
 Add `NbreqDpHttpClient` beside `UreqDpHttpClient`; keep the trait and mocks as the GDS-facing seam.
-The curl pilot is compiled behind a GDS Cargo feature, while a runtime setting selects ureq or
-NBReq so a deployed pilot can roll back without rebuilding. Feature unification must not silently
-select the live implementation.
+The curl pilot is compiled behind a GDS Cargo feature. G1 uses an internal explicit
+`ureq` / `nbreq-curl-pilot` enum plus constructor/test injection, defaulting to ureq; feature
+unification must not silently select the live implementation. G6 chooses and wires the persisted
+public setting before the first canary.
 
 Before switching any caller, add facade-level controlled-server tests for this matrix:
 
@@ -93,6 +100,7 @@ Before switching any caller, add facade-level controlled-server tests for this m
 | GET | no invented body or content type |
 | Basic/Bearer auth | explicit header; never included in error text |
 | caller headers | byte-for-byte accepted UTF-8 values for the curl pilot |
+| legacy/non-UTF-8 caller headers | audit Delphi-originated/ANSI conversions and prove that the curl pilot returns its documented `Unsupported` result rather than silently changing bytes; any deployed dependency blocks canary selection |
 | HTTP status | only 2xx returned as GDS success; current ureq normally converts 4xx/5xx to `Error::Status` before the facade's response-body branch, so capture and preserve the relied-upon error shape rather than assuming body inclusion |
 | response text | define and test UTF-8/charset behavior rather than relying on ureq conversion magic |
 | redirects | capture current relied-upon behavior and compare with NBReq's conservative table |
@@ -113,6 +121,10 @@ query secrets, authorization values, or payloads.
 Extend the facade with a GDS-owned internal started-request shape that contains no public NBReq
 types. It separates a single waitable result from a cloneable cancellation control and allows this
 sequence without one network thread per request:
+
+The GDS adapter uses NBReq's direct waiter form and installs no NBReq user callbacks. Callback
+prompt-return requirements therefore do not participate in GDS shutdown; the core callback API and
+its independent lifecycle guarantees remain unchanged.
 
 1. The tracker acquires a start-activation permit unless its stopping barrier is already closed.
 2. DPWebRPC submits its poll, registers the cloneable cancellation control, then releases the
@@ -147,7 +159,8 @@ Normal GDS shutdown order:
 2. cancel and join DPWebRPC poll/POST work and other tracked long-lived calls;
 3. mark the HTTP service stopped and take the unique Engine from `HttpServiceState`;
 4. call Engine bulk cancellation and consuming normal shutdown;
-5. verify callback/reactor threads have exited; and
+5. verify the reactor (and any future callback workers, if GDS later adopts callbacks) has exited;
+   and
 6. leave the curl-backed GDS module and preloaded curl DLL pinned until process exit.
 
 Engine recreation inside the still-loaded module is supported only after the old service is stopped
@@ -156,29 +169,36 @@ for life and must be recreated rather than having an Engine swapped beneath it. 
 drops that one instance; it is not `FreeLibrary`. `FreeLibrary` unload/reload of the curl-backed GDS
 module is unsupported and must not be used as a stop mechanism.
 
+Backend selection is fixed for that HTTP-service lifetime. A persisted ureq↔NBReq change takes
+effect only through an explicit full HTTP-service recreation or process restart that also rebuilds
+DPWebRPC and other facade holders. G6 must choose the supported activation route and put it in the
+operator rollback procedure; changing a setting never hot-swaps an Engine beneath existing Arcs.
+
 ## 6. Packaging and rollout work packages
 
 ### G0 — Review and freeze
 
-- **Freeze candidate:** one atomic context-owned HTTP service state; one unique NBReq
+- **Accepted:** one atomic context-owned HTTP service state; one unique NBReq
   Engine; context-issued facade; neutral started request; per-DPWebRPC cancellation tracker;
   `Some(t)` preservation; finite 30-second `None`; explicitly insecure first canary; ureq default
   rollback; and consuming Engine shutdown after subsystem joins.
-- Final review must accept the runtime setting source/name and confirm the remaining deployment
-  questions below. No GDS mutation before this gate.
+- G1–G3 are authorized. Persisted setting naming is a G6 canary gate rather than a scaffold blocker.
 
 ### G1 — Dependency and selection scaffold
 
 - Add NBReq as a local/path dependency with the controlled curl-pilot feature.
-- Add compile-time availability plus explicit runtime `ureq` / `nbreq-curl-pilot` selection.
+- Add compile-time availability plus the internal explicit `ureq` / `nbreq-curl-pilot` enum and
+  constructor/test injection; do not invent a persisted or Delphi setting here.
 - Preserve mocks and make ureq the initial/default rollback choice.
+- Make `Stopped` reject all new work regardless of the selected real or mock facade.
 
 ### G2 — Wire-compatible adapter
 
 - Implement the blocking adapter and explicit body/header encoding.
 - Add ureq-versus-NBReq controlled-server parity tests without sending duplicate production
   mutations.
-- Audit every current call site for timeout, content type, auth, redirect, and error assumptions.
+- Audit every current call site for timeout, content type, auth, redirect, error, response charset,
+  and Delphi-originated/non-UTF-8 header assumptions.
 
 ### G3 — DPWebRPC cancellation
 
@@ -210,7 +230,9 @@ module is unsupported and must not be used as a stop mechanism.
 
 - Start with an explicitly selected pilot deployment and redacted stage/timing logs.
 - Never dual-send a real mutation. Differential mutation tests use only controlled fixtures.
-- Make rollback to ureq a setting change and record the decision/health criteria before canary.
+- Choose the existing configuration source and public backend-setting name before canary.
+- Make rollback to ureq a setting change followed by the documented HTTP-service recreation or
+  process restart; record activation steps and decision/health criteria before canary.
 
 ## 7. Frozen decisions and remaining review questions
 
@@ -227,17 +249,17 @@ Frozen for the first canary:
   cancellation.
 - Existing DPWebRPC instances are recreated across Engine recreation. `dpwebrpc_free` is object
   Drop, while module pinning is a separate Delphi-host/package obligation.
+- `Stopped` rejects facade acquisition and new work through ureq, mocks, and NBReq; it never creates
+  a fallback implementation. GDS uses direct waiters and installs no NBReq callbacks.
 
-Remaining final-review/deployment questions:
+Remaining deployment questions:
 
-1. Which existing GDS configuration source and public setting name carries the explicit backend
-   enum? The initial/default value is ureq and rollback must remain a setting change.
-2. Does any deployed endpoint rely on environment proxies or ureq redirect behavior?
-3. Is strict UTF-8 response decoding acceptable for every current JSON/text caller, or must a
+1. Does any deployed endpoint rely on environment proxies or ureq redirect behavior?
+2. Is strict UTF-8 response decoding acceptable for every current JSON/text caller, or must a
    legacy charset conversion be preserved?
-4. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
+3. For Wine 5 after the first insecure canary, do later deployments use a newer Wine/trust path or
    a separately provisioned root? Generated custom trust currently fails through legacy Schannel.
-5. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
+4. Which Delphi owner performs final process shutdown, and can it formally guarantee that the
    curl-backed GDS DLL is never `FreeLibrary`-unloaded before process exit?
-6. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
+5. What exact Wine-5-compatible preload mechanism will pin the verified curl DLL without falling
    back to ambient search-path selection?

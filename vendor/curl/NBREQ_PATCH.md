@@ -10,5 +10,10 @@ thread. The extension retains the first global-init result in `OnceLock` instead
 a poisonable `Once`, so NBReq can fail accepted work rather than panic or strand waiters. The
 upstream deliberate no-`curl_global_cleanup()` policy is unchanged.
 
+The fork also adds `Error::is_weird_server_reply()`, a named predicate for libcurl's stable
+`CURLE_WEIRD_SERVER_REPLY` result. The underlying `curl-sys` constant retains its historical
+FTP-prefixed name; the extension lets NBReq normalize malformed HTTP without exposing that naming
+artifact or a raw curl code publicly.
+
 Upstream source revision recorded by the published crate: `0cfd9e3b8b1aa0b8fc2c8d552597555a30a21416`.
 Review or upstream this patch before changing the pinned `curl` crate version.

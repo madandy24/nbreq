@@ -67,6 +67,8 @@ until it returns; blocking-only requests do not consume callback capacity.
 - [Initial product specification](thoughts/nbreq_initial_spec.md)
 - [Delivery plan](thoughts/project_nbreq_plan.html)
 - [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)
+- [WP4 adversarial HTTP laboratory evidence](thoughts/wp4_http_lab_evidence.md)
+- [GDS curl-pilot integration plan](thoughts/gds_curl_pilot_integration_plan.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
 
 Without a transport feature, the ordinary constructor retains the deterministic non-networking
