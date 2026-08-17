@@ -1,11 +1,12 @@
-# GDS curl-pilot integration plan — G4 accepted
+# GDS curl-pilot integration plan — G5 target/lifecycle slices passed
 
 Status: G0-G4 were accepted on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot`
 feature. Ureq remains the runtime default. The final clean x86 package passed native and stock-Wine-5
-exact-host load/pin proofs, and the G5 stock-Wine selected-NBReq live slice passed primary/backup
-gateway traffic, live refresh/cancellation/recreation, real response POSTs, sustained interactive
-use, and normal process shutdown. G5's named target/retry/restart remainder and G6's public setting
-and rollback drill remain open rather than being inferred from this successful slice.
+exact-host load/pin proofs. G5 selected-NBReq live slices now pass stock Wine 5 and the declared
+Windows-10 target, including primary/backup gateway traffic, live refresh/cancellation/recreation,
+real response POSTs, sustained interactive use, normal shutdown, and a full native process restart.
+G5's retry/native-Ubuntu and deployed-policy decisions plus G6's public setting and rollback drill
+remain open rather than being inferred from these successful slices.
 
 ## 1. G0 read-only findings (historical baseline)
 
@@ -267,8 +268,8 @@ declared Windows-10 target behavior remains G5 evidence. See `gds_curl_pilot_g4_
 
 ### G5 — Target and live verification
 
-**Stock-Wine selected-backend slice passed.** Clean GDS `35902c4` and NBReq `ced1323` produced the
-15,908,632-byte authenticated archive whose SHA-256 is
+**Stock-Wine and native-Windows selected-backend slices passed.** Clean GDS `35902c4` and NBReq
+`ced1323` produced the 15,908,632-byte authenticated archive whose SHA-256 is
 `8E2F7FD8BEE7CB42C374405E47C521718DAC926EE4105E80F4C33089C589218D`. The copied Ubuntu archive and
 all fourteen extracted payloads verified. The exact `#C` host selected NBReq only through the
 process-local `/nbreqcurlpilottest` switch, loaded/pinned its exact adjacent DLLs under stock Wine
@@ -283,11 +284,19 @@ pollers in 4 ms and 2 ms and left no `gds.exe`. The observed responsiveness is n
 NBReq because the test host and gateway placement were not controlled. Full evidence and the
 remaining claim boundary are in `gds_curl_pilot_g5_evidence.md`.
 
-G5 remains open for the exact Windows-10 selected-GDS live run, the disposition or execution of a
-controlled exact-host POST retry/failure case, and the planned Engine/process restart observation.
-The existing G3 suite already covers simultaneous in-flight poll/POST cancellation without risking
-a duplicate real mutation. Whether a native-Ubuntu GDS bridge run is meaningful must be decided
-explicitly rather than treating the Windows-hosted Delphi executable under Wine as native Linux.
+The same authenticated package then passed on the declared Windows-10 target. All four live native
+files matched their frozen hashes; `Wine=False`, exact adjacent curl, and process-local NBReq
+selection were logged. Both real gateway channels repeatedly polled and POSTed successfully. Live
+refresh cancelled/joined/recreated both pollers, first normal close joined them in 15 ms and less
+than 1 ms, and a fresh process then loaded NBReq again, handled a successful login plus sustained
+traffic, and finally joined both pollers in 2 ms and 1 ms. No transport/poller error appeared. This
+closes the Windows-10 selected-GDS and Engine/process restart items.
+
+G5 remains open for the disposition or execution of a controlled exact-host POST retry/failure
+case. The existing G3 suite already covers simultaneous in-flight poll/POST cancellation without
+risking a duplicate real mutation. Whether a native-Ubuntu GDS bridge run is meaningful must be
+decided explicitly rather than treating the Windows-hosted Delphi executable under Wine as native
+Linux. Deployed proxy/redirect and non-UTF-8 dependence checks also remain rollout inputs.
 
 - Run focused Rust facade/DPWebRPC tests, the Delphi bridge test, and the test gateway.
 - Repeat on Windows 10, native Ubuntu 20.04, and the supported Ubuntu 20.04/Wine environment.

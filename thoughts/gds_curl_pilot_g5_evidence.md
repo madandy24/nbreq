@@ -1,8 +1,9 @@
 # GDS curl-pilot G5 selected-backend evidence
 
-Status: the stock-Wine selected-NBReq live slice passed on 2026-08-17. This is strong G5 evidence,
-but G5 remains open for the explicitly listed target/retry/restart remainder below. It is not a
-public-setting decision or production-canary authorization; ureq remains the default.
+Status: the stock-Wine selected-NBReq live slice passed on 2026-08-17, and the exact selected-GDS
+Windows-10 plus full process-restart slice passed on 2026-08-18. G5 remains open only for the
+explicit retry/native-Ubuntu and deployed-policy decisions below. This is not a public-setting
+decision or production-canary authorization; ureq remains the default.
 
 ## Frozen source and artifact
 
@@ -105,20 +106,58 @@ The GDS error file contained only its pre-existing deliberate canary-overrun tes
 HTTP, CAT, shutdown, or process error was recorded. Curl and the Rust module remained pinned until
 process exit as required; no `FreeLibrary` unload/reload was attempted.
 
+## Native Windows 10 and process restart
+
+The identical authenticated archive was then deployed to `C:\adstemp\gds_temp` on DMOUSE2, the
+same ordinary-user machine independently recorded by the WP2/WP4 proof as Windows 10 Pro 22H2
+build 19045.7663. The live `gds.exe`, `gds.dll`, `libcurl.dll`, and `PDFFontData.dat` sizes and
+SHA-256 values matched the frozen package exactly. The proving shortcut preserved the normal
+working-directory configuration and launched:
+
+```text
+/namesuffix #C /server 192.168.0.101 /transport tcp
+/nbreqcurlpilottest /rustdll C:\adstemp\gds_temp\gds.dll
+```
+
+At 00:27:51 the native host logged `Wine=False`, the exact adjacent pinned curl path, explicit
+process-local NBReq selection, resolved exports/callbacks, the embedded dictionary, and complete
+Rust initialization. Both CAT gateway channels reported Rust. Primary and backup pollers used the
+real `clients/test` endpoints, and a live refresh at 00:28:32 cancelled both in-flight GETs, joined
+their pollers in 2 ms and 1 ms, recreated them, and resumed traffic. Before the first close the
+Rust path had fetched 47 non-empty real requests and recorded 42 successful response POSTs with no
+transport or poller error. Normal close at 00:34:08 cancelled both active GETs, drained outbound
+workers, and completed the two Drops in 15 ms and less than 1 ms. The error file still contained
+only the deliberate canary-overrun test entry.
+
+The owner then launched the unchanged NBReq shortcut again. At 00:42:03 a fresh process repeated
+the native DLL/curl load and NBReq initialization. Both pollers started again; another live refresh
+at 00:42:45 cancelled, joined, and recreated them. An attempted browser login during the normal GDS
+warm-up did not succeed, matching established non-NBReq behavior. Without touching the executable,
+a second login at 00:43:10 succeeded and normal website use continued. Across the restarted run,
+166 non-empty requests were fetched and 159 response POSTs recorded `OK`, with no transport or
+poller error. Final normal close at 01:01:27 cancelled both active GETs, joined both pollers, drained
+outbound workers, and completed the two Drops in 2 ms and 1 ms. The owner confirmed the application
+had closed; a remote exact-process query was unavailable because DMOUSE2 rejected the caller's
+remote-management credentials, so no stronger process-list claim is made.
+
+This closes both the declared Windows-10 selected-GDS target slice and the planned full
+process-stop/restart/use/stop observation. It also reconfirms the live settings-refresh path on
+native Windows without relying on the Wine result.
+
 ## Accepted claim and open remainder
 
-This passes the selected-NBReq stock-Wine GDS live slice: exact authenticated package, explicit
-backend selection, primary/backup real long polling, successful real application POST responses,
-live settings refresh, prompt request cancellation and WebRPC recreation, sustained interactive
-traffic, normal process shutdown, and no leftover process.
+Together the stock-Wine and native-Windows runs pass the selected-NBReq GDS target/lifecycle slice:
+exact authenticated package, explicit backend selection, primary/backup real long polling,
+successful real application POST responses, live settings refresh, prompt request cancellation and
+WebRPC recreation, sustained interactive traffic, normal process shutdown, and a complete native
+process restart. The Wine run additionally proved an exact-name post-close process check.
 
 It does not by itself close all of G5. Remaining work is deliberately explicit:
 
-- exact selected-GDS live coverage on the declared Windows-10 target, and deciding whether a
-  separate native-Ubuntu GDS consumer run is meaningful for this Windows-hosted bridge;
+- deciding whether a separate native-Ubuntu GDS consumer run is meaningful for this Windows-hosted
+  Delphi bridge, rather than relabeling the already-passed Wine run as native Linux;
 - a controlled exact-host POST retry/failure observation if the existing G3 simultaneous
   poll/POST cancellation test is not accepted as sufficient for the destructive live case;
-- the planned Engine/process restart observation beyond WebRPC-only live refresh/recreation;
 - deployed proxy/redirect and non-UTF-8 response dependence checks; and
 - G6's persisted public setting, restart-based activation procedure, redacted operational logging,
   decision thresholds, and ureq rollback drill.
