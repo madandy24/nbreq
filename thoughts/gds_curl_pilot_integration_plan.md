@@ -316,8 +316,8 @@ and handoff remain unit/adversarial-suite claims rather than invented live failu
 ### G6 — Canary and rollback
 
 **Authenticated package ready; live drill pending.** GDS `581f069` adds the persisted system setting
-and redacted diagnostics; GDS `d6ff33e` makes the package instructions G6-aware, includes the
-runbook, and verifies the exact public selector export. The setting is `DSHTTPBACKEND`, exposed by the existing CAT settings API
+and redacted diagnostics; GDS `0a210ab` makes the package instructions G6-aware, includes the
+runbook, verifies the exact public selector export, and supports local or UNC verification. The setting is `DSHTTPBACKEND`, exposed by the existing CAT settings API
 as `system_DSHTTPBACKEND`. Absent/`ureq`
 preserves the default; `nbreq-curl-pilot` selects the pilot before first HTTP use. Unknown,
 unavailable, or late selection fails closed, and changes take effect only after process restart.
@@ -325,8 +325,8 @@ The Rust DLL exports a backend-neutral early selector while retaining the privat
 logs the selected backend and policy without request data, and NBReq adapter failures now expose
 only portable kind/stage/timeout/limit detail rather than raw backend messages. The exact
 activation, health, direct-connect eligibility, and rollback procedure is frozen in
-`gds_curl_pilot_g6_runbook.md`. Clean GDS `d6ff33e` plus clean NBReq `a70c63f` produced and locally
-reverified the authenticated DMOUSE2 candidate recorded in `gds_curl_pilot_g6_evidence.md`. G6 is
+`gds_curl_pilot_g6_runbook.md`. Clean GDS `0a210ab` plus clean NBReq `a70c63f` produced and
+reverified the authenticated staged DMOUSE2 candidate recorded in `gds_curl_pilot_g6_evidence.md`. G6 is
 not accepted until that package completes the live activation and rollback drill.
 
 - Start with an explicitly selected pilot deployment and redacted stage/timing logs.
