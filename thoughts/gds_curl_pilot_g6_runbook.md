@@ -1,9 +1,8 @@
 # GDS curl-pilot G6 activation and rollback runbook
 
-Status: authenticated DMOUSE2 candidate ready, not yet canary-authorized. The persisted selector,
-redacted NBReq error summaries, and clean package are locally proven. Record the remaining live
-setting/restart/60-minute-health/rollback drill in `gds_curl_pilot_g6_evidence.md`; it remains the
-G6 acceptance gate.
+Status: accepted on DMOUSE2. The persisted selector, clean authenticated package, 81-minute NBReq
+health interval, and same-package ureq rollback passed. The completed record is in
+`gds_curl_pilot_g6_evidence.md`; retain this runbook for later controlled pilot deployments.
 
 ## Setting contract
 

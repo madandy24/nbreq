@@ -1,4 +1,4 @@
-# GDS curl-pilot integration plan — G5 accepted; G6 next
+# GDS curl-pilot integration plan — G6 accepted
 
 Status: G0-G4 were accepted on 2026-08-17 behind an internal, default-off `nbreq-curl-pilot`
 feature. Ureq remains the runtime default. The final clean x86 package passed native and stock-Wine-5
@@ -6,7 +6,7 @@ exact-host load/pin proofs. G5 selected-NBReq live slices now pass stock Wine 5 
 Windows-10 target, including primary/backup gateway traffic, live refresh/cancellation/recreation,
 real response POSTs, sustained interactive use, normal shutdown, and a full native process restart.
 A controlled real-NBReq retry fixture and source/deployment-policy audit close the bounded G5
-remainder. G6's public setting, activation procedure, health criteria, and rollback drill remain
+remainder. G6's public setting, activation procedure, health criteria, and rollback drill are
 open rather than being inferred from these successful slices.
 
 ## 1. G0 read-only findings (historical baseline)
@@ -315,8 +315,8 @@ and handoff remain unit/adversarial-suite claims rather than invented live failu
 
 ### G6 — Canary and rollback
 
-**Authenticated package ready; live drill pending.** GDS `581f069` adds the persisted system setting
-and redacted diagnostics; GDS `0a210ab` makes the package instructions G6-aware, includes the
+**Accepted on DMOUSE2.** GDS `581f069` adds the persisted system setting
+and redacted diagnostics; subsequent packaging/readback fixes make the package instructions G6-aware, include the
 runbook, verifies the exact public selector export, and supports local or UNC verification. The setting is `DSHTTPBACKEND`, exposed by the existing CAT settings API
 as `system_DSHTTPBACKEND`. Absent/`ureq`
 preserves the default; `nbreq-curl-pilot` selects the pilot before first HTTP use. Unknown,
@@ -325,9 +325,10 @@ The Rust DLL exports a backend-neutral early selector while retaining the privat
 logs the selected backend and policy without request data, and NBReq adapter failures now expose
 only portable kind/stage/timeout/limit detail rather than raw backend messages. The exact
 activation, health, direct-connect eligibility, and rollback procedure is frozen in
-`gds_curl_pilot_g6_runbook.md`. Clean GDS `0a210ab` plus clean NBReq `a70c63f` produced and
-reverified the authenticated staged DMOUSE2 candidate recorded in `gds_curl_pilot_g6_evidence.md`. G6 is
-not accepted until that package completes the live activation and rollback drill.
+`gds_curl_pilot_g6_runbook.md`. Clean GDS `fce3edc` plus clean NBReq `d6d83e3` produced and
+reverified the authenticated DMOUSE2 package recorded in `gds_curl_pilot_g6_evidence.md`. Its
+same-package ureq baseline, persisted NBReq restart, 81-minute health gate, and persisted ureq
+restart rollback all passed; G6 is accepted for the controlled pilot.
 
 - Start with an explicitly selected pilot deployment and redacted stage/timing logs.
 - Never dual-send a real mutation. Differential mutation tests use only controlled fixtures.
