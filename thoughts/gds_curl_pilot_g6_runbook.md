@@ -1,8 +1,9 @@
 # GDS curl-pilot G6 activation and rollback runbook
 
-Status: implementation-ready, not yet canary-authorized. The persisted selector and redacted NBReq
-error summaries are implemented and locally proven. A live setting/restart/rollback drill using an
-authenticated package remains the G6 acceptance gate.
+Status: authenticated DMOUSE2 candidate ready, not yet canary-authorized. The persisted selector,
+redacted NBReq error summaries, and clean package are locally proven. Record the remaining live
+setting/restart/60-minute-health/rollback drill in `gds_curl_pilot_g6_evidence.md`; it remains the
+G6 acceptance gate.
 
 ## Setting contract
 
