@@ -129,8 +129,7 @@ impl NativeTls {
     }
 
     pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
-        let was_handshaking = self.connection.is_handshaking();
-        if was_handshaking {
+        if self.connection.is_handshaking() {
             self.handshake_received = self
                 .handshake_received
                 .checked_add(encrypted.len())
@@ -139,37 +138,52 @@ impl NativeTls {
                 return Err(tls_handshake_flight_limit());
             }
         }
-        let consumed = self
-            .connection
-            .read_tls(&mut Cursor::new(encrypted))
-            .map_err(|error| tls_io_error(was_handshaking, "record input", error))?;
-        if consumed != encrypted.len() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS did not consume the complete encrypted reactor event",
-            ));
-        }
-        let state = self.connection.process_new_packets().map_err(|error| {
-            let stage = if was_handshaking {
-                TransportStage::Tls
-            } else {
-                TransportStage::Receive
-            };
-            Error::transport(
-                stage,
-                format!("native TLS packet processing failed: {error}"),
-            )
-        })?;
-        let handshake_complete = !self.connection.is_handshaking();
-        if handshake_complete {
-            if let Some(request) = self.request.take() {
-                self.connection
-                    .writer()
-                    .write_all(&request)
-                    .map_err(|error| tls_io_error(false, "request encryption", error))?;
+        let mut input = Cursor::new(encrypted);
+        let mut plaintext = Vec::new();
+        let mut peer_closed = false;
+        while usize::try_from(input.position()).unwrap_or(usize::MAX) < encrypted.len() {
+            let was_handshaking = self.connection.is_handshaking();
+            let consumed = self
+                .connection
+                .read_tls(&mut input)
+                .map_err(|error| tls_io_error(was_handshaking, "record input", error))?;
+            if consumed == 0 {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "native TLS made no progress while consuming a reactor event",
+                ));
             }
+            let state = self.connection.process_new_packets().map_err(|error| {
+                let stage = if was_handshaking {
+                    TransportStage::Tls
+                } else {
+                    TransportStage::Receive
+                };
+                Error::transport(
+                    stage,
+                    format!("native TLS packet processing failed: {error}"),
+                )
+            })?;
+            peer_closed |= state.peer_has_closed();
+            if !self.connection.is_handshaking() {
+                if let Some(request) = self.request.take() {
+                    self.connection
+                        .writer()
+                        .write_all(&request)
+                        .map_err(|error| tls_io_error(false, "request encryption", error))?;
+                }
+            }
+            self.drain_plaintext(&mut plaintext)?;
         }
-        let mut plaintext = Vec::with_capacity(state.plaintext_bytes_to_read());
+        Ok(TlsProgress {
+            outbound: self.take_outbound()?,
+            plaintext,
+            handshake_complete: !self.connection.is_handshaking(),
+            peer_closed,
+        })
+    }
+
+    fn drain_plaintext(&mut self, plaintext: &mut Vec<u8>) -> Result<(), Error> {
         let mut buffer = [0_u8; TLS_PLAINTEXT_CHUNK];
         loop {
             match self.connection.reader().read(&mut buffer) {
@@ -179,12 +193,7 @@ impl NativeTls {
                 Err(error) => return Err(tls_io_error(false, "plaintext read", error)),
             }
         }
-        Ok(TlsProgress {
-            outbound: self.take_outbound()?,
-            plaintext,
-            handshake_complete,
-            peer_closed: state.peer_has_closed(),
-        })
+        Ok(())
     }
 
     pub(super) fn is_handshaking(&self) -> bool {
@@ -554,5 +563,64 @@ mod tests {
             .expect_err("oversized peer handshake must fail before rustls input");
         assert_eq!(error.kind(), ErrorKind::Limit);
         assert_eq!(client.handshake_received, TLS_FLIGHT_LIMIT + 1);
+    }
+
+    #[test]
+    fn one_reactor_event_can_contain_more_tls_records_than_rustls_buffers_at_once() {
+        let (cert, key) = identity();
+        let configs =
+            NativeTlsConfigs::with_test_root(cert.clone()).expect("TLS client config must build");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("TLS client state must build");
+        let mut server =
+            ServerConnection::new(server_config(cert, key)).expect("TLS server state must build");
+        let mut to_server = client.start().expect("ClientHello must encode");
+        for _ in 0..16 {
+            if !to_server.is_empty() {
+                server
+                    .read_tls(&mut Cursor::new(&to_server))
+                    .expect("server handshake bytes must read");
+                server
+                    .process_new_packets()
+                    .expect("server handshake bytes must process");
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server
+                    .write_tls(&mut to_client)
+                    .expect("server handshake flight must encode");
+            }
+            if to_client.is_empty() {
+                if !client.is_handshaking() && !server.is_handshaking() {
+                    break;
+                }
+                continue;
+            }
+            to_server = client
+                .receive(&to_client)
+                .expect("client handshake must advance")
+                .outbound;
+        }
+        assert!(!client.is_handshaking());
+        assert!(!server.is_handshaking());
+
+        let expected = vec![b'x'; 128 * 1024];
+        let mut event = Vec::new();
+        for chunk in expected.chunks(TLS_PLAINTEXT_CHUNK) {
+            server
+                .writer()
+                .write_all(chunk)
+                .expect("server plaintext chunk must buffer");
+            while server.wants_write() {
+                server
+                    .write_tls(&mut event)
+                    .expect("server records must encode");
+            }
+        }
+        let progress = client
+            .receive(&event)
+            .expect("one multi-record reactor event must be fully consumed");
+        assert_eq!(progress.plaintext, expected);
     }
 }

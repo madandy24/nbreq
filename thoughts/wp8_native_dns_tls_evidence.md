@@ -109,9 +109,18 @@ close-delimited response and then drops TCP without `close_notify` is rejected a
 than being accepted as authenticated EOF; cleartext HTTP retains its ordinary FIN-delimited rule.
 The first complete run of these fixtures exposed a parallel-test-only Windows port-reservation
 race in the DNS-over-TCP laboratory. The fixture now reserves the shared UDP/TCP numeric port in
-the Windows-compatible order and retries collisions. The complete Windows native suite passes 95
-unit, 4 public-contract, and 2 doctests at this point, with strict clippy and formatting. This is
-progress evidence, not WP8 acceptance.
+the Windows-compatible order and retries collisions.
+
+The first live host-DNS/platform-store request then exposed a real batching bug: one reactor event
+can contain more encrypted records than rustls accepts into its internal input buffer in one
+`read_tls` call. NBReq now alternates bounded input, packet processing, plaintext draining, and
+outbound collection until the complete reactor event is consumed. A 128 KiB many-record unit
+fixture guards that path. The opt-in `native_platform_https` proving executable uses only the
+private system-DNS/platform-TLS constructor; it does not change ordinary backend selection. On the
+Windows development host it completes `https://example.com/` with verified platform trust and HTTP
+200 while printing only status and body length. The complete Windows native suite passes 96 unit,
+4 public-contract, and 2 doctests at this point, with strict clippy and formatting. This is progress
+evidence, not WP8 acceptance.
 
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
 DNS servers only from operational adapters, retains IPv6 scope IDs, ranks them by the applicable
@@ -146,8 +155,8 @@ second wire query remains uncached until its full-chain TTL can be carried forwa
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.
 - A synthetically oversized peer handshake proves the hard wire ceiling. A valid generated
   certificate chain near that ceiling remains useful stress evidence, but it cannot weaken or
-  replace the bound. Verified system/platform trust has only a configuration smoke test so far;
-  generated-root success does not prove the supported OS stores.
+  replace the bound. Windows platform trust now has one live public HTTPS proof; the exact Ubuntu
+  platform-store run remains. Generated-root success alone does not prove a supported OS store.
 - Connection reuse, redirects, streaming/backpressure, proxy policy, and native default selection
   remain WP9/WP10.
 - Parser and DNS wire fuzz targets plus a checked-in seed corpus remain required before native

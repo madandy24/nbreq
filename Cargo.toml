@@ -54,3 +54,7 @@ dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
+
+[[example]]
+name = "native_platform_https"
+required-features = ["native", "test-support"]
