@@ -16,6 +16,8 @@ mod native;
 mod native_dns;
 #[cfg(feature = "native")]
 mod native_http;
+#[cfg(feature = "native")]
+mod native_tls;
 mod scaffold;
 
 pub(crate) struct BackendCompletion {
@@ -107,6 +109,29 @@ pub(crate) fn native_http_factory_with_nameserver(
 ) -> Box<dyn BackendFactory> {
     Box::new(native_http::NativeHttpFactory::new_with_nameserver(
         config, nameserver,
+    ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_https_factory_with_nameserver(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Result<Box<dyn BackendFactory>, Error> {
+    Ok(Box::new(
+        native_http::NativeHttpFactory::new_with_nameserver_and_platform_tls(config, nameserver)?,
+    ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_https_factory_with_nameserver_and_test_root(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    root_der: Vec<u8>,
+) -> Result<Box<dyn BackendFactory>, Error> {
+    Ok(Box::new(
+        native_http::NativeHttpFactory::new_with_nameserver_and_test_root(
+            config, nameserver, root_der,
+        )?,
     ))
 }
 

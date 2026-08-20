@@ -526,10 +526,13 @@ mod tests {
 
     use hickory_proto::rr::rdata::A;
     use hickory_proto::rr::{RData, Record};
+    use rcgen::{CertificateParams, KeyPair};
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
     use super::*;
     use crate::backend::native::NativeReactor;
-    use crate::{Completion, EngineConfig, Request};
+    use crate::{Completion, EngineConfig, ExecuteError, Request, TlsVerification, TransportStage};
 
     struct DnsFixture {
         address: SocketAddr,
@@ -739,6 +742,171 @@ mod tests {
         assert!(matches!(pending.wait(), Completion::Cancelled));
         let started = Instant::now();
         engine.shutdown().expect("DNS Engine must shut down");
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn resolved_https_verifies_hostname_and_preserves_explicit_bypass() {
+        let key = KeyPair::generate().expect("HTTPS fixture key must generate");
+        let params = CertificateParams::new(vec!["resolved.test".to_owned()])
+            .expect("HTTPS fixture parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("HTTPS fixture certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("HTTPS fixture versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("HTTPS fixture identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTPS fixture must bind");
+        let address = listener.local_addr().expect("HTTPS fixture address");
+        let server = thread::spawn(move || {
+            let mut completed = 0_u8;
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().expect("HTTPS fixture must accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("HTTPS fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .expect("HTTPS fixture write timeout");
+                let connection = ServerConnection::new(Arc::new(server_config.clone()))
+                    .expect("HTTPS server state must build");
+                let mut tls = StreamOwned::new(connection, stream);
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    match tls.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(read) => {
+                            request.extend_from_slice(&buffer[..read]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                                    .expect("HTTPS response must write");
+                                tls.flush().expect("HTTPS response must flush");
+                                completed += 1;
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            completed
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("native HTTPS Engine must construct");
+        let verified = engine
+            .client()
+            .execute(
+                Request::get(format!("https://resolved.test:{}/", address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("verified HTTPS request must build"),
+            )
+            .expect("verified HTTPS request must complete");
+        assert_eq!(verified.body(), b"ok");
+
+        let wrong_host = engine.client().execute(
+            Request::get(format!("https://wrong.test:{}/", address.port()))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("wrong-host HTTPS request must build"),
+        );
+        match wrong_host {
+            Err(ExecuteError::Failed(error)) => {
+                assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+            }
+            other => panic!("wrong-host HTTPS must fail at TLS, got {other:?}"),
+        }
+
+        let bypass = engine
+            .client()
+            .execute(
+                Request::get(format!("https://wrong.test:{}/", address.port()))
+                    .tls_verification(TlsVerification::DangerouslyDisableCertificateVerification)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("bypass HTTPS request must build"),
+            )
+            .expect("explicit TLS bypass must complete");
+        assert_eq!(bypass.body(), b"ok");
+        engine.shutdown().expect("native HTTPS Engine must stop");
+        assert_eq!(server.join().expect("HTTPS fixture must join"), 2);
+    }
+
+    #[test]
+    fn public_cancel_during_tls_handshake_closes_peer_and_joins() {
+        let key = KeyPair::generate().expect("TLS stall key must generate");
+        let params = CertificateParams::new(vec!["stall.test".to_owned()])
+            .expect("TLS stall parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("TLS stall certificate must sign");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS stall must bind");
+        let address = listener.local_addr().expect("TLS stall address");
+        let (hello_tx, hello_rx) = test_channel::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("TLS stall must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("TLS stall read timeout");
+            let mut buffer = [0_u8; 4096];
+            let read = stream
+                .read(&mut buffer)
+                .expect("TLS stall must read ClientHello");
+            assert_ne!(read, 0, "TLS client closed before ClientHello");
+            hello_tx.send(()).expect("TLS stall barrier must signal");
+            let started = Instant::now();
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => return started.elapsed(),
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                        panic!("TLS peer was not closed after cancellation")
+                    }
+                    Err(_) => return started.elapsed(),
+                }
+            }
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate.der().as_ref().to_vec(),
+        )
+        .expect("TLS stall Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get(format!("https://stall.test:{}/", address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("TLS stall request must build"),
+            )
+            .expect("TLS stall request must submit");
+        hello_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("TLS stall must observe ClientHello");
+        pending
+            .handle()
+            .cancel()
+            .expect("TLS handshake request must cancel");
+        assert!(matches!(pending.wait(), Completion::Cancelled));
+        let peer_close = server.join().expect("TLS stall must join");
+        assert!(peer_close < Duration::from_millis(500));
+        let started = Instant::now();
+        engine.shutdown().expect("TLS stall Engine must stop");
         assert!(started.elapsed() < Duration::from_millis(500));
     }
 }

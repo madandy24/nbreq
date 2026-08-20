@@ -12,6 +12,9 @@ use super::native::{
     NATIVE_SAFETY_POLL, NativeEvent, NativeFailure, NativeFailureKind, NativeReactor, SlotId,
 };
 use super::native_dns::{NativeResolver, ResolveKey, ResolverConfig};
+use super::native_tls::{
+    NativeTls, NativeTlsConfigs, TlsProgress, encrypted_outbound_limit, encrypted_receive_limit,
+};
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
 use crate::types::http_origin;
@@ -58,10 +61,13 @@ pub(super) fn serialize_request(
 ) -> Result<SerializedRequest, Error> {
     request.validate()?;
     let target = RequestTarget::parse(request.url())?;
-    if !target.scheme.eq_ignore_ascii_case("http") {
+    if !matches!(
+        target.scheme.to_ascii_lowercase().as_str(),
+        "http" | "https"
+    ) {
         return Err(Error::new(
             ErrorKind::Unsupported,
-            "the native cleartext HTTP slice does not yet implement HTTPS",
+            "the native HTTP backend permits only HTTP and HTTPS URLs",
         ));
     }
 
@@ -741,6 +747,7 @@ fn response_body_limit(limit: usize) -> Error {
 pub(super) struct NativeHttpFactory {
     limits: HttpLimits,
     resolver: Option<ResolverConfig>,
+    tls: Option<NativeTlsConfigs>,
 }
 
 #[allow(dead_code)]
@@ -749,6 +756,7 @@ impl NativeHttpFactory {
         Self {
             limits: HttpLimits::from_config(config),
             resolver: None,
+            tls: None,
         }
     }
 
@@ -756,13 +764,37 @@ impl NativeHttpFactory {
         Self {
             limits: HttpLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
+            tls: None,
         }
+    }
+
+    pub(super) fn new_with_nameserver_and_platform_tls(
+        config: &EngineConfig,
+        nameserver: SocketAddr,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            limits: HttpLimits::from_config(config),
+            resolver: Some(ResolverConfig::injected(nameserver)),
+            tls: Some(NativeTlsConfigs::platform()?),
+        })
+    }
+
+    pub(super) fn new_with_nameserver_and_test_root(
+        config: &EngineConfig,
+        nameserver: SocketAddr,
+        root_der: Vec<u8>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            limits: HttpLimits::from_config(config),
+            resolver: Some(ResolverConfig::injected(nameserver)),
+            tls: Some(NativeTlsConfigs::with_test_root(root_der.into())?),
+        })
     }
 }
 
 impl BackendFactory for NativeHttpFactory {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
-        let backend = NativeHttpBackend::new(self.limits, self.resolver)?;
+        let backend = NativeHttpBackend::new(self.limits, self.resolver, self.tls)?;
         let waker = backend.reactor.waker();
         shared.queue.set_external_waker(Some(Arc::new(move || {
             waker.wake().map_err(|error| {
@@ -782,6 +814,7 @@ struct HttpTransfer {
     body_bearing: bool,
     response_started: bool,
     connected: bool,
+    tls: Option<NativeTls>,
     connect_deadline: Option<Instant>,
     total_deadline: Option<Instant>,
     inactivity_timeout: Option<Duration>,
@@ -831,6 +864,7 @@ impl HttpTransfer {
 struct NativeHttpBackend {
     reactor: NativeReactor,
     resolver: Option<NativeResolver>,
+    tls: Option<NativeTlsConfigs>,
     limits: HttpLimits,
     request_to_slot: HashMap<RequestId, SlotId>,
     transfers: HashMap<SlotId, HttpTransfer>,
@@ -843,6 +877,9 @@ struct PendingResolve {
     request_id: RequestId,
     serialized: SerializedRequest,
     port: u16,
+    scheme: String,
+    host: String,
+    tls_verification: crate::TlsVerification,
     body_bearing: bool,
     connect_deadline: Option<Instant>,
     total_deadline: Option<Instant>,
@@ -882,7 +919,11 @@ impl PendingResolve {
 }
 
 impl NativeHttpBackend {
-    fn new(limits: HttpLimits, resolver: Option<ResolverConfig>) -> Result<Self, Error> {
+    fn new(
+        limits: HttpLimits,
+        resolver: Option<ResolverConfig>,
+        tls: Option<NativeTlsConfigs>,
+    ) -> Result<Self, Error> {
         let reactor = NativeReactor::new(256).map_err(native_internal_error)?;
         let resolver = resolver
             .map(|config| NativeResolver::new(config, reactor.waker()))
@@ -890,6 +931,7 @@ impl NativeHttpBackend {
         Ok(Self {
             reactor,
             resolver,
+            tls,
             limits,
             request_to_slot: HashMap::new(),
             transfers: HashMap::new(),
@@ -921,21 +963,48 @@ impl NativeHttpBackend {
         mut pending: PendingResolve,
     ) -> Option<Completion> {
         let deadline = pending.next_deadline();
-        let outbound_limit = pending.serialized.bytes.len();
-        let slot = match self.reactor.connect(
-            address,
-            deadline,
-            outbound_limit,
-            self.limits.reactor_receive_limit(),
-        ) {
+        let tls = if pending.scheme == "https" {
+            let Some(configs) = &self.tls else {
+                return Some(Completion::Failed(Error::new(
+                    ErrorKind::Unsupported,
+                    "the selected native proving Engine has no TLS configuration",
+                )));
+            };
+            match configs.connection(
+                &pending.host,
+                pending.tls_verification,
+                pending.serialized.bytes.clone(),
+            ) {
+                Ok(tls) => Some(tls),
+                Err(error) => return Some(Completion::Failed(error)),
+            }
+        } else {
+            None
+        };
+        let outbound_limit = if tls.is_some() {
+            encrypted_outbound_limit(pending.serialized.bytes.len())
+        } else {
+            pending.serialized.bytes.len()
+        };
+        let receive_limit = if tls.is_some() {
+            encrypted_receive_limit(self.limits.reactor_receive_limit())
+        } else {
+            self.limits.reactor_receive_limit()
+        };
+        let slot = match self
+            .reactor
+            .connect(address, deadline, outbound_limit, receive_limit)
+        {
             Ok(slot) => slot,
             Err(failure) => {
                 return Some(Completion::Failed(native_transport_error(failure)));
             }
         };
-        if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
-            self.reactor.cancel(slot);
-            return Some(Completion::Failed(native_transport_error(failure)));
+        if tls.is_none() {
+            if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
+                self.reactor.cancel(slot);
+                return Some(Completion::Failed(native_transport_error(failure)));
+            }
         }
         let request_id = pending.request_id;
         let now = Instant::now();
@@ -951,6 +1020,7 @@ impl NativeHttpBackend {
                 body_bearing: pending.body_bearing,
                 response_started: false,
                 connected: false,
+                tls,
                 connect_deadline: pending.connect_deadline,
                 total_deadline: pending.total_deadline,
                 inactivity_timeout: pending.inactivity_timeout,
@@ -1052,7 +1122,20 @@ impl NativeHttpBackend {
         failure: NativeFailure,
         completions: &mut Vec<BackendCompletion>,
     ) {
-        let error = if failure.kind == NativeFailureKind::Read
+        let tls_handshake = self
+            .transfers
+            .get(&slot)
+            .and_then(|transfer| transfer.tls.as_ref())
+            .is_some_and(NativeTls::is_handshaking);
+        let error = if tls_handshake {
+            Error::transport(
+                TransportStage::Tls,
+                format!(
+                    "the connection failed during the TLS handshake: {}",
+                    failure.message
+                ),
+            )
+        } else if failure.kind == NativeFailureKind::Read
             && self
                 .transfers
                 .get(&slot)
@@ -1066,6 +1149,125 @@ impl NativeHttpBackend {
             native_transport_error(failure)
         };
         self.finish(slot, Completion::Failed(error), completions);
+    }
+
+    fn handle_connected(
+        &mut self,
+        slot: SlotId,
+        arm_deadline: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
+        let start = self
+            .transfers
+            .get_mut(&slot)
+            .and_then(|transfer| transfer.tls.as_mut())
+            .map(NativeTls::start);
+        match start {
+            Some(Ok(outbound)) => {
+                self.note_progress(slot, false, arm_deadline)?;
+                if arm_deadline && !outbound.is_empty() {
+                    if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::transport(
+                                TransportStage::Tls,
+                                format!(
+                                    "native TLS ClientHello queueing failed: {}",
+                                    failure.message
+                                ),
+                            )),
+                            completions,
+                        );
+                    }
+                }
+            }
+            Some(Err(error)) => {
+                self.finish(slot, Completion::Failed(error), completions);
+            }
+            None => self.note_progress(slot, true, arm_deadline)?,
+        }
+        Ok(())
+    }
+
+    fn handle_data(
+        &mut self,
+        slot: SlotId,
+        bytes: Vec<u8>,
+        arm_deadline: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
+        let tls_progress = self
+            .transfers
+            .get_mut(&slot)
+            .and_then(|transfer| transfer.tls.as_mut())
+            .map(|tls| tls.receive(&bytes));
+        let (plaintext, established, outbound, peer_closed) = match tls_progress {
+            Some(Ok(TlsProgress {
+                outbound,
+                plaintext,
+                handshake_complete,
+                peer_closed,
+            })) => (plaintext, handshake_complete, outbound, peer_closed),
+            Some(Err(error)) => {
+                self.finish(slot, Completion::Failed(error), completions);
+                return Ok(());
+            }
+            None => (bytes, false, Vec::new(), false),
+        };
+        self.note_progress(slot, established, arm_deadline)?;
+        if arm_deadline && !outbound.is_empty() {
+            if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
+                let handshaking = self
+                    .transfers
+                    .get(&slot)
+                    .and_then(|transfer| transfer.tls.as_ref())
+                    .is_some_and(NativeTls::is_handshaking);
+                let stage = if handshaking {
+                    TransportStage::Tls
+                } else {
+                    TransportStage::Send
+                };
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::transport(stage, failure.message)),
+                    completions,
+                );
+                return Ok(());
+            }
+        }
+        let decoded = self.transfers.get_mut(&slot).map(|transfer| {
+            transfer.response_started |= !plaintext.is_empty();
+            transfer.decoder.ingest(&plaintext)
+        });
+        match decoded {
+            Some(Ok(Some(response))) => {
+                self.finish(slot, Completion::Completed(response), completions)
+            }
+            Some(Err(error)) => self.finish(slot, Completion::Failed(error), completions),
+            Some(Ok(None)) if peer_closed => {
+                let eof = self
+                    .transfers
+                    .get_mut(&slot)
+                    .map(|transfer| transfer.decoder.eof());
+                match eof {
+                    Some(Ok(Some(response))) => {
+                        self.finish(slot, Completion::Completed(response), completions)
+                    }
+                    Some(Err(error)) => self.finish(slot, Completion::Failed(error), completions),
+                    Some(Ok(None)) => self.finish(
+                        slot,
+                        Completion::Failed(Error::transport(
+                            TransportStage::Receive,
+                            "the TLS peer closed without completing a response",
+                        )),
+                        completions,
+                    ),
+                    None => {}
+                }
+            }
+            Some(Ok(None)) | None => {}
+        }
+        Ok(())
     }
 
     fn note_progress(
@@ -1106,28 +1308,31 @@ impl NativeHttpBackend {
         for event in events {
             match event {
                 NativeEvent::Connected(slot) => {
-                    self.note_progress(slot, true, !failed_slots.contains(&slot))?
+                    self.handle_connected(slot, !failed_slots.contains(&slot), &mut completions)?
                 }
                 NativeEvent::WriteProgress(slot) | NativeEvent::WriteDrained(slot) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
                 }
                 NativeEvent::Data(slot, bytes) => {
-                    self.note_progress(slot, false, !failed_slots.contains(&slot))?;
-                    let decoded = self.transfers.get_mut(&slot).map(|transfer| {
-                        transfer.response_started |= !bytes.is_empty();
-                        transfer.decoder.ingest(&bytes)
-                    });
-                    match decoded {
-                        Some(Ok(Some(response))) => {
-                            self.finish(slot, Completion::Completed(response), &mut completions)
-                        }
-                        Some(Err(error)) => {
-                            self.finish(slot, Completion::Failed(error), &mut completions);
-                        }
-                        Some(Ok(None)) | None => {}
-                    }
+                    self.handle_data(slot, bytes, !failed_slots.contains(&slot), &mut completions)?;
                 }
                 NativeEvent::PeerClosed(slot) => {
+                    if self
+                        .transfers
+                        .get(&slot)
+                        .and_then(|transfer| transfer.tls.as_ref())
+                        .is_some_and(NativeTls::is_handshaking)
+                    {
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::transport(
+                                TransportStage::Tls,
+                                "the peer closed during the TLS handshake",
+                            )),
+                            &mut completions,
+                        );
+                        continue;
+                    }
                     let decoded = self
                         .transfers
                         .get_mut(&slot)
@@ -1217,6 +1422,9 @@ impl Backend for NativeHttpBackend {
             request_id: id,
             serialized,
             port: origin.port,
+            scheme: origin.scheme,
+            host: origin.host.clone(),
+            tls_verification: options.tls_verification,
             body_bearing: !request.body().is_empty(),
             connect_deadline,
             total_deadline,
@@ -1349,7 +1557,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("batch fixture must bind");
         let address = listener.local_addr().expect("batch fixture address");
         let mut backend =
-            NativeHttpBackend::new(LIMITS, None).expect("native backend must construct");
+            NativeHttpBackend::new(LIMITS, None, None).expect("native backend must construct");
         let deadline = Instant::now() + Duration::from_secs(5);
         let slot = backend
             .reactor
@@ -1369,6 +1577,7 @@ mod tests {
                 body_bearing: true,
                 response_started: false,
                 connected: true,
+                tls: None,
                 connect_deadline: None,
                 total_deadline: Some(deadline),
                 inactivity_timeout: Some(Duration::from_secs(1)),
@@ -1741,7 +1950,7 @@ mod tests {
         });
 
         let config = EngineConfig::manual();
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None)
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
             .expect("manual native HTTP backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual native HTTP Engine must construct");

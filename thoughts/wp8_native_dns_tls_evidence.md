@@ -80,8 +80,22 @@ parses the packet; NBReq owns retry clocks, bounds, commands, cancellation, and 
 Focused tests prove direct resolver wake/result/join, cancellation without late delivery, a public
 request cancelled while the fixture holds its DNS reply, and an end-to-end hostname request that
 connects to the returned IPv4 address while retaining the original hostname and port in the HTTP
-Host field. The complete Windows native suite passes 74 unit, 4 public-contract, and 2 doctests at
-this point. This is progress evidence, not WP8 acceptance.
+Host field.
+
+Rustls is now driven over that same real socket path. The TLS state is sans-I/O and remains on the
+native backend owner; it emits bounded encrypted flights and accepts bounded encrypted reactor
+events. The HTTP request is not encrypted or queued until the handshake succeeds. Connect timeout
+therefore remains live through DNS, TCP, and TLS, while encrypted and plaintext progress refreshes
+inactivity. Only `http/1.1` is offered through ALPN.
+
+Generated-root fixtures prove verified HTTPS success, wrong-host rejection as
+`TransportStage::Tls`, the explicit chain-and-hostname bypass, and cancellation after the peer has
+observed ClientHello. The bypass skips certificate-chain and hostname acceptance only; rustls still
+cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate sans-I/O test
+proves request encryption and response decryption, and the platform verifier configuration builds
+with an explicit Ring provider rather than process-global provider state. The complete Windows
+native suite passes 79 unit, 4 public-contract, and 2 doctests at this point, with strict clippy and
+formatting. This is progress evidence, not WP8 acceptance.
 
 ## Deliberate remainder
 
@@ -95,6 +109,9 @@ this point. This is progress evidence, not WP8 acceptance.
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
   state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.
+- Native unknown-root, expired-certificate, TLS-alert, abrupt encrypted EOF, large certificate
+  chain, and encrypted response-limit fixtures remain. Verified system/platform trust has only a
+  configuration smoke test so far; generated-root success does not prove the supported OS stores.
 - Connection reuse, redirects, streaming/backpressure, proxy policy, and native default selection
   remain WP9/WP10.
 - Parser and DNS wire fuzz targets plus a checked-in seed corpus remain required before native

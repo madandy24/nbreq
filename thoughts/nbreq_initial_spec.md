@@ -491,7 +491,7 @@ The implementation should use `httparse` for response-head recognition and its c
 
 ## 16. TLS
 
-The native backend will initially use `rustls` or another accepted Rust-facing TLS provider that can be driven over nonblocking I/O without an async runtime.
+The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store.
 
 Requirements:
 

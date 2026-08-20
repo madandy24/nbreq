@@ -78,6 +78,34 @@ pub fn native_http_engine_with_nameserver(
     Engine::with_spawned_factory(config, factory)
 }
 
+/// Creates a private Rust-native HTTPS proving Engine using platform trust.
+///
+/// The nameserver is injected for deterministic DNS ownership tests. This remains a WP8 proving
+/// seam rather than public resolver or backend configuration.
+#[cfg(feature = "native")]
+pub fn native_https_engine_with_nameserver(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Result<Engine, Error> {
+    let factory = crate::backend::native_https_factory_with_nameserver(&config, nameserver)?;
+    Engine::with_spawned_factory(config, factory)
+}
+
+/// Creates a private Rust-native HTTPS proving Engine with one DER-encoded test trust root.
+///
+/// This modifies no operating-system trust store and is available only through test support.
+#[cfg(feature = "native")]
+pub fn native_https_engine_with_nameserver_and_test_root(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+    root_der: Vec<u8>,
+) -> Result<Engine, Error> {
+    let factory = crate::backend::native_https_factory_with_nameserver_and_test_root(
+        &config, nameserver, root_der,
+    )?;
+    Engine::with_spawned_factory(config, factory)
+}
+
 #[cfg(all(test, feature = "curl-pilot"))]
 pub(crate) fn curl_engine_with_test_ca(
     config: EngineConfig,
