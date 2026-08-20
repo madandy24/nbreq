@@ -1454,7 +1454,7 @@ impl NativeHttpBackend {
         }
         let deadline = pending.next_deadline();
         let outbound_limit = if idle.tls.is_some() {
-            encrypted_outbound_limit(pending.serialized.bytes.len())
+            encrypted_outbound_limit()
         } else {
             pending.serialized.bytes.len()
         };
@@ -1473,14 +1473,21 @@ impl NativeHttpBackend {
             return Some(pending);
         }
         let outbound = match idle.tls.as_mut() {
-            Some(tls) => match tls.encrypt_request(&pending.serialized.bytes) {
-                Ok(outbound) => outbound,
-                Err(_) => {
+            Some(tls) => {
+                if tls.begin_request(pending.serialized.bytes.clone()).is_err() {
                     self.reactor.cancel(idle.slot);
                     self.release_connection(&pending.key);
                     return Some(pending);
                 }
-            },
+                match tls.pump_request(outbound_limit) {
+                    Ok(outbound) => outbound,
+                    Err(_) => {
+                        self.reactor.cancel(idle.slot);
+                        self.release_connection(&pending.key);
+                        return Some(pending);
+                    }
+                }
+            }
             None => pending.serialized.bytes.clone(),
         };
         if self.reactor.queue_write(idle.slot, &outbound).is_err() {
@@ -1646,7 +1653,7 @@ impl NativeHttpBackend {
             None
         };
         let outbound_limit = if tls.is_some() {
-            encrypted_outbound_limit(pending.serialized.bytes.len())
+            encrypted_outbound_limit()
         } else {
             pending.serialized.bytes.len()
         };
@@ -1854,6 +1861,49 @@ impl NativeHttpBackend {
         self.finish(slot, Completion::Failed(error), completions);
     }
 
+    fn pump_tls_request(
+        &mut self,
+        slot: SlotId,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<bool, Error> {
+        let capacity = match self.reactor.outbound_capacity(slot) {
+            Ok(capacity) => capacity,
+            Err(failure) => {
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::new(ErrorKind::Internal, failure.message)),
+                    completions,
+                );
+                return Ok(false);
+            }
+        };
+        let pumped = self
+            .transfers
+            .get_mut(&slot)
+            .and_then(|transfer| transfer.tls.as_mut())
+            .map(|tls| tls.pump_request(capacity));
+        let outbound = match pumped {
+            Some(Ok(outbound)) => outbound,
+            Some(Err(error)) => {
+                self.finish(slot, Completion::Failed(error), completions);
+                return Ok(false);
+            }
+            None => return Ok(false),
+        };
+        let queued = !outbound.is_empty();
+        if queued {
+            if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::transport(TransportStage::Send, failure.message)),
+                    completions,
+                );
+                return Ok(false);
+            }
+        }
+        Ok(queued)
+    }
+
     fn handle_connected(
         &mut self,
         slot: SlotId,
@@ -1937,6 +1987,9 @@ impl NativeHttpBackend {
                 );
                 return Ok(());
             }
+        }
+        if arm_deadline && established && self.transfers.contains_key(&slot) {
+            self.pump_tls_request(slot, completions)?;
         }
         let decoded = self.transfers.get_mut(&slot).map(|transfer| {
             transfer.response_started |= !plaintext.is_empty();
@@ -2049,11 +2102,25 @@ impl NativeHttpBackend {
                 }
                 NativeEvent::WriteProgress(slot) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
+                    if !failed_slots.contains(&slot) {
+                        self.pump_tls_request(slot, &mut completions)?;
+                    }
                 }
                 NativeEvent::WriteDrained(slot) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
-                    if let Some(transfer) = self.transfers.get_mut(&slot) {
-                        transfer.request_write_drained |= transfer.connected;
+                    let queued_more = if failed_slots.contains(&slot) {
+                        false
+                    } else {
+                        self.pump_tls_request(slot, &mut completions)?
+                    };
+                    if !queued_more {
+                        if let Some(transfer) = self.transfers.get_mut(&slot) {
+                            let encrypted = transfer
+                                .tls
+                                .as_ref()
+                                .is_none_or(NativeTls::request_fully_encrypted);
+                            transfer.request_write_drained |= transfer.connected && encrypted;
+                        }
                     }
                 }
                 NativeEvent::Data(slot, bytes) => {

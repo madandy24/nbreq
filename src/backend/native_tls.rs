@@ -103,7 +103,10 @@ impl NativeTlsConfigs {
         })?;
         Ok(NativeTls {
             connection,
-            request: Some(request),
+            request: Some(PendingPlaintext {
+                bytes: request,
+                offset: 0,
+            }),
             handshake_received: 0,
         })
     }
@@ -111,8 +114,13 @@ impl NativeTlsConfigs {
 
 pub(super) struct NativeTls {
     connection: ClientConnection,
-    request: Option<Vec<u8>>,
+    request: Option<PendingPlaintext>,
     handshake_received: usize,
+}
+
+struct PendingPlaintext {
+    bytes: Vec<u8>,
+    offset: usize,
 }
 
 #[derive(Debug)]
@@ -129,7 +137,8 @@ impl NativeTls {
     }
 
     pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
-        if self.connection.is_handshaking() {
+        let started_handshaking = self.connection.is_handshaking();
+        if started_handshaking {
             self.handshake_received = self
                 .handshake_received
                 .checked_add(encrypted.len())
@@ -165,23 +174,14 @@ impl NativeTls {
                 )
             })?;
             peer_closed |= state.peer_has_closed();
-            if !self.connection.is_handshaking() {
-                if let Some(request) = self.request.take() {
-                    self.connection
-                        .writer()
-                        .write_all(&request)
-                        .map_err(|error| {
-                            Error::transport(
-                                TransportStage::Send,
-                                format!("native TLS request encryption failed: {error}"),
-                            )
-                        })?;
-                }
-            }
             self.drain_plaintext(&mut plaintext)?;
         }
         Ok(TlsProgress {
-            outbound: self.take_outbound()?,
+            outbound: if started_handshaking {
+                self.take_outbound()?
+            } else {
+                Vec::new()
+            },
             plaintext,
             handshake_complete: !self.connection.is_handshaking(),
             peer_closed,
@@ -205,23 +205,99 @@ impl NativeTls {
         self.connection.is_handshaking()
     }
 
-    pub(super) fn encrypt_request(&mut self, request: &[u8]) -> Result<Vec<u8>, Error> {
+    pub(super) fn begin_request(&mut self, request: Vec<u8>) -> Result<(), Error> {
         if self.connection.is_handshaking() {
             return Err(Error::new(
                 ErrorKind::Internal,
                 "native TLS tried to reuse a connection before its handshake completed",
             ));
         }
-        self.connection
-            .writer()
-            .write_all(request)
-            .map_err(|error| {
+        if self.request.is_some() || self.connection.wants_write() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS tried to begin a request while prior output remained",
+            ));
+        }
+        self.request = Some(PendingPlaintext {
+            bytes: request,
+            offset: 0,
+        });
+        Ok(())
+    }
+
+    pub(super) fn pump_request(&mut self, ciphertext_limit: usize) -> Result<Vec<u8>, Error> {
+        if self.connection.is_handshaking() || ciphertext_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut output = Vec::new();
+        self.drain_outbound_up_to(ciphertext_limit, &mut output)?;
+        while output.len() < ciphertext_limit {
+            if self.connection.wants_write() {
+                break;
+            }
+            let Some(request) = self.request.as_mut() else {
+                break;
+            };
+            if request.offset == request.bytes.len() {
+                self.request = None;
+                break;
+            }
+            let end = request
+                .offset
+                .saturating_add(TLS_PLAINTEXT_CHUNK)
+                .min(request.bytes.len());
+            let written = self
+                .connection
+                .writer()
+                .write(&request.bytes[request.offset..end])
+                .map_err(|error| {
+                    Error::transport(
+                        TransportStage::Send,
+                        format!("native TLS request encryption failed: {error}"),
+                    )
+                })?;
+            if written == 0 {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "native TLS made no progress while accepting request plaintext",
+                ));
+            }
+            request.offset += written;
+            self.drain_outbound_up_to(ciphertext_limit, &mut output)?;
+        }
+        if self
+            .request
+            .as_ref()
+            .is_some_and(|request| request.offset == request.bytes.len())
+            && !self.connection.wants_write()
+        {
+            self.request = None;
+        }
+        Ok(output)
+    }
+
+    pub(super) fn request_fully_encrypted(&self) -> bool {
+        self.request.is_none() && !self.connection.wants_write()
+    }
+
+    fn drain_outbound_up_to(
+        &mut self,
+        ciphertext_limit: usize,
+        output: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        while self.connection.wants_write() && output.len() < ciphertext_limit {
+            let mut writer = CappedWriter::new(output, ciphertext_limit);
+            let written = self.connection.write_tls(&mut writer).map_err(|error| {
                 Error::transport(
                     TransportStage::Send,
-                    format!("native TLS request encryption failed: {error}"),
+                    format!("native TLS record output failed: {error}"),
                 )
             })?;
-        self.take_outbound()
+            if written == 0 {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn take_outbound(&mut self) -> Result<Vec<u8>, Error> {
@@ -243,8 +319,8 @@ impl NativeTls {
     }
 }
 
-pub(super) fn encrypted_outbound_limit(request_bytes: usize) -> usize {
-    request_bytes.saturating_add(TLS_FLIGHT_LIMIT)
+pub(super) const fn encrypted_outbound_limit() -> usize {
+    TLS_FLIGHT_LIMIT
 }
 
 pub(super) fn encrypted_receive_limit(plaintext_bytes: usize) -> usize {
@@ -254,6 +330,30 @@ pub(super) fn encrypted_receive_limit(plaintext_bytes: usize) -> usize {
 struct BoundedWriter {
     bytes: Vec<u8>,
     limit: usize,
+}
+
+struct CappedWriter<'a> {
+    bytes: &'a mut Vec<u8>,
+    limit: usize,
+}
+
+impl<'a> CappedWriter<'a> {
+    fn new(bytes: &'a mut Vec<u8>, limit: usize) -> Self {
+        Self { bytes, limit }
+    }
+}
+
+impl Write for CappedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let available = self.limit.saturating_sub(self.bytes.len());
+        let accepted = available.min(bytes.len());
+        self.bytes.extend_from_slice(&bytes[..accepted]);
+        Ok(accepted)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl BoundedWriter {
@@ -478,6 +578,13 @@ mod tests {
                 to_server = progress.outbound;
                 received_response.extend_from_slice(&progress.plaintext);
             }
+            if !client.is_handshaking() {
+                to_server.extend(
+                    client
+                        .pump_request(TLS_FLIGHT_LIMIT)
+                        .expect("client request plaintext must pump"),
+                );
+            }
             if received_response.ends_with(b"ok") {
                 break;
             }
@@ -485,6 +592,73 @@ mod tests {
         assert!(received_request.starts_with(b"GET / HTTP/1.1\r\n"));
         assert!(received_response.ends_with(b"\r\n\r\nok"));
         assert!(!client.is_handshaking());
+    }
+
+    #[test]
+    fn incremental_request_pump_caps_each_ciphertext_batch() {
+        const PUMP_BUDGET: usize = 32 * 1024;
+        let request = vec![b'x'; TLS_FLIGHT_LIMIT * 2 + 123];
+        let (cert, key) = identity();
+        let configs =
+            NativeTlsConfigs::with_test_root(cert.clone()).expect("TLS client config must build");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, request.clone())
+            .expect("TLS client state must build");
+        let mut server =
+            ServerConnection::new(server_config(cert, key)).expect("TLS server state must build");
+        let mut to_server = client.start().expect("ClientHello must encode");
+        let mut received = Vec::new();
+
+        for _ in 0..256 {
+            if !to_server.is_empty() {
+                let mut input = Cursor::new(&to_server);
+                while usize::try_from(input.position()).unwrap_or(usize::MAX) < to_server.len() {
+                    let consumed = server
+                        .read_tls(&mut input)
+                        .expect("server TLS bytes must read");
+                    assert_ne!(consumed, 0, "server TLS input must make progress");
+                    server
+                        .process_new_packets()
+                        .expect("server TLS packets must process");
+                    let mut plaintext = [0_u8; TLS_PLAINTEXT_CHUNK];
+                    loop {
+                        match server.reader().read(&mut plaintext) {
+                            Ok(0) => break,
+                            Ok(read) => received.extend_from_slice(&plaintext[..read]),
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(error) => panic!("server request plaintext failed: {error}"),
+                        }
+                    }
+                }
+                to_server.clear();
+            }
+            if received == request {
+                break;
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server
+                    .write_tls(&mut to_client)
+                    .expect("server handshake bytes must encode");
+            }
+            if !to_client.is_empty() {
+                let progress = client.receive(&to_client).expect("client TLS must advance");
+                to_server.extend(progress.outbound);
+            }
+            if !client.is_handshaking() {
+                let pumped = client
+                    .pump_request(PUMP_BUDGET)
+                    .expect("request ciphertext must pump");
+                assert!(
+                    pumped.len() <= PUMP_BUDGET,
+                    "one pump exceeded its ciphertext budget"
+                );
+                to_server.extend(pumped);
+            }
+        }
+
+        assert_eq!(received, request);
+        assert!(client.request_fully_encrypted());
     }
 
     #[test]

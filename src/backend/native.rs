@@ -259,6 +259,15 @@ impl NativeReactor {
         self.reregister(id)
     }
 
+    pub(crate) fn outbound_capacity(&mut self, id: SlotId) -> Result<usize, NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native outbound capacity targeted a stale or closed slot")
+        })?;
+        Ok(connection
+            .outbound_limit
+            .saturating_sub(connection.outbound.len()))
+    }
+
     pub(crate) fn cancel(&mut self, id: SlotId) -> bool {
         self.remove(id).is_some()
     }

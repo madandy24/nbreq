@@ -2687,7 +2687,7 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_https_upload_over_tls_flight_limit_fails_at_send_until_streaming_lands() {
+    fn buffered_https_upload_over_tls_flight_limit_pumps_incrementally() {
         let key = KeyPair::generate().expect("large HTTPS key must generate");
         let params = CertificateParams::new(vec!["large-upload.test".to_owned()])
             .expect("large HTTPS parameters must build");
@@ -2713,7 +2713,229 @@ mod tests {
             let connection = ServerConnection::new(Arc::new(server_config))
                 .expect("large HTTPS server state must build");
             let mut tls = StreamOwned::new(connection, stream);
-            let mut buffer = [0_u8; 1024];
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 16 * 1024];
+            let mut expected = None;
+            loop {
+                match tls.read(&mut buffer) {
+                    Ok(0) => panic!("large HTTPS peer closed before the request completed"),
+                    Ok(read) => {
+                        request.extend_from_slice(&buffer[..read]);
+                        if expected.is_none() {
+                            if let Some(head) = request
+                                .windows(4)
+                                .position(|window| window == b"\r\n\r\n")
+                                .map(|position| position + 4)
+                            {
+                                let content_length = std::str::from_utf8(&request[..head])
+                                    .expect("large HTTPS head must be UTF-8")
+                                    .lines()
+                                    .find_map(|line| {
+                                        line.split_once(':').and_then(|(name, value)| {
+                                            name.eq_ignore_ascii_case("content-length").then(|| {
+                                                value
+                                                    .trim()
+                                                    .parse::<usize>()
+                                                    .expect("large HTTPS Content-Length")
+                                            })
+                                        })
+                                    })
+                                    .expect("large HTTPS request must carry Content-Length");
+                                expected = Some(head + content_length);
+                            }
+                        }
+                        if expected.is_some_and(|expected| request.len() >= expected) {
+                            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                                .expect("large HTTPS response must write");
+                            tls.flush().expect("large HTTPS response must flush");
+                            let first_length = request.len();
+                            let mut second = Vec::new();
+                            while !second.windows(4).any(|window| window == b"\r\n\r\n") {
+                                let read = tls
+                                    .read(&mut buffer)
+                                    .expect("request after large upload must read");
+                                assert_ne!(read, 0, "client closed before reused HTTPS request");
+                                second.extend_from_slice(&buffer[..read]);
+                            }
+                            assert!(second.starts_with(b"GET /reused HTTP/1.1\r\n"));
+                            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nreused")
+                                .expect("reused HTTPS response must write");
+                            tls.flush().expect("reused HTTPS response must flush");
+                            return first_length;
+                        }
+                    }
+                    Err(error) => panic!("large HTTPS request failed to read: {error}"),
+                }
+            }
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("large native HTTPS Engine must construct");
+        let response = engine
+            .client()
+            .execute(
+                Request::post(format!("https://large-upload.test:{}/", address.port()))
+                    .body(vec![b'x'; TLS_FLIGHT_LIMIT + 1])
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("large HTTPS request must build"),
+            )
+            .expect("large HTTPS upload must complete through the incremental pump");
+        assert_eq!(response.body(), b"ok");
+        let reused = engine
+            .client()
+            .execute(
+                Request::get(format!(
+                    "https://large-upload.test:{}/reused",
+                    address.port()
+                ))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("request after large HTTPS upload must build"),
+            )
+            .expect("clean large upload connection must be reusable");
+        assert_eq!(reused.body(), b"reused");
+        engine.shutdown().expect("large HTTPS Engine must stop");
+        assert!(
+            server.join().expect("large HTTPS fixture must join") > TLS_FLIGHT_LIMIT,
+            "server must receive more plaintext than the bounded ciphertext queue"
+        );
+    }
+
+    #[test]
+    fn cancellation_during_incremental_https_upload_closes_promptly() {
+        let key = KeyPair::generate().expect("cancel-upload HTTPS key must generate");
+        let params = CertificateParams::new(vec!["cancel-upload.test".to_owned()])
+            .expect("cancel-upload HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("cancel-upload HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("cancel-upload HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("cancel-upload HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("cancel-upload fixture must bind");
+        let address = listener
+            .local_addr()
+            .expect("cancel-upload fixture address");
+        let (progress_tx, progress_rx) = test_channel::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener
+                .accept()
+                .expect("cancel-upload fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("cancel-upload read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("cancel-upload HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut received = 0_usize;
+            let mut buffer = [0_u8; 16 * 1024];
+            while received < 128 * 1024 {
+                let read = tls
+                    .read(&mut buffer)
+                    .expect("cancel-upload prefix must read");
+                assert_ne!(read, 0, "client closed before incremental upload progress");
+                received += read;
+            }
+            progress_tx
+                .send(())
+                .expect("cancel-upload barrier must signal");
+            let started = Instant::now();
+            loop {
+                match tls.read(&mut buffer) {
+                    Ok(0) | Err(_) => return started.elapsed(),
+                    Ok(_) => {}
+                }
+            }
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("cancel-upload native HTTPS Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::post(format!("https://cancel-upload.test:{}/", address.port()))
+                    .body(vec![b'x'; 8 * 1024 * 1024])
+                    .total_timeout(Duration::from_secs(5))
+                    .build()
+                    .expect("cancel-upload HTTPS request must build"),
+            )
+            .expect("cancel-upload HTTPS request must submit");
+        progress_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server must observe incremental upload progress");
+        pending
+            .handle()
+            .cancel()
+            .expect("incremental upload must cancel");
+        assert!(matches!(pending.wait(), Completion::Cancelled));
+        engine.shutdown().expect("cancel-upload Engine must stop");
+        let close_latency = server.join().expect("cancel-upload fixture must join");
+        assert!(
+            close_latency < Duration::from_millis(500),
+            "incremental upload socket close took {close_latency:?}"
+        );
+    }
+
+    #[test]
+    fn early_https_response_does_not_overfill_incremental_upload_queue() {
+        let key = KeyPair::generate().expect("early-response HTTPS key must generate");
+        let params = CertificateParams::new(vec!["early-response.test".to_owned()])
+            .expect("early-response HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("early-response HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("early-response HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("early-response HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("early-response fixture must bind");
+        let address = listener
+            .local_addr()
+            .expect("early-response fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener
+                .accept()
+                .expect("early-response fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("early-response read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("early-response HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut received = 0_usize;
+            let mut buffer = [0_u8; 16 * 1024];
+            while received < 128 * 1024 {
+                let read = tls
+                    .read(&mut buffer)
+                    .expect("early-response upload prefix must read");
+                assert_ne!(read, 0, "client closed before early response threshold");
+                received += read;
+            }
+            tls.write_all(
+                b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .expect("early HTTPS response must write");
+            tls.flush().expect("early HTTPS response must flush");
             loop {
                 match tls.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
@@ -2727,20 +2949,19 @@ mod tests {
             dns.address,
             certificate_der.as_ref().to_vec(),
         )
-        .expect("large native HTTPS Engine must construct");
-        let result = engine.client().execute(
-            Request::post(format!("https://large-upload.test:{}/", address.port()))
-                .body(vec![b'x'; TLS_FLIGHT_LIMIT + 1])
-                .total_timeout(Duration::from_secs(2))
-                .build()
-                .expect("large HTTPS request must build"),
-        );
-        let Err(ExecuteError::Failed(error)) = result else {
-            panic!("one-shot large HTTPS upload must hit the temporary cap, got {result:?}");
-        };
-        assert_eq!(error.kind(), ErrorKind::Transport);
-        assert_eq!(error.transport_stage(), Some(TransportStage::Send));
-        engine.shutdown().expect("large HTTPS Engine must stop");
-        server.join().expect("large HTTPS fixture must join");
+        .expect("early-response native HTTPS Engine must construct");
+        let response = engine
+            .client()
+            .execute(
+                Request::post(format!("https://early-response.test:{}/", address.port()))
+                    .body(vec![b'x'; 8 * 1024 * 1024])
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("early-response HTTPS request must build"),
+            )
+            .expect("early HTTP status must remain a completed response");
+        assert_eq!(response.status(), 413);
+        engine.shutdown().expect("early-response Engine must stop");
+        server.join().expect("early-response fixture must join");
     }
 }

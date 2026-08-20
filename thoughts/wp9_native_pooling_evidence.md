@@ -149,10 +149,38 @@ offline all-feature compilation also pass. Twenty-five consecutive redirect-matr
 then complete with no surviving NBReq, adversarial, or contract process. WP9.3 is accepted and
 WP9.4 may begin.
 
+## WP9.4a buffered TLS pump — Windows slice
+
+The first streaming seam removes the temporary native HTTPS request ceiling without freezing a
+public streaming API. `NativeTls` now retains a cursor over the already accepted buffered request,
+feeds rustls plaintext in 16 KiB pieces, and emits only as much ciphertext as the reactor's current
+queue capacity permits. The reactor TLS queue is a constant 512 KiB private bound independent of
+request size. Write-progress/drained readiness refills that queue; a request is marked fully written
+only after all plaintext has been encrypted and the final ciphertext has drained. The same pump is
+used for a fresh handshake and a reused rustls connection.
+
+A sans-I/O test drives more than 1 MiB of request plaintext through an artificial 32 KiB ciphertext
+budget and proves every emitted batch stays within that budget. A generated-root socket fixture
+uploads more than the old 512 KiB ceiling, receives a response, then reuses the same TLS connection
+for a second request. Another fixture cancels after the server has received 128 KiB of an 8 MiB
+upload and proves canonical `Cancelled`, peer close, and Engine shutdown within the 500 ms gate. A
+server that returns HTTP 413 while the 8 MiB upload is still in progress remains a completed HTTP
+response rather than overflowing or corrupting the TLS send queue. Twenty-five targeted repetitions
+pass. The full Windows native gate is 125 unit, 4 adversarial, 4
+contract, and 2 doctests; default tests, all-feature compilation, warning-denied all-feature clippy,
+and formatting pass.
+
+This is deliberately not yet the whole WP9.4 claim. `Request` and `Response` remain buffered public
+values, cleartext serialization can still queue up to the configured request limit, and one reactor
+readiness pass can still drain multiple response chunks into an owned event batch. True streaming
+requires a public producer/consumer and replayability contract; that contract must be reviewed
+before implementation rather than inferred from the internal TLS cursor.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
-- Incremental upload/download and removal of the one-shot HTTPS body ceiling remain WP9.4. Public
-  limits, metrics, fuzzing, pressure runs, and supported-platform evidence remain WP9.5/WP10.
+- Public upload/download streaming, cleartext queue backpressure, and bounded response delivery
+  remain WP9.4; the one-shot HTTPS body ceiling is removed by WP9.4a. Public limits, metrics,
+  fuzzing, pressure runs, and supported-platform evidence remain WP9.5/WP10.
