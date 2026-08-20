@@ -411,7 +411,7 @@ impl Request {
         Ok(())
     }
 
-    #[cfg(feature = "curl-pilot")]
+    #[cfg(any(feature = "curl-pilot", feature = "native", test))]
     pub(crate) fn redirected(
         &self,
         url: String,
@@ -446,6 +446,56 @@ impl Request {
             options: self.options.clone(),
         }
     }
+}
+
+#[cfg(any(feature = "curl-pilot", feature = "native", test))]
+pub(crate) fn redirected_request(
+    request: &Request,
+    status: u16,
+    redirect_hops: u8,
+    target: impl FnOnce() -> Result<Option<String>, Error>,
+) -> Result<Option<Request>, Error> {
+    let (method, keep_body) = match status {
+        301 | 302 => match request.method() {
+            Method::Get | Method::Head => (request.method().clone(), true),
+            _ => return Ok(None),
+        },
+        303 => match request.method() {
+            Method::Head => (Method::Head, false),
+            _ => (Method::Get, false),
+        },
+        307 | 308 => (request.method().clone(), true),
+        _ => return Ok(None),
+    };
+
+    let limit = request.options().redirect_limit;
+    if limit == 0 {
+        return Ok(None);
+    }
+    if redirect_hops >= limit {
+        return Err(Error::new(
+            ErrorKind::Redirect,
+            format!("redirect limit of {limit} hops was exceeded"),
+        ));
+    }
+    let Some(target) = target()? else {
+        return Ok(None);
+    };
+    let source_origin = http_origin(request.url(), ErrorKind::Redirect)?;
+    let target_origin = http_origin(&target, ErrorKind::Redirect)?;
+    if source_origin.scheme == "https" && target_origin.scheme == "http" {
+        return Err(Error::new(
+            ErrorKind::Redirect,
+            "an HTTPS-to-HTTP redirect was blocked",
+        ));
+    }
+    let cross_origin = source_origin != target_origin;
+    Ok(Some(request.redirected(
+        target,
+        method,
+        keep_body,
+        cross_origin,
+    )))
 }
 
 /// Builder for an owned [`Request`].
@@ -967,5 +1017,45 @@ mod tests {
             request.options.tls_verification,
             TlsVerification::DangerouslyDisableCertificateVerification
         );
+    }
+
+    #[test]
+    fn redirect_policy_is_lazy_and_preserves_head_on_303() {
+        let post = Request::post("https://example.test/start")
+            .body(b"payload".to_vec())
+            .build()
+            .expect("redirect source must build");
+        let not_followed = redirected_request(&post, 302, 0, || {
+            panic!("a non-followed redirect must not inspect Location")
+        })
+        .expect("302 POST must remain a response");
+        assert!(not_followed.is_none());
+
+        let disabled = Request::get("https://example.test/start")
+            .redirect_limit(0)
+            .build()
+            .expect("disabled redirect source must build");
+        let not_followed = redirected_request(&disabled, 302, 0, || {
+            panic!("disabled redirects must not inspect Location")
+        })
+        .expect("disabled redirect must remain a response");
+        assert!(not_followed.is_none());
+
+        let head = Request::head("https://example.test/start")
+            .build()
+            .expect("HEAD redirect source must build");
+        let redirected = redirected_request(&head, 303, 0, || {
+            Ok(Some("https://example.test/final".to_owned()))
+        })
+        .expect("303 HEAD policy must succeed")
+        .expect("303 HEAD must follow");
+        assert_eq!(redirected.method(), &Method::Head);
+        assert!(redirected.body().is_empty());
+
+        let downgrade = redirected_request(&head, 307, 0, || {
+            Ok(Some("http://example.test/final".to_owned()))
+        })
+        .expect_err("HTTPS downgrade must be blocked");
+        assert_eq!(downgrade.kind(), ErrorKind::Redirect);
     }
 }

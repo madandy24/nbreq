@@ -1,8 +1,9 @@
 # WP9 native pooling, redirects, and streaming evidence
 
-Status: **WP9.1/WP9.2 pooling accepted on Windows and Ubuntu 20.04.** WP8's DNS/TLS owner is
-accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; the conservative connection-reuse
-slice below does not change ordinary `Engine::new` or any GDS backend selection.
+Status: **WP9.1/WP9.2 pooling accepted on Windows and Ubuntu 20.04; WP9.3 redirects pass on
+Windows and await the exact-source Ubuntu gate.** WP8's DNS/TLS owner is accepted. WP9.0 boundary
+hardening is checkpointed at `a39adb1`; none of the private native slices below changes ordinary
+`Engine::new` or any GDS backend selection.
 
 ## Frozen pool ownership contract
 
@@ -106,11 +107,45 @@ semantic no-op and reruns every gate from a fresh extraction.
 
 WP9.1 ownership/contamination and WP9.2 conservative reuse are accepted. WP9.3 redirects may begin.
 
+## WP9.3 conservative redirects — Windows slice
+
+Redirect policy is now one backend-neutral function shared by the retained curl pilot and native
+owner. A native hop never creates a second public request or terminal identity: it retires the
+completed connection according to the accepted pool rules, keeps the same `RequestId`, preserves
+the original absolute total deadline, resets only per-hop connect/inactivity clocks, and reacquires
+through the same active caps and oldest-eligible queue. Cancellation therefore finds and closes the
+current DNS, connect, TLS, queued, or HTTP hop without a redirect-specific side channel.
+
+The accepted policy is deliberately conservative:
+
+- 301/302 follow only GET and HEAD; buffered POST and extension methods return the redirect response
+  rather than silently rewriting or replaying it.
+- 303 becomes GET without a body, except HEAD remains HEAD. 307/308 preserve the buffered method and
+  body. WP9.4 must make replayability explicit before adding streaming request bodies.
+- Zero redirect limit returns the first redirect response and does not inspect `Location`. A missing
+  `Location` also returns the response. Duplicate fields, non-UTF-8 values, unresolvable or
+  non-HTTP(S) targets, and hop-limit exhaustion fail with `ErrorKind::Redirect`.
+- Relative and network/absolute references are resolved with pinned pure-Rust `url` 2.5.8. An
+  HTTPS-to-HTTP downgrade is rejected. Crossing scheme/host/effective-port strips Authorization,
+  Proxy-Authorization, Cookie, and caller Host while retaining unrelated headers.
+- A clean same-origin redirect may reuse its just-completed connection; cross-origin policy and pool
+  keys still require the appropriate destination lease. There is no transparent transport replay.
+
+Deterministic Windows fixtures prove 301/302 POST non-follow, 303 body drop, 307/308 buffered-body
+preservation, HEAD-on-303 policy, relative path/query resolution, same-origin authorization and
+socket reuse, cross-origin credential/Host stripping, missing/duplicate/invalid/unsupported
+destinations, exact hop exhaustion, HTTPS downgrade refusal, cancellation after the target hop has
+received its request, and a total timeout that expires against original acceptance rather than
+being reset after the redirect. The broad native gate passes 122 unit, 4 adversarial, 4 contract,
+and 2 doctests. Default tests, all-feature compilation, warning-denied all-feature clippy, formatting,
+and the existing curl redirect fixture also pass. Exact-source Ubuntu remains the WP9.3 acceptance
+gate.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
-- Redirects remain WP9.3. Incremental upload/download and removal of the one-shot HTTPS body ceiling
-  remain WP9.4. Public limits, metrics, fuzzing, pressure runs, and supported-platform evidence remain
-  WP9.5/WP10.
+- Redirects remain WP9.3 until the exact-source Ubuntu rerun. Incremental upload/download and removal
+  of the one-shot HTTPS body ceiling remain WP9.4. Public limits, metrics, fuzzing, pressure runs,
+  and supported-platform evidence remain WP9.5/WP10.

@@ -21,7 +21,7 @@ use curl::multi::{Easy2Handle, Multi};
 
 use super::{Backend, BackendCompletion, BackendFactory, PollMode, ResponseLimits};
 use crate::registry::Shared;
-use crate::types::{http_origin, is_http_token, is_valid_http_header_value};
+use crate::types::{is_http_token, is_valid_http_header_value, redirected_request};
 use crate::{
     Completion, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId, Response,
     ShutdownError, TimeoutKind, TlsVerification, TransportStage,
@@ -677,50 +677,15 @@ fn redirect_request(
     request: &Request,
     redirect_hops: u8,
 ) -> Result<Option<Request>, Error> {
-    let status = easy.response_code().map_err(curl_error)?;
-    let (method, keep_body) = match status {
-        301 | 302 => match request.method() {
-            Method::Get | Method::Head => (request.method().clone(), true),
-            _ => return Ok(None),
-        },
-        303 => match request.method() {
-            Method::Head => (Method::Head, false),
-            _ => (Method::Get, false),
-        },
-        307 | 308 => (request.method().clone(), true),
-        _ => return Ok(None),
-    };
-
-    let limit = request.options().redirect_limit;
-    if limit == 0 {
-        return Ok(None);
-    }
-    if redirect_hops >= limit {
-        return Err(Error::new(
-            ErrorKind::Redirect,
-            format!("redirect limit of {limit} hops was exceeded"),
-        ));
-    }
-
-    let Some(target) = easy.redirect_url().map_err(curl_error)? else {
-        return Ok(None);
-    };
-    let target = target.to_owned();
-    let source_origin = http_origin(request.url(), ErrorKind::Redirect)?;
-    let target_origin = http_origin(&target, ErrorKind::Redirect)?;
-    if source_origin.scheme == "https" && target_origin.scheme == "http" {
-        return Err(Error::new(
-            ErrorKind::Redirect,
-            "an HTTPS-to-HTTP redirect was blocked",
-        ));
-    }
-    let cross_origin = source_origin != target_origin;
-    Ok(Some(request.redirected(
-        target,
-        method,
-        keep_body,
-        cross_origin,
-    )))
+    let status = u16::try_from(easy.response_code().map_err(curl_error)?).map_err(|_| {
+        Error::transport(
+            TransportStage::Http,
+            "curl returned an invalid HTTP status code",
+        )
+    })?;
+    redirected_request(request, status, redirect_hops, || {
+        Ok(easy.redirect_url().map_err(curl_error)?.map(str::to_owned))
+    })
 }
 
 fn completed_response(easy: &Easy2<ResponseCollector>) -> Result<Response, Error> {

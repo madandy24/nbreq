@@ -17,7 +17,7 @@ use super::native_tls::{
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
-use crate::types::http_origin;
+use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
     Response, ShutdownError, TimeoutKind, TransportStage,
@@ -863,6 +863,48 @@ fn response_body_limit(limit: usize) -> Error {
     )
 }
 
+fn resolved_redirect_target(
+    request: &Request,
+    response: &Response,
+) -> Result<Option<String>, Error> {
+    let mut location = None;
+    for header in response
+        .headers()
+        .iter()
+        .filter(|header| header.name().eq_ignore_ascii_case("location"))
+    {
+        if location.is_some() {
+            return Err(Error::new(
+                ErrorKind::Redirect,
+                "a redirect response contained more than one Location field",
+            ));
+        }
+        let value = header.value().trim_ascii_start().trim_ascii_end();
+        location = Some(std::str::from_utf8(value).map_err(|_| {
+            Error::new(
+                ErrorKind::Redirect,
+                "a redirect Location was not valid UTF-8",
+            )
+        })?);
+    }
+    let Some(location) = location else {
+        return Ok(None);
+    };
+    let base = url::Url::parse(request.url()).map_err(|_| {
+        Error::new(
+            ErrorKind::Redirect,
+            "the redirect source URL could not be resolved",
+        )
+    })?;
+    let target = base.join(location).map_err(|_| {
+        Error::new(
+            ErrorKind::Redirect,
+            "the redirect Location could not be resolved",
+        )
+    })?;
+    Ok(Some(target.into()))
+}
+
 /// Private cleartext factory used to prove HTTP framing over the accepted reactor. Ordinary
 /// `Engine::new` does not select it while DNS, TLS, redirects, and the remaining parity gates are
 /// incomplete.
@@ -971,6 +1013,8 @@ struct HttpTransfer {
     key: ConnectionKey,
     request_permits_reuse: bool,
     request_write_drained: bool,
+    request: Request,
+    redirect_hops: u8,
 }
 
 impl HttpTransfer {
@@ -1059,6 +1103,15 @@ struct PendingResolve {
     inactivity_timeout: Option<Duration>,
     inactivity_deadline: Option<Instant>,
     key: ConnectionKey,
+    request: Request,
+    redirect_hops: u8,
+}
+
+#[derive(Clone, Copy)]
+struct PendingDeadlines {
+    connect: Option<Instant>,
+    total: Option<Instant>,
+    inactivity: Option<Instant>,
 }
 
 impl PendingResolve {
@@ -1269,6 +1322,66 @@ impl NativeHttpBackend {
         completions
     }
 
+    fn make_pending(
+        &self,
+        request_id: RequestId,
+        request: Request,
+        deadlines: PendingDeadlines,
+        redirect_hops: u8,
+        origin_error_kind: ErrorKind,
+    ) -> Result<PendingResolve, Error> {
+        let serialized = serialize_request(&request, self.limits)?;
+        let origin = http_origin(request.url(), origin_error_kind)?;
+        let tls_verification = request.options().tls_verification;
+        let inactivity_timeout = request.options().inactivity_timeout;
+        let body_bearing = !request.body().is_empty();
+        let key = ConnectionKey {
+            scheme: origin.scheme.clone(),
+            host: origin.host.to_ascii_lowercase(),
+            port: origin.port,
+            dangerously_disable_tls_verification: matches!(
+                tls_verification,
+                crate::TlsVerification::DangerouslyDisableCertificateVerification
+            ),
+        };
+        Ok(PendingResolve {
+            request_id,
+            serialized,
+            port: origin.port,
+            scheme: origin.scheme,
+            host: origin.host,
+            tls_verification,
+            body_bearing,
+            connect_deadline: deadlines.connect,
+            total_deadline: deadlines.total,
+            inactivity_timeout,
+            inactivity_deadline: deadlines.inactivity,
+            key,
+            request,
+            redirect_hops,
+        })
+    }
+
+    fn start_pending(&mut self, pending: PendingResolve) -> Option<Completion> {
+        let now = Instant::now();
+        if pending
+            .next_deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let timeout = pending.expired_timeout(now);
+            return Some(Completion::Failed(Error::timeout(
+                timeout,
+                native_timeout_message(timeout),
+            )));
+        }
+        let pending = self.try_begin_reused(pending)?;
+        if !self.make_connection_capacity(&pending.key) || !self.reserve_connection(&pending.key) {
+            self.waiting.push_back(pending);
+            return None;
+        }
+        self.start_reserved(pending)
+    }
+
     fn finish(
         &mut self,
         slot: SlotId,
@@ -1393,6 +1506,8 @@ impl NativeHttpBackend {
                 key: pending.key,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
+                request: pending.request,
+                redirect_hops: pending.redirect_hops,
             },
         );
         None
@@ -1411,6 +1526,15 @@ impl NativeHttpBackend {
             return;
         };
         self.request_to_slot.remove(&transfer.request_id);
+        let redirect = redirected_request(
+            &transfer.request,
+            response.status(),
+            transfer.redirect_hops,
+            || resolved_redirect_target(&transfer.request, &response),
+        );
+        let request_id = transfer.request_id;
+        let total_deadline = transfer.total_deadline;
+        let next_redirect_hops = transfer.redirect_hops.saturating_add(1);
         let per_origin_idle = self.idle.get(&transfer.key).map_or(0, VecDeque::len);
         let reusable = response_permits_reuse
             && transfer.request_permits_reuse
@@ -1446,10 +1570,51 @@ impl NativeHttpBackend {
             self.reactor.cancel(slot);
             self.release_connection(&transfer.key);
         }
-        completions.push(BackendCompletion {
-            id: transfer.request_id,
-            completion: Completion::Completed(response),
-        });
+        match redirect {
+            Ok(None) => completions.push(BackendCompletion {
+                id: request_id,
+                completion: Completion::Completed(response),
+            }),
+            Err(error) => completions.push(BackendCompletion {
+                id: request_id,
+                completion: Completion::Failed(error),
+            }),
+            Ok(Some(request)) => {
+                let now = Instant::now();
+                let connect_deadline = request
+                    .options()
+                    .connect_timeout
+                    .and_then(|timeout| now.checked_add(timeout));
+                let inactivity_deadline = request
+                    .options()
+                    .inactivity_timeout
+                    .and_then(|timeout| now.checked_add(timeout));
+                match self.make_pending(
+                    request_id,
+                    request,
+                    PendingDeadlines {
+                        connect: connect_deadline,
+                        total: total_deadline,
+                        inactivity: inactivity_deadline,
+                    },
+                    next_redirect_hops,
+                    ErrorKind::Redirect,
+                ) {
+                    Ok(pending) => {
+                        if let Some(completion) = self.start_pending(pending) {
+                            completions.push(BackendCompletion {
+                                id: request_id,
+                                completion,
+                            });
+                        }
+                    }
+                    Err(error) => completions.push(BackendCompletion {
+                        id: request_id,
+                        completion: Completion::Failed(error),
+                    }),
+                }
+            }
+        }
     }
 
     fn begin_connection(
@@ -1529,6 +1694,8 @@ impl NativeHttpBackend {
                 key: pending.key,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
+                request: pending.request,
+                redirect_hops: pending.redirect_hops,
             },
         );
         None
@@ -1987,14 +2154,6 @@ impl Backend for NativeHttpBackend {
         request: Request,
         accepted_at: Instant,
     ) -> Option<Completion> {
-        let serialized = match serialize_request(&request, self.limits) {
-            Ok(serialized) => serialized,
-            Err(error) => return Some(Completion::Failed(error)),
-        };
-        let origin = match http_origin(request.url(), ErrorKind::InvalidRequest) {
-            Ok(origin) => origin,
-            Err(error) => return Some(Completion::Failed(error)),
-        };
         let options = request.options();
         let connect_deadline = options
             .connect_timeout
@@ -2005,35 +2164,21 @@ impl Backend for NativeHttpBackend {
         let inactivity_deadline = options
             .inactivity_timeout
             .and_then(|timeout| accepted_at.checked_add(timeout));
-        let key = ConnectionKey {
-            scheme: origin.scheme.clone(),
-            host: origin.host.to_ascii_lowercase(),
-            port: origin.port,
-            dangerously_disable_tls_verification: matches!(
-                options.tls_verification,
-                crate::TlsVerification::DangerouslyDisableCertificateVerification
-            ),
+        let pending = match self.make_pending(
+            id,
+            request,
+            PendingDeadlines {
+                connect: connect_deadline,
+                total: total_deadline,
+                inactivity: inactivity_deadline,
+            },
+            0,
+            ErrorKind::InvalidRequest,
+        ) {
+            Ok(pending) => pending,
+            Err(error) => return Some(Completion::Failed(error)),
         };
-        let pending = PendingResolve {
-            request_id: id,
-            serialized,
-            port: origin.port,
-            scheme: origin.scheme,
-            host: origin.host.clone(),
-            tls_verification: options.tls_verification,
-            body_bearing: !request.body().is_empty(),
-            connect_deadline,
-            total_deadline,
-            inactivity_timeout: options.inactivity_timeout,
-            inactivity_deadline,
-            key,
-        };
-        let pending = self.try_begin_reused(pending)?;
-        if !self.make_connection_capacity(&pending.key) || !self.reserve_connection(&pending.key) {
-            self.waiting.push_back(pending);
-            return None;
-        }
-        self.start_reserved(pending)
+        self.start_pending(pending)
     }
 
     fn cancel(&mut self, id: RequestId) {
@@ -2173,6 +2318,41 @@ mod tests {
         }
     }
 
+    fn read_request_wire(stream: &mut std::net::TcpStream, label: &str) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 512];
+        let head_end = loop {
+            if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+            let read = stream
+                .read(&mut buffer)
+                .unwrap_or_else(|error| panic!("{label} must read: {error}"));
+            assert_ne!(read, 0, "client closed before {label}");
+            request.extend_from_slice(&buffer[..read]);
+        };
+        let content_length = std::str::from_utf8(&request[..head_end])
+            .expect("test request head must be UTF-8")
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("test Content-Length"))
+                })
+            })
+            .unwrap_or(0);
+        let total = head_end + content_length;
+        while request.len() < total {
+            let read = stream
+                .read(&mut buffer)
+                .unwrap_or_else(|error| panic!("{label} body must read: {error}"));
+            assert_ne!(read, 0, "client closed before {label} body");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        request.truncate(total);
+        request
+    }
+
     fn peer_observed_close(stream: &mut std::net::TcpStream) -> bool {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -2234,6 +2414,10 @@ mod tests {
                 key: connection_key,
                 request_permits_reuse: true,
                 request_write_drained: false,
+                request: Request::get(format!("http://{address}/batch"))
+                    .build()
+                    .expect("batch request must build"),
+                redirect_hops: 0,
             },
         );
 
@@ -2958,6 +3142,432 @@ mod tests {
         );
         engine.shutdown().expect("no-replay Engine must stop");
         server.join().expect("no-replay fixture must join");
+    }
+
+    #[test]
+    fn native_redirects_apply_method_body_relative_and_limit_rules() {
+        for status in [301_u16, 302] {
+            let listener =
+                TcpListener::bind("127.0.0.1:0").expect("non-rewritten redirect fixture must bind");
+            let address = listener
+                .local_addr()
+                .expect("non-rewritten redirect address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("non-rewritten redirect must accept");
+                let request = read_request_wire(&mut stream, "non-rewritten POST");
+                assert!(request.starts_with(b"POST /start HTTP/1.1\r\n"));
+                assert!(request.ends_with(b"payload"));
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} Redirect\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .expect("non-rewritten redirect must write");
+            });
+            let config = EngineConfig::spawned();
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("non-rewritten redirect Engine must construct");
+            let response = engine
+                .client()
+                .execute(
+                    Request::post(format!("http://{address}/start"))
+                        .body(b"payload".to_vec())
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("non-rewritten redirect request must build"),
+                )
+                .expect("301/302 POST must remain a completed response");
+            assert_eq!(response.status(), status);
+            engine
+                .shutdown()
+                .expect("non-rewritten redirect Engine must stop");
+            server
+                .join()
+                .expect("non-rewritten redirect fixture must join");
+        }
+
+        for (status, expected_method, expected_body) in [
+            (303_u16, "GET", b"".as_slice()),
+            (307_u16, "POST", b"payload".as_slice()),
+            (308_u16, "POST", b"payload".as_slice()),
+        ] {
+            let listener =
+                TcpListener::bind("127.0.0.1:0").expect("followed redirect fixture must bind");
+            let address = listener.local_addr().expect("followed redirect address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("followed redirect must accept once");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("followed redirect read timeout");
+                let first = read_request_wire(&mut stream, "redirect source request");
+                assert!(first.starts_with(b"POST /base/start HTTP/1.1\r\n"));
+                assert!(first.ends_with(b"payload"));
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} Redirect\r\nLocation: ../final?x=1\r\nContent-Length: 0\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .expect("followed redirect must write");
+                stream.flush().expect("followed redirect must flush");
+                let second = read_request_wire(&mut stream, "redirect target request");
+                assert!(
+                    second.starts_with(
+                        format!("{expected_method} /final?x=1 HTTP/1.1\r\n").as_bytes()
+                    )
+                );
+                assert_eq!(
+                    &second[second
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .expect("redirect target head boundary")
+                        + 4..],
+                    expected_body
+                );
+                let lower = String::from_utf8_lossy(&second).to_ascii_lowercase();
+                assert!(lower.contains("authorization: same-origin"));
+                if status == 303 {
+                    assert!(!lower.contains("content-length:"));
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfinal")
+                    .expect("redirect final response must write");
+            });
+            let config = EngineConfig::spawned();
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("followed redirect Engine must construct");
+            let response = engine
+                .client()
+                .execute(
+                    Request::post(format!("http://{address}/base/start"))
+                        .header("Authorization", "same-origin")
+                        .body(b"payload".to_vec())
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("followed redirect request must build"),
+                )
+                .expect("redirect must complete");
+            assert_eq!(response.body(), b"final");
+            engine
+                .shutdown()
+                .expect("followed redirect Engine must stop");
+            server.join().expect("followed redirect fixture must join");
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("redirect loop must bind");
+        let address = listener.local_addr().expect("redirect loop address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("redirect loop must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("redirect loop read timeout");
+            for _ in 0..3 {
+                let request = read_request_wire(&mut stream, "redirect loop request");
+                assert!(request.starts_with(b"GET /loop HTTP/1.1\r\n"));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Redirect\r\nLocation: /loop\r\nContent-Length: 0\r\n\r\n",
+                    )
+                    .expect("redirect loop response must write");
+                stream.flush().expect("redirect loop response must flush");
+            }
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("redirect loop Engine must construct");
+        let result = engine.client().execute(
+            Request::get(format!("http://{address}/loop"))
+                .redirect_limit(2)
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("redirect loop request must build"),
+        );
+        let Err(ExecuteError::Failed(error)) = result else {
+            panic!("redirect loop did not fail at its hop limit");
+        };
+        assert_eq!(error.kind(), ErrorKind::Redirect);
+        engine.shutdown().expect("redirect loop Engine must stop");
+        server.join().expect("redirect loop fixture must join");
+    }
+
+    #[test]
+    fn native_cross_origin_redirect_strips_origin_bound_credentials() {
+        let target_listener = TcpListener::bind("127.0.0.1:0").expect("redirect target must bind");
+        let target_address = target_listener
+            .local_addr()
+            .expect("redirect target address");
+        let target_server = thread::spawn(move || {
+            let (mut stream, _) = target_listener
+                .accept()
+                .expect("redirect target must accept");
+            let request = read_request_wire(&mut stream, "cross-origin redirect target");
+            let lower = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            assert!(request.starts_with(b"GET /target HTTP/1.1\r\n"));
+            assert!(!lower.contains("authorization:"));
+            assert!(!lower.contains("proxy-authorization:"));
+            assert!(!lower.contains("cookie:"));
+            assert!(!lower.contains("host: caller.invalid"));
+            assert!(lower.contains("x-keep: yes"));
+            assert!(lower.contains(&format!("host: {target_address}")));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\ntarget")
+                .expect("redirect target response must write");
+        });
+
+        let source_listener = TcpListener::bind("127.0.0.1:0").expect("redirect source must bind");
+        let source_address = source_listener
+            .local_addr()
+            .expect("redirect source address");
+        let source_server = thread::spawn(move || {
+            let (mut stream, _) = source_listener
+                .accept()
+                .expect("redirect source must accept");
+            let request = read_request_wire(&mut stream, "cross-origin redirect source");
+            let lower = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            assert!(lower.contains("authorization: secret"));
+            assert!(lower.contains("proxy-authorization: proxy-secret"));
+            assert!(lower.contains("cookie: session=secret"));
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Redirect\r\nLocation: http://{target_address}/target\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .expect("cross-origin redirect must write");
+        });
+
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("cross-origin redirect Engine must construct");
+        let response = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{source_address}/source"))
+                    .header("Authorization", "secret")
+                    .header("Proxy-Authorization", "proxy-secret")
+                    .header("Cookie", "session=secret")
+                    .header("Host", "caller.invalid")
+                    .header("X-Keep", "yes")
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cross-origin redirect request must build"),
+            )
+            .expect("cross-origin redirect must complete");
+        assert_eq!(response.body(), b"target");
+        engine
+            .shutdown()
+            .expect("cross-origin redirect Engine must stop");
+        source_server
+            .join()
+            .expect("redirect source fixture must join");
+        target_server
+            .join()
+            .expect("redirect target fixture must join");
+    }
+
+    #[test]
+    fn native_redirect_location_rejects_ambiguity_and_invalid_values() {
+        let request = Request::get("http://example.test/base/start")
+            .build()
+            .expect("redirect source must build");
+        let missing = Response::new(302, Vec::new(), Vec::new());
+        assert_eq!(
+            resolved_redirect_target(&request, &missing)
+                .expect("missing Location must be a completed redirect response"),
+            None
+        );
+
+        let duplicate = Response::new(
+            302,
+            vec![
+                crate::Header::new("Location", "/one"),
+                crate::Header::new("location", "/two"),
+            ],
+            Vec::new(),
+        );
+        let error = resolved_redirect_target(&request, &duplicate)
+            .expect_err("duplicate Location must fail closed");
+        assert_eq!(error.kind(), ErrorKind::Redirect);
+
+        let invalid_utf8 = Response::new(
+            302,
+            vec![crate::Header::new("Location", vec![0xff])],
+            Vec::new(),
+        );
+        let error = resolved_redirect_target(&request, &invalid_utf8)
+            .expect_err("non-UTF-8 Location must fail closed");
+        assert_eq!(error.kind(), ErrorKind::Redirect);
+
+        let unsupported = Response::new(
+            302,
+            vec![crate::Header::new("Location", "ftp://example.test/file")],
+            Vec::new(),
+        );
+        let target = resolved_redirect_target(&request, &unsupported)
+            .expect("absolute Location must resolve")
+            .expect("Location must be present");
+        let error = redirected_request(&request, 302, 0, || Ok(Some(target)))
+            .expect_err("unsupported redirect scheme must fail closed");
+        assert_eq!(error.kind(), ErrorKind::Redirect);
+    }
+
+    #[test]
+    fn cancel_during_redirected_request_closes_the_active_hop() {
+        let target_listener =
+            TcpListener::bind("127.0.0.1:0").expect("redirect cancel target must bind");
+        let target_address = target_listener
+            .local_addr()
+            .expect("redirect cancel target address");
+        let (active_tx, active_rx) = mpsc::channel();
+        let target_server = thread::spawn(move || {
+            let (mut stream, _) = target_listener
+                .accept()
+                .expect("redirect cancel target must accept");
+            read_request_head(&mut stream, "redirect cancel target request");
+            active_tx
+                .send(())
+                .expect("redirect cancel barrier must signal");
+            assert!(
+                peer_observed_close(&mut stream),
+                "redirect cancellation must close the active target socket"
+            );
+        });
+
+        let source_listener =
+            TcpListener::bind("127.0.0.1:0").expect("redirect cancel source must bind");
+        let source_address = source_listener
+            .local_addr()
+            .expect("redirect cancel source address");
+        let source_server = thread::spawn(move || {
+            let (mut stream, _) = source_listener
+                .accept()
+                .expect("redirect cancel source must accept");
+            read_request_head(&mut stream, "redirect cancel source request");
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Redirect\r\nLocation: http://{target_address}/stall\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .expect("redirect cancel source must write");
+        });
+
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("redirect cancel Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{source_address}/start"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("redirect cancel request must build"),
+            )
+            .expect("redirect cancel request must submit");
+        active_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("redirect target must become active");
+        pending
+            .handle()
+            .cancel()
+            .expect("redirected request must cancel");
+        assert!(matches!(pending.wait(), Completion::Cancelled));
+        engine.shutdown().expect("redirect cancel Engine must stop");
+        source_server
+            .join()
+            .expect("redirect cancel source must join");
+        target_server
+            .join()
+            .expect("redirect cancel target must join");
+    }
+
+    #[test]
+    fn total_timeout_is_not_reset_between_redirect_hops() {
+        let target_listener =
+            TcpListener::bind("127.0.0.1:0").expect("redirect timeout target must bind");
+        let target_address = target_listener
+            .local_addr()
+            .expect("redirect timeout target address");
+        let target_server = thread::spawn(move || {
+            let (mut stream, _) = target_listener
+                .accept()
+                .expect("redirect timeout target must accept");
+            read_request_head(&mut stream, "redirect timeout target request");
+            assert!(
+                peer_observed_close(&mut stream),
+                "total timeout must close the redirected target socket"
+            );
+        });
+
+        let source_listener =
+            TcpListener::bind("127.0.0.1:0").expect("redirect timeout source must bind");
+        let source_address = source_listener
+            .local_addr()
+            .expect("redirect timeout source address");
+        let source_server = thread::spawn(move || {
+            let (mut stream, _) = source_listener
+                .accept()
+                .expect("redirect timeout source must accept");
+            read_request_head(&mut stream, "redirect timeout source request");
+            thread::sleep(Duration::from_millis(140));
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Redirect\r\nLocation: http://{target_address}/stall\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .expect("redirect timeout source must write");
+        });
+
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("redirect timeout Engine must construct");
+        let started = Instant::now();
+        let result = engine.client().execute(
+            Request::get(format!("http://{source_address}/start"))
+                .total_timeout(Duration::from_millis(220))
+                .build()
+                .expect("redirect timeout request must build"),
+        );
+        let elapsed = started.elapsed();
+        let Err(ExecuteError::Failed(error)) = result else {
+            panic!("redirected request did not retain its original total deadline");
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        assert!(
+            elapsed < Duration::from_millis(320),
+            "redirect reset the total timeout: {elapsed:?}"
+        );
+        engine
+            .shutdown()
+            .expect("redirect timeout Engine must stop");
+        source_server
+            .join()
+            .expect("redirect timeout source must join");
+        target_server
+            .join()
+            .expect("redirect timeout target must join");
     }
 
     #[test]
