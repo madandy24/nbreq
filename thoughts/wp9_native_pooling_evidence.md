@@ -1,9 +1,8 @@
 # WP9 native pooling, redirects, and streaming evidence
 
-Status: **WP9.1/WP9.2 pooling accepted on Windows and Ubuntu 20.04; WP9.3 redirects pass on
-Windows and await the exact-source Ubuntu gate.** WP8's DNS/TLS owner is accepted. WP9.0 boundary
-hardening is checkpointed at `a39adb1`; none of the private native slices below changes ordinary
-`Engine::new` or any GDS backend selection.
+Status: **WP9.1/WP9.2 pooling and WP9.3 redirects accepted on Windows and Ubuntu 20.04.** WP8's
+DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; none of the
+private native slices below changes ordinary `Engine::new` or any GDS backend selection.
 
 ## Frozen pool ownership contract
 
@@ -105,9 +104,10 @@ adversarial, or contract test process survives. The first exact archive usefully
 Rust-1.85 Clippy spelling difference in the acquisition deadline scan; commit `97d3c13` applies the
 semantic no-op and reruns every gate from a fresh extraction.
 
-WP9.1 ownership/contamination and WP9.2 conservative reuse are accepted. WP9.3 redirects may begin.
+WP9.1 ownership/contamination and WP9.2 conservative reuse are accepted. The following section
+records the accepted WP9.3 redirect slice.
 
-## WP9.3 conservative redirects — Windows slice
+## WP9.3 conservative redirects — accepted
 
 Redirect policy is now one backend-neutral function shared by the retained curl pilot and native
 owner. A native hop never creates a second public request or terminal identity: it retires the
@@ -138,14 +138,21 @@ destinations, exact hop exhaustion, HTTPS downgrade refusal, cancellation after 
 received its request, and a total timeout that expires against original acceptance rather than
 being reset after the redirect. The broad native gate passes 122 unit, 4 adversarial, 4 contract,
 and 2 doctests. Default tests, all-feature compilation, warning-denied all-feature clippy, formatting,
-and the existing curl redirect fixture also pass. Exact-source Ubuntu remains the WP9.3 acceptance
-gate.
+and the existing curl redirect fixture also pass.
+
+The exact accepted source is commit `bba1d24`, archive size 377,980 bytes, SHA-256
+`C1EF28D33AD1F0E45CD134E7055333E0F87697D77482799FF11EA85BEC535B05`. The copied archive matched
+before extraction into a fresh directory on `gds-srv-test2`, Ubuntu 20.04.6 x86-64 with Rust,
+Cargo, and Clippy 1.85.0. It passes the same 122 native unit, 4 adversarial, 4 contract, and 2
+doctests; the 42-test default suite, warning-denied native/test-support clippy, formatting, and
+offline all-feature compilation also pass. Twenty-five consecutive redirect-matrix repetitions
+then complete with no surviving NBReq, adversarial, or contract process. WP9.3 is accepted and
+WP9.4 may begin.
 
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
-- Redirects remain WP9.3 until the exact-source Ubuntu rerun. Incremental upload/download and removal
-  of the one-shot HTTPS body ceiling remain WP9.4. Public limits, metrics, fuzzing, pressure runs,
-  and supported-platform evidence remain WP9.5/WP10.
+- Incremental upload/download and removal of the one-shot HTTPS body ceiling remain WP9.4. Public
+  limits, metrics, fuzzing, pressure runs, and supported-platform evidence remain WP9.5/WP10.
