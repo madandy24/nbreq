@@ -768,6 +768,14 @@ impl NativeHttpFactory {
         }
     }
 
+    pub(super) fn new_with_system_dns(config: &EngineConfig) -> Result<Self, Error> {
+        Ok(Self {
+            limits: HttpLimits::from_config(config),
+            resolver: Some(ResolverConfig::system()?),
+            tls: None,
+        })
+    }
+
     pub(super) fn new_with_nameserver_and_platform_tls(
         config: &EngineConfig,
         nameserver: SocketAddr,
@@ -775,6 +783,16 @@ impl NativeHttpFactory {
         Ok(Self {
             limits: HttpLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
+            tls: Some(NativeTlsConfigs::platform()?),
+        })
+    }
+
+    pub(super) fn new_with_system_dns_and_platform_tls(
+        config: &EngineConfig,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            limits: HttpLimits::from_config(config),
+            resolver: Some(ResolverConfig::system()?),
             tls: Some(NativeTlsConfigs::platform()?),
         })
     }

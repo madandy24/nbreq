@@ -491,7 +491,7 @@ The implementation should use `httparse` for response-head recognition and its c
 
 ## 16. TLS
 
-The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store.
+The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store. System DNS configuration is read by pinned target-specific `ipconfig` 0.3.4 on Windows and `resolv-conf` 0.7.6 on Unix; neither owns query execution or introduces an async runtime.
 
 Requirements:
 

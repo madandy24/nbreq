@@ -14,7 +14,9 @@ native = [
     "dep:hickory-proto",
     "dep:getrandom",
     "dep:httparse",
+    "dep:ipconfig",
     "dep:mio",
+    "dep:resolv-conf",
     "dep:rustls",
     "dep:rustls-platform-verifier",
 ]
@@ -29,6 +31,12 @@ httparse = { version = "=1.10.1", optional = true }
 mio = { version = "=1.0.4", optional = true, features = ["net", "os-poll"] }
 rustls = { version = "=0.23.42", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = { version = "=0.7.0", optional = true, default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+ipconfig = { version = "=0.3.4", optional = true, default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+resolv-conf = { version = "=0.7.6", optional = true, default-features = false }
 
 [dev-dependencies]
 rcgen = "=0.13.2"

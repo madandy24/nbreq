@@ -78,6 +78,15 @@ pub fn native_http_engine_with_nameserver(
     Engine::with_spawned_factory(config, factory)
 }
 
+/// Creates a private Rust-native HTTP proving Engine using the host's DNS configuration.
+///
+/// This remains a WP8 system-integration seam rather than public backend selection.
+#[cfg(feature = "native")]
+pub fn native_http_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {
+    let factory = crate::backend::native_http_factory_with_system_dns(&config)?;
+    Engine::with_spawned_factory(config, factory)
+}
+
 /// Creates a private Rust-native HTTPS proving Engine using platform trust.
 ///
 /// The nameserver is injected for deterministic DNS ownership tests. This remains a WP8 proving
@@ -88,6 +97,15 @@ pub fn native_https_engine_with_nameserver(
     nameserver: std::net::SocketAddr,
 ) -> Result<Engine, Error> {
     let factory = crate::backend::native_https_factory_with_nameserver(&config, nameserver)?;
+    Engine::with_spawned_factory(config, factory)
+}
+
+/// Creates a private Rust-native HTTPS proving Engine using host DNS and platform trust.
+///
+/// Ordinary `Engine::new` still does not select the native backend.
+#[cfg(feature = "native")]
+pub fn native_https_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {
+    let factory = crate::backend::native_https_factory_with_system_dns(&config)?;
     Engine::with_spawned_factory(config, factory)
 }
 

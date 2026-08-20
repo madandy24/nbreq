@@ -31,9 +31,9 @@ const MAX_CNAME_HOPS: u8 = 8;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ResolveKey(pub(super) u64);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct ResolverConfig {
-    pub(super) nameserver: SocketAddr,
+    pub(super) nameservers: Vec<SocketAddr>,
     pub(super) attempt_timeout: Duration,
     pub(super) attempts: u8,
 }
@@ -41,10 +41,19 @@ pub(super) struct ResolverConfig {
 impl ResolverConfig {
     pub(super) fn injected(nameserver: SocketAddr) -> Self {
         Self {
-            nameserver,
+            nameservers: vec![nameserver],
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
         }
+    }
+
+    pub(super) fn system() -> Result<Self, Error> {
+        let discovered = super::native_dns_config::discover()?;
+        Ok(Self {
+            nameservers: discovered.nameservers,
+            attempt_timeout: discovered.attempt_timeout,
+            attempts: discovered.attempts,
+        })
     }
 
     #[cfg(test)]
@@ -117,15 +126,11 @@ impl NativeResolver {
             Waker::new(poll.registry(), WAKE_TOKEN)
                 .map_err(|error| resolver_internal("waker creation", &error))?,
         );
-        let bind_address = match config.nameserver {
-            SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        let (mut socket, nameserver) = connect_nameserver(&config.nameservers)?;
+        let config = ResolverConfig {
+            nameservers: vec![nameserver],
+            ..config
         };
-        let mut socket = UdpSocket::bind(bind_address)
-            .map_err(|error| resolver_internal("socket bind", &error))?;
-        socket
-            .connect(config.nameserver)
-            .map_err(|error| resolver_internal("nameserver connect", &error))?;
         poll.registry()
             .register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
             .map_err(|error| resolver_internal("socket registration", &error))?;
@@ -208,6 +213,28 @@ impl NativeResolver {
     }
 }
 
+fn connect_nameserver(nameservers: &[SocketAddr]) -> Result<(UdpSocket, SocketAddr), Error> {
+    let mut last_error = None;
+    for nameserver in nameservers {
+        let bind_address = match nameserver {
+            SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        match UdpSocket::bind(bind_address).and_then(|socket| {
+            socket.connect(*nameserver)?;
+            Ok(socket)
+        }) {
+            Ok(socket) => return Ok((socket, *nameserver)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let detail = last_error.map_or_else(
+        || "no DNS nameservers were configured".to_owned(),
+        |error| format!("no configured DNS nameserver was reachable: {error}"),
+    );
+    Err(Error::new(ErrorKind::Internal, detail))
+}
+
 impl Drop for NativeResolver {
     fn drop(&mut self) {
         let _shutdown_result = self.shutdown();
@@ -271,7 +298,7 @@ fn resolver_main(
             &mut by_key,
             &results,
             &result_waker,
-            config,
+            &config,
         );
         let timeout = pending
             .values()
@@ -366,7 +393,7 @@ fn transmit_due(
     by_key: &mut HashMap<ResolveKey, u16>,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
-    config: ResolverConfig,
+    config: &ResolverConfig,
 ) {
     let now = Instant::now();
     let due = pending

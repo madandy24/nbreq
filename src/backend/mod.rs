@@ -15,6 +15,8 @@ mod native;
 #[cfg(feature = "native")]
 mod native_dns;
 #[cfg(feature = "native")]
+mod native_dns_config;
+#[cfg(feature = "native")]
 mod native_http;
 #[cfg(feature = "native")]
 mod native_tls;
@@ -113,12 +115,30 @@ pub(crate) fn native_http_factory_with_nameserver(
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_http_factory_with_system_dns(
+    config: &crate::EngineConfig,
+) -> Result<Box<dyn BackendFactory>, Error> {
+    Ok(Box::new(
+        native_http::NativeHttpFactory::new_with_system_dns(config)?,
+    ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_https_factory_with_nameserver(
     config: &crate::EngineConfig,
     nameserver: std::net::SocketAddr,
 ) -> Result<Box<dyn BackendFactory>, Error> {
     Ok(Box::new(
         native_http::NativeHttpFactory::new_with_nameserver_and_platform_tls(config, nameserver)?,
+    ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_https_factory_with_system_dns(
+    config: &crate::EngineConfig,
+) -> Result<Box<dyn BackendFactory>, Error> {
+    Ok(Box::new(
+        native_http::NativeHttpFactory::new_with_system_dns_and_platform_tls(config)?,
     ))
 }
 

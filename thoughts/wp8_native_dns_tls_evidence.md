@@ -55,7 +55,10 @@ yet a production-native or GDS-selection claim.
   random source. It was already present in the selected dependency graph; making it direct avoids
   relying on a transitive crate and lets resolver construction fail closed if randomness is
   unavailable.
-- All four are private `native` feature dependencies. Their types do not enter the public API.
+- Pin target-specific `ipconfig` 0.3.4 on Windows and `resolv-conf` 0.7.6 on Unix. They read only
+  platform DNS configuration; NBReq does not adopt a resolver runtime from either. Both support an
+  older Rust floor than NBReq and use the customary MIT/Apache dual grant.
+- All six are private `native` feature dependencies. Their types do not enter the public API.
 
 ## First proving slice
 
@@ -95,14 +98,24 @@ the peer has observed ClientHello. The bypass skips certificate-chain and hostna
 rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
 sans-I/O test proves request encryption and response decryption, and the platform verifier
 configuration builds with an explicit Ring provider rather than process-global provider state. The
-complete Windows native suite passes 83 unit, 4 public-contract, and 2 doctests at this point, with
+complete Windows native suite passes 86 unit, 4 public-contract, and 2 doctests at this point, with
 strict clippy and formatting. This is progress evidence, not WP8 acceptance.
+
+Supported-platform configuration discovery is also wired behind private test support. Windows reads
+DNS servers only from operational adapters, retains IPv6 scope IDs, ranks them by the applicable
+adapter metric, removes duplicates, and fails closed if none remain. Unix parses `/etc/resolv.conf`,
+clamps retry settings, and rejects scoped link-local IPv6 servers rather than silently discarding an
+interface name. A construction/shutdown fixture initially exposed an unreachable IPv6 server on an
+otherwise operational Windows adapter; construction now tries the ranked list until the kernel
+accepts a connected UDP route. The fixture proves that selected server, platform TLS configuration,
+resolver thread, and Engine can be created and joined together. Response-time failover between
+kernel-reachable but silent servers remains explicit work.
 
 ## Deliberate remainder
 
-- System resolver configuration discovery, bounded positive/negative caching, TTL clamps, IPv4/IPv6
-  ordering, TCP fallback for truncated DNS replies, and Happy Eyeballs follow the injected-fixture
-  vertical slice. A fixture-only resolver is not a production DNS claim.
+- Bounded positive/negative caching, TTL clamps, search-suffix behavior, multi-server failover,
+  TCP fallback for truncated DNS replies, and Happy Eyeballs remain after basic system discovery.
+  Discovery of a kernel-reachable ranked server is not yet a production DNS claim.
 - The current slice uses serial A then AAAA lookup and bounded CNAME following. Happy Eyeballs,
   randomized IDs beyond the random sequence seed, DNS-over-TCP fallback, richer server rotation,
   and response-code fixtures remain before the resolver can be called consumer-ready.
