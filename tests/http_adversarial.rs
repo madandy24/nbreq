@@ -1,4 +1,7 @@
-#![cfg(feature = "curl-pilot")]
+#![cfg(any(
+    feature = "curl-pilot",
+    all(feature = "native", feature = "test-support")
+))]
 
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -7,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use nbreq::{Engine, ErrorKind, ExecuteError, Request, TransportStage};
+use nbreq::{Engine, EngineConfig, ErrorKind, ExecuteError, Request, TransportStage};
 use socket2::SockRef;
 
 #[derive(Clone, Copy)]
@@ -15,6 +18,7 @@ enum Script {
     Bytes(&'static [u8]),
     Fragmented(&'static [u8]),
     ResetDuringUpload,
+    #[cfg(feature = "curl-pilot")]
     TwoKeepAliveResponses,
 }
 
@@ -81,6 +85,7 @@ impl ScriptedServer {
                                         .expect("lab server must observe upload data before reset");
                                 }
                             }
+                            #[cfg(feature = "curl-pilot")]
                             Script::TwoKeepAliveResponses => {
                                 for (body, connection) in [
                                     (b"one".as_slice(), "keep-alive"),
@@ -152,11 +157,24 @@ fn read_request_head(stream: &mut TcpStream) -> usize {
     }
 }
 
+fn test_engine(config: EngineConfig) -> Engine {
+    #[cfg(feature = "curl-pilot")]
+    {
+        Engine::new(config).expect("curl lab Engine must construct")
+    }
+    #[cfg(all(
+        not(feature = "curl-pilot"),
+        feature = "native",
+        feature = "test-support"
+    ))]
+    {
+        nbreq::testing::native_http_engine(config).expect("native lab Engine must construct")
+    }
+}
+
 fn execute(script: Script) -> Result<nbreq::Response, ExecuteError> {
     let server = ScriptedServer::start(script);
-    let engine = Engine::builder()
-        .build()
-        .expect("lab Engine must construct");
+    let engine = test_engine(EngineConfig::spawned());
     let result = engine.client().execute(
         Request::get(server.url())
             .total_timeout(Duration::from_secs(2))
@@ -201,11 +219,10 @@ fn fragmented_and_chunked_responses_complete_through_the_public_api() {
 }
 
 #[test]
+#[cfg(feature = "curl-pilot")]
 fn sequential_requests_reuse_one_http11_connection() {
     let server = ScriptedServer::start(Script::TwoKeepAliveResponses);
-    let engine = Engine::builder()
-        .build()
-        .expect("lab Engine must construct");
+    let engine = test_engine(EngineConfig::spawned());
     let client = engine.client();
     for expected in [b"one".as_slice(), b"two".as_slice()] {
         let response = client
@@ -272,10 +289,7 @@ fn premature_eof_and_empty_response_map_to_receive() {
 #[test]
 fn abortive_close_during_a_large_upload_maps_to_send() {
     const UPLOAD_BYTES: usize = 64 * 1024 * 1024;
-    let engine = Engine::builder()
-        .max_request_body_bytes(UPLOAD_BYTES)
-        .build()
-        .expect("lab Engine must construct");
+    let engine = test_engine(EngineConfig::spawned().with_max_request_body_bytes(UPLOAD_BYTES));
     let client = engine.client();
     for trial in 0..10 {
         let server = ScriptedServer::start(Script::ResetDuringUpload);

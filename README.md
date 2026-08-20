@@ -62,15 +62,17 @@ Engine configuration independently bounds accepted/inflight requests, queued com
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
 until it returns; blocking-only requests do not consume callback capacity.
 
-## Native reactor status
+## Native backend status
 
 The private `native` feature now builds the HTTP-independent nonblocking TCP foundation using
 `mio` for portable OS readiness and notification. `mio` is not an executor and NBReq does not
 adopt Tokio or any async runtime. NBReq owns socket state, generation-safe identities, bounded byte
 queues, deadlines, cancellation, bidirectional half-close, a bounded wake-failure safety poll, and
 shutdown. Windows and Ubuntu 20.04 raw-transfer and Engine-lifecycle fixtures pass, completing
-WP6. Enabling `native` does not yet make
-`Engine::new` select it—HTTP serialization and framing begin in WP7.
+WP6. WP7 now adds a private cleartext HTTP/1.1 proving backend with pinned `httparse` 1.10.1,
+bounded incremental response framing, all three timeout clocks, and spawned/manual Engine tests.
+It remains literal-IP, one-request-per-connection test support until its Ubuntu/review gate passes.
+Enabling `native` does not make `Engine::new` select it.
 
 ## Project documents
 
@@ -79,6 +81,7 @@ WP6. Enabling `native` does not yet make
 - [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)
 - [WP4 adversarial HTTP laboratory evidence](thoughts/wp4_http_lab_evidence.md)
 - [WP6 native reactor evidence](thoughts/wp6_native_reactor_evidence.md)
+- [WP7 native HTTP/1.1 evidence](thoughts/wp7_native_http_evidence.md)
 - [GDS curl-pilot integration plan](thoughts/gds_curl_pilot_integration_plan.md)
 - [GDS G4 packaging and loader evidence](thoughts/gds_curl_pilot_g4_evidence.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)

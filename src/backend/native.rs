@@ -19,7 +19,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 const WAKE_TOKEN: Token = Token(0);
 const FIRST_SOCKET_TOKEN: usize = 1;
 const READ_CHUNK: usize = 16 * 1024;
-const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
+pub(super) const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SlotId {
@@ -73,6 +73,7 @@ impl NativeFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NativeEvent {
     Connected(SlotId),
+    WriteProgress(SlotId),
     WriteDrained(SlotId),
     Data(SlotId, Vec<u8>),
     PeerClosed(SlotId),
@@ -262,6 +263,21 @@ impl NativeReactor {
         self.remove(id).is_some()
     }
 
+    pub(crate) fn set_deadline(
+        &mut self,
+        id: SlotId,
+        deadline: Option<Instant>,
+    ) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native deadline update targeted a stale or closed slot")
+        })?;
+        connection.deadline = deadline;
+        if let Some(when) = deadline {
+            self.deadlines.push(Reverse(DeadlineEntry { when, id }));
+        }
+        Ok(())
+    }
+
     pub(crate) fn poll(&mut self, deadline: Instant) -> Result<Vec<NativeEvent>, NativeFailure> {
         let wait_until = self
             .nearest_deadline()
@@ -423,6 +439,7 @@ impl NativeReactor {
             return true;
         }
         let had_data = !connection.outbound.is_empty();
+        let mut wrote_data = false;
         loop {
             let (front, _) = connection.outbound.as_slices();
             if front.is_empty() {
@@ -439,6 +456,7 @@ impl NativeReactor {
                     return false;
                 }
                 Ok(written) => {
+                    wrote_data = true;
                     connection.outbound.drain(..written);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -452,6 +470,8 @@ impl NativeReactor {
         }
         if had_data && connection.outbound.is_empty() {
             output.push(NativeEvent::WriteDrained(id));
+        } else if wrote_data {
+            output.push(NativeEvent::WriteProgress(id));
         }
         true
     }
@@ -510,6 +530,8 @@ impl NativeReactor {
             Ok(Some(error)) => Some(NativeFailure::io(
                 if connection.state == ConnectionState::Connecting {
                     NativeFailureKind::Connect
+                } else if !connection.outbound.is_empty() {
+                    NativeFailureKind::Write
                 } else {
                     NativeFailureKind::Read
                 },
@@ -620,7 +642,13 @@ impl NativeReactor {
             let Some(Reverse(entry)) = self.deadlines.pop() else {
                 break;
             };
-            if self.remove(entry.id).is_some() {
+            let current = self
+                .connection_mut(entry.id)
+                .and_then(|connection| connection.deadline);
+            if current == Some(entry.when) {
+                if let Some(connection) = self.connection_mut(entry.id) {
+                    connection.deadline = None;
+                }
                 output.push(NativeEvent::DeadlineExpired(entry.id));
             }
         }
@@ -819,7 +847,9 @@ mod tests {
             let mut completions = Vec::new();
             for event in events {
                 match event {
-                    NativeEvent::Connected(_) | NativeEvent::WriteDrained(_) => {}
+                    NativeEvent::Connected(_)
+                    | NativeEvent::WriteProgress(_)
+                    | NativeEvent::WriteDrained(_) => {}
                     NativeEvent::Data(slot, bytes) => {
                         if let Some(request_id) = self.slot_to_request.get(&slot) {
                             if let Some(body) = self.bodies.get_mut(request_id) {
@@ -848,6 +878,7 @@ mod tests {
                     }
                     NativeEvent::DeadlineExpired(slot) => {
                         if let Some(request_id) = self.remove_slot(slot) {
+                            self.reactor.cancel(slot);
                             self.bodies.remove(&request_id);
                             completions.push(BackendCompletion {
                                 id: request_id,
@@ -1248,6 +1279,8 @@ mod tests {
             events.contains(&NativeEvent::DeadlineExpired(id))
         });
         assert!(events.contains(&NativeEvent::DeadlineExpired(id)));
+        assert_eq!(reactor.active_count(), 1);
+        assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
         server.join().expect("server must join");
     }

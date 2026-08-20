@@ -12,6 +12,8 @@ use std::sync::Arc;
 mod curl;
 #[cfg(feature = "native")]
 mod native;
+#[cfg(feature = "native")]
+mod native_http;
 mod scaffold;
 
 pub(crate) struct BackendCompletion {
@@ -89,6 +91,11 @@ pub(crate) fn curl_factory_with_test_ca(
         },
         ca_pem,
     ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_http_factory(config: &crate::EngineConfig) -> Box<dyn BackendFactory> {
+    Box::new(native_http::NativeHttpFactory::new(config))
 }
 
 pub(crate) fn interruptible_poll_deadline(max_wait: Duration) -> Instant {
