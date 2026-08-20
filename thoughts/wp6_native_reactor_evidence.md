@@ -18,8 +18,10 @@ The core owns:
   registration cannot target a reused slot, including on 32-bit platforms;
 - bounded outbound queues and cumulative receive limits checked before growth;
 - a stale-safe minimum-deadline heap and wait calculation from the caller/nearest deadline;
-- connect completion via `SO_ERROR`, read/write draining to `WouldBlock`, EOF/half-close,
-  cancellation, deregistration, and idempotent shutdown.
+- connect completion via `SO_ERROR`, read/write draining to `WouldBlock`, peer FIN as read-half
+  closure without destroying the local write half, cancellation, deregistration, and idempotent
+  shutdown;
+- direct external wake plus a 50 ms safety poll whose failure path remains fatal and observable.
 
 No callback, public request type, DNS result, TLS object, or HTTP parser is stored in this layer.
 The test-only raw adapter exists solely to prove that the existing `Backend`, `ReactorCore`,
@@ -50,7 +52,7 @@ without coupling the projects now.
 
 ## Windows proof
 
-`cargo test --features native` passes 51 unit tests, 4 public-contract tests, and 2 compile-fail
+The accepted `b367247` source passed 51 unit tests, 4 public-contract tests, and 2 compile-fail
 doctests. Native-specific fixtures prove:
 
 - fragmented raw echo and peer half-close;
@@ -66,12 +68,26 @@ doctests. Native-specific fixtures prove:
 - 100 repeated reactor create/idempotent-shutdown/drop cycles;
 - `NativeReactor` and its wake handle satisfy `Send`.
 
-The ten native-specific fixtures also passed 25 consecutive suite iterations on the recorded
+The ten native-specific fixtures in `b367247` also passed 25 consecutive suite iterations on the recorded
 Windows host after the full matrix, with no hang or intermittent failure.
 
-The full `--all-features` run remains green alongside curl: 68 unit tests, 5 adversarial HTTP
+That source's full `--all-features` run was green alongside curl: 68 unit tests, 5 adversarial HTTP
 tests, 4 public-contract tests, and 2 doctests. Native-only and all-feature clippy runs pass with
 warnings denied; formatting is clean.
+
+## Post-acceptance review hardening
+
+Review before WP7 found that the test-only spawned native adapter advertised a one-hour idle wait.
+It now advertises a 50 ms maximum safety poll, matching the curl seam. A deterministic fixture
+replaces the external waker with a deliberate failure while the worker is blocked and proves that
+both accepted waiters fail, and shutdown observes the failure, within the 500 ms gate.
+
+Peer FIN now marks only the remote read half closed. An idle half-closed socket is deregistered so
+it cannot spin, then registered again if the protocol owner queues a final local write. A loopback
+fixture proves the peer can half-close, NBReq can observe its final bytes and FIN, and the local
+write half can still deliver data before explicit slot cancellation. The current Windows native
+suite passes 54 unit tests, 4 public-contract tests, and 2 doctests; strict native clippy and
+formatting pass.
 
 ## Ubuntu 20.04 proof
 
@@ -91,6 +107,12 @@ connecting slot and deadline-driven release without relying on machine firewall 
 
 The feature remains a private foundation. Ordinary `Engine::new` must not silently select it until
 the HTTP backend exists and the later parity gates pass.
+
+Poll tokens are never recycled: exhaustion fails closed rather than risking stale-event aliasing.
+That is correct for this foundation, but token allocation must be revisited under long-lived
+connection-pool load before the native backend is declared release-ready. No Wine native claim is
+made, and the Ubuntu acceptance run was native-only; curl's Ubuntu matrix remains separate WP4
+evidence.
 
 WP7 may now add HTTP/1.1 serialization and framing with `httparse`; it must not move socket
 ownership or cancellation out of this accepted core.

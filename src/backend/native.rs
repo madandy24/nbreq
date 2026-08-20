@@ -11,7 +11,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mio::net::TcpStream;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -19,6 +19,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 const WAKE_TOKEN: Token = Token(0);
 const FIRST_SOCKET_TOKEN: usize = 1;
 const READ_CHUNK: usize = 16 * 1024;
+const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SlotId {
@@ -88,7 +89,9 @@ enum ConnectionState {
 struct Connection {
     token: Token,
     stream: TcpStream,
+    registered: bool,
     state: ConnectionState,
+    peer_read_closed: bool,
     outbound: VecDeque<u8>,
     outbound_limit: usize,
     received: usize,
@@ -222,7 +225,9 @@ impl NativeReactor {
         self.slots[slot_index].connection = Some(Connection {
             token,
             stream,
+            registered: true,
             state: ConnectionState::Connecting,
+            peer_read_closed: false,
             outbound: VecDeque::new(),
             outbound_limit,
             received: 0,
@@ -462,7 +467,9 @@ impl NativeReactor {
             };
             match read_result {
                 Ok(0) => {
-                    self.remove(id);
+                    if let Some(connection) = self.connection_mut(id) {
+                        connection.peer_read_closed = true;
+                    }
                     output.push(NativeEvent::PeerClosed(id));
                     return;
                 }
@@ -530,17 +537,51 @@ impl NativeReactor {
         let connection = slot.connection.as_mut().ok_or_else(|| {
             NativeFailure::internal("native readiness update targeted a closed slot")
         })?;
-        let interest =
-            if connection.state == ConnectionState::Connecting || !connection.outbound.is_empty() {
-                Interest::READABLE.add(Interest::WRITABLE)
-            } else {
-                Interest::READABLE
-            };
-        poll.registry()
-            .reregister(&mut connection.stream, connection.token, interest)
-            .map_err(|error| {
-                NativeFailure::io(NativeFailureKind::Internal, "socket reregistration", &error)
-            })
+        let interest = if connection.state == ConnectionState::Connecting {
+            Some(Interest::READABLE.add(Interest::WRITABLE))
+        } else {
+            match (connection.peer_read_closed, connection.outbound.is_empty()) {
+                (false, false) => Some(Interest::READABLE.add(Interest::WRITABLE)),
+                (false, true) => Some(Interest::READABLE),
+                (true, false) => Some(Interest::WRITABLE),
+                (true, true) => None,
+            }
+        };
+        match (connection.registered, interest) {
+            (true, Some(interest)) => poll
+                .registry()
+                .reregister(&mut connection.stream, connection.token, interest)
+                .map_err(|error| {
+                    NativeFailure::io(NativeFailureKind::Internal, "socket reregistration", &error)
+                }),
+            (false, Some(interest)) => {
+                poll.registry()
+                    .register(&mut connection.stream, connection.token, interest)
+                    .map_err(|error| {
+                        NativeFailure::io(
+                            NativeFailureKind::Internal,
+                            "socket registration",
+                            &error,
+                        )
+                    })?;
+                connection.registered = true;
+                Ok(())
+            }
+            (true, None) => {
+                poll.registry()
+                    .deregister(&mut connection.stream)
+                    .map_err(|error| {
+                        NativeFailure::io(
+                            NativeFailureKind::Internal,
+                            "socket deregistration",
+                            &error,
+                        )
+                    })?;
+                connection.registered = false;
+                Ok(())
+            }
+            (false, None) => Ok(()),
+        }
     }
 
     fn remove(&mut self, id: SlotId) -> Option<()> {
@@ -549,7 +590,9 @@ impl NativeReactor {
             return None;
         }
         let mut connection = slot.connection.take()?;
-        let _deregister_result = self.poll.registry().deregister(&mut connection.stream);
+        if connection.registered {
+            let _deregister_result = self.poll.registry().deregister(&mut connection.stream);
+        }
         self.tokens.remove(&connection.token);
         self.free_slots.push(id.index);
         Some(())
@@ -595,7 +638,7 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{IpAddr, Shutdown, TcpListener};
-    use std::sync::{Arc, mpsc};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -605,7 +648,7 @@ mod tests {
     use crate::types::http_origin;
     use crate::{
         Completion, Engine, EngineConfig, Error, ErrorKind, Request, RequestId, Response,
-        ShutdownError, TimeoutKind, TransportStage,
+        ShutdownError, TimeoutKind, TransportStage, WaitOutcome,
     };
 
     const TEST_LIMIT: usize = 1024 * 1024;
@@ -625,6 +668,72 @@ mod tests {
                 })
             })));
             Ok(Box::new(backend))
+        }
+    }
+
+    struct FailedWakeFactory {
+        armed: mpsc::Sender<()>,
+        rescue: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl BackendFactory for FailedWakeFactory {
+        fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
+            shared.queue.set_external_waker(Some(Arc::new(|| Ok(()))));
+            Ok(Box::new(FailedWakeBackend {
+                shared: Arc::clone(shared),
+                armed: Some(self.armed),
+                rescue: self.rescue,
+            }))
+        }
+    }
+
+    struct FailedWakeBackend {
+        shared: Arc<Shared>,
+        armed: Option<mpsc::Sender<()>>,
+        rescue: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl Backend for FailedWakeBackend {
+        fn submit(
+            &mut self,
+            _id: RequestId,
+            _request: Request,
+            _accepted_at: Instant,
+        ) -> Option<Completion> {
+            None
+        }
+
+        fn cancel(&mut self, _id: RequestId) {}
+
+        fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining > Duration::from_millis(10) {
+                if let Some(armed) = self.armed.take() {
+                    self.shared.queue.set_external_waker(Some(Arc::new(|| {
+                        Err(Error::new(
+                            ErrorKind::Internal,
+                            "deliberate native wake failure",
+                        ))
+                    })));
+                    let _send_result = armed.send(());
+                }
+                let (lock, changed) = &*self.rescue;
+                let rescued = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _wait_result = changed
+                    .wait_timeout_while(rescued, remaining, |rescued| !*rescued)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            Ok(Vec::new())
+        }
+
+        fn shutdown(&mut self) -> Result<(), ShutdownError> {
+            Ok(())
+        }
+
+        fn poll_mode(&self) -> PollMode {
+            PollMode::Interruptible {
+                max_wait: NATIVE_SAFETY_POLL,
+            }
         }
     }
 
@@ -720,6 +829,7 @@ mod tests {
                     }
                     NativeEvent::PeerClosed(slot) => {
                         if let Some(request_id) = self.remove_slot(slot) {
+                            self.reactor.cancel(slot);
                             let body = self.bodies.remove(&request_id).unwrap_or_default();
                             completions.push(BackendCompletion {
                                 id: request_id,
@@ -763,7 +873,7 @@ mod tests {
 
         fn poll_mode(&self) -> PollMode {
             PollMode::Interruptible {
-                max_wait: Duration::from_secs(60 * 60),
+                max_wait: NATIVE_SAFETY_POLL,
             }
         }
     }
@@ -956,7 +1066,48 @@ mod tests {
         assert_eq!(received, b"abcdef");
         assert!(events.contains(&NativeEvent::Connected(id)));
         assert!(events.contains(&NativeEvent::WriteDrained(id)));
+        assert_eq!(reactor.active_count(), 1);
+        assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
+        server.join().expect("server must join");
+    }
+
+    #[test]
+    fn peer_half_close_keeps_the_write_half_available() {
+        let (listener, address) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server must accept");
+            stream.write_all(b"done").expect("server must write");
+            stream
+                .shutdown(Shutdown::Write)
+                .expect("server must half-close");
+            let mut reply = [0_u8; 9];
+            stream
+                .read_exact(&mut reply)
+                .expect("server must retain its read half");
+            assert_eq!(&reply, b"after-fin");
+        });
+
+        let mut reactor = NativeReactor::new(8).expect("reactor must construct");
+        let id = reactor
+            .connect(address, None, TEST_LIMIT, TEST_LIMIT)
+            .expect("connect must start");
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::PeerClosed(id))
+        });
+        assert!(events.iter().any(
+            |event| matches!(event, NativeEvent::Data(event_id, bytes) if *event_id == id && bytes == b"done")
+        ));
+        assert_eq!(reactor.active_count(), 1);
+
+        reactor
+            .queue_write(id, b"after-fin")
+            .expect("local write half must remain usable");
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::WriteDrained(id))
+        });
+        assert!(events.contains(&NativeEvent::WriteDrained(id)));
+        assert!(reactor.cancel(id));
         server.join().expect("server must join");
     }
 
@@ -1002,6 +1153,79 @@ mod tests {
             "wake took {elapsed:?}"
         );
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn spawned_native_backend_has_a_short_safety_poll() {
+        let backend = RawBackend::new().expect("raw backend must construct");
+        assert_eq!(
+            backend.poll_mode(),
+            PollMode::Interruptible {
+                max_wait: Duration::from_millis(50),
+            }
+        );
+    }
+
+    #[test]
+    fn safety_poll_recovers_when_external_wake_fails() {
+        let (armed_tx, armed_rx) = mpsc::channel();
+        let rescue = Arc::new((Mutex::new(false), Condvar::new()));
+        let engine = Engine::with_spawned_factory(
+            EngineConfig::spawned(),
+            Box::new(FailedWakeFactory {
+                armed: armed_tx,
+                rescue: Arc::clone(&rescue),
+            }),
+        )
+        .expect("failed-wake fixture Engine must construct");
+        let client = engine.client();
+        let first = client
+            .submit(
+                Request::get("http://127.0.0.1:1/")
+                    .build()
+                    .expect("first request must build"),
+            )
+            .expect("first request must submit");
+        armed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("backend must enter its interruptible wait");
+
+        let started = Instant::now();
+        let second = client
+            .submit(
+                Request::get("http://127.0.0.1:1/")
+                    .build()
+                    .expect("second request must build"),
+            )
+            .expect("second request must submit");
+        let (second_completion, needed_rescue) = match second.wait_for(Duration::from_millis(500)) {
+            WaitOutcome::Completed(completion) => (completion, false),
+            WaitOutcome::TimedOut(pending) => {
+                let (lock, changed) = &*rescue;
+                *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+                changed.notify_all();
+                (pending.wait(), true)
+            }
+        };
+        let first_completion = first.wait();
+        let shutdown = engine
+            .shutdown()
+            .expect_err("latched wake failure must remain observable at shutdown");
+
+        assert!(
+            !needed_rescue,
+            "failed wake exceeded the 500 ms safety gate"
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(matches!(
+            first_completion,
+            Completion::Failed(ref error) if error.kind() == ErrorKind::Internal
+        ));
+        assert!(matches!(
+            second_completion,
+            Completion::Failed(ref error) if error.kind() == ErrorKind::Internal
+        ));
+        assert_eq!(shutdown.error().kind(), ErrorKind::Internal);
     }
 
     #[test]
@@ -1139,6 +1363,10 @@ mod tests {
             })
             .collect::<HashMap<_, _>>();
         assert_eq!(received, expected);
+        assert_eq!(reactor.active_count(), CONNECTIONS);
+        for id in expected.keys().copied() {
+            assert!(reactor.cancel(id));
+        }
         assert_eq!(reactor.active_count(), 0);
         server.join().expect("server must join");
     }

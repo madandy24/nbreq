@@ -67,8 +67,9 @@ until it returns; blocking-only requests do not consume callback capacity.
 The private `native` feature now builds the HTTP-independent nonblocking TCP foundation using
 `mio` for portable OS readiness and notification. `mio` is not an executor and NBReq does not
 adopt Tokio or any async runtime. NBReq owns socket state, generation-safe identities, bounded byte
-queues, deadlines, cancellation, and shutdown. Windows and Ubuntu 20.04 raw-transfer and
-Engine-lifecycle fixtures pass, completing WP6. Enabling `native` does not yet make
+queues, deadlines, cancellation, bidirectional half-close, a bounded wake-failure safety poll, and
+shutdown. Windows and Ubuntu 20.04 raw-transfer and Engine-lifecycle fixtures pass, completing
+WP6. Enabling `native` does not yet make
 `Engine::new` select it—HTTP serialization and framing begin in WP7.
 
 ## Project documents
