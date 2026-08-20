@@ -1,8 +1,8 @@
 # WP9 native pooling, redirects, and streaming evidence
 
-Status: **WP9.1 implementation complete on Windows; exact-source Ubuntu acceptance pending.** WP8's
-DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; the conservative
-connection-reuse slice below does not change ordinary `Engine::new` or any GDS backend selection.
+Status: **WP9.1/WP9.2 pooling accepted on Windows and Ubuntu 20.04.** WP8's DNS/TLS owner is
+accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; the conservative connection-reuse
+slice below does not change ordinary `Engine::new` or any GDS backend selection.
 
 ## Frozen pool ownership contract
 
@@ -85,10 +85,29 @@ entry. This is not represented by a fake request and does not weaken request ter
 - Existing cancellation, timeout, TLS dirty-EOF, framing, and failure paths remain destructive and
   never call the pool-return path.
 
-## Remainder before WP9.1 acceptance
+## Ubuntu 20.04 acceptance
 
-- Run the exact committed source on Ubuntu 20.04/Rust 1.85: complete native gate, strict clippy and
-  formatting, repeated reuse/contamination/cap/shutdown modules, and a surviving-process check.
+The final exact source is commit `97d3c13`, archive size 375,527 bytes, SHA-256
+`115A82081745AFE50D17ACE061FBDDDFBD117BA03759CAD028E0F9CE6632BAF5`. The copied archive matched
+before extraction into a fresh directory on `gds-srv-test2`, Ubuntu 20.04.6 x86-64 with Rust,
+Cargo, and Clippy 1.85.0.
+
+The exact tree passes 116 native unit tests, 4 shared adversarial tests, 4 public-contract tests,
+and 2 compile-fail doctests. The dependency-free default passes 41 unit, 4 contract, and 2
+doctests. Warning-denied all-target native/test-support Clippy, formatting, and offline all-feature
+compilation—including the retained curl pilot—all pass.
+
+The complete native HTTP pool module followed by the DNS/TLS module then passes 25 consecutive
+iterations: 50 module runs covering reuse, lease probing, caps/fairness, contamination,
+no-transparent-replay, idle expiry, mixed shutdown, DNS, TLS, and joined lifecycle. No NBReq,
+adversarial, or contract test process survives. The first exact archive usefully exposed only a
+Rust-1.85 Clippy spelling difference in the acquisition deadline scan; commit `97d3c13` applies the
+semantic no-op and reruns every gate from a fresh extraction.
+
+WP9.1 ownership/contamination and WP9.2 conservative reuse are accepted. WP9.3 redirects may begin.
+
+## Accepted boundary and later work
+
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
