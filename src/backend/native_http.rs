@@ -1148,6 +1148,10 @@ impl NativeHttpBackend {
         let Some(mut idle) = self.take_idle(&pending.key) else {
             return Some(pending);
         };
+        if self.reactor.idle_is_quiet(idle.slot) != Ok(true) {
+            self.reactor.cancel(idle.slot);
+            return Some(pending);
+        }
         let deadline = pending.next_deadline();
         let outbound_limit = if idle.tls.is_some() {
             encrypted_outbound_limit(pending.serialized.bytes.len())
@@ -2572,6 +2576,123 @@ mod tests {
         assert_eq!(third.body(), b"three");
         engine.shutdown().expect("reuse-cancel Engine must stop");
         server.join().expect("reuse-cancel fixture must join");
+    }
+
+    #[test]
+    fn manual_lease_probe_rejects_unobserved_bytes_before_reuse() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("lease-probe fixture must bind");
+        let address = listener.local_addr().expect("lease-probe fixture address");
+        let (inject_tx, inject_rx) = std::sync::mpsc::channel();
+        let (injected_tx, injected_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let read_head = |stream: &mut std::net::TcpStream| {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut buffer)
+                        .expect("lease-probe request must read");
+                    assert_ne!(read, 0, "client closed before lease-probe request head");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+            };
+
+            let (mut first, _) = listener
+                .accept()
+                .expect("first lease-probe socket must accept");
+            first
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("first lease-probe timeout");
+            read_head(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none")
+                .expect("first lease-probe response must write");
+            first
+                .flush()
+                .expect("first lease-probe response must flush");
+            inject_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("test must release the injected bytes");
+            first
+                .write_all(b"HTTP/1.1 299 Poison\r\nContent-Length: 4\r\n\r\nfake")
+                .expect("unobserved bytes must write");
+            first.flush().expect("unobserved bytes must flush");
+            injected_tx
+                .send(())
+                .expect("unobserved-byte barrier must signal");
+
+            let mut byte = [0_u8; 1];
+            match first.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
+                Ok(_) => return false,
+                Err(error) => panic!("lease probe did not close poisoned socket: {error}"),
+            }
+
+            let (mut replacement, _) = listener
+                .accept()
+                .expect("clean replacement socket must accept");
+            replacement
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("replacement lease-probe timeout");
+            read_head(&mut replacement);
+            replacement
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ngood")
+                .expect("replacement lease-probe response must write");
+            true
+        });
+
+        let config = EngineConfig::manual();
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
+            .expect("manual lease-probe backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("manual lease-probe Engine must construct");
+        let first = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{address}/one"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("first lease-probe request must build"),
+            )
+            .expect("first lease-probe request must submit");
+        let Completion::Completed(first) = engine
+            .drive_until(first)
+            .expect("first lease-probe request must drive")
+        else {
+            panic!("first lease-probe request did not complete");
+        };
+        assert_eq!(first.body(), b"one");
+        inject_tx.send(()).expect("injected bytes must release");
+        injected_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server must inject bytes before the next drive");
+
+        let second = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{address}/two"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("second lease-probe request must build"),
+            )
+            .expect("second lease-probe request must submit");
+        let Completion::Completed(second) = engine
+            .drive_until(second)
+            .expect("second lease-probe request must drive")
+        else {
+            panic!("second lease-probe request did not complete");
+        };
+        assert_eq!(second.status(), 200);
+        assert_eq!(second.body(), b"good");
+        engine.shutdown().expect("lease-probe Engine must stop");
+        assert!(server.join().expect("lease-probe fixture must join"));
     }
 
     #[test]

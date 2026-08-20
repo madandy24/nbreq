@@ -27,8 +27,11 @@ fails at the HTTP stage and its socket closes. Request serialization no longer g
 
 The native owner retains clean idle entries in maps keyed by the contract above. Initial private
 bounds are 32 idle sockets globally, 4 per origin/policy key, and a 30-second idle lifetime. Leasing
-resets reactor receive accounting, queue bounds, and deadlines. Cleartext writes reuse the socket;
-rustls state stays on the owner and encrypts the next buffered request without another handshake.
+first performs a non-consuming, nonblocking one-byte peek. Readable bytes, FIN, or socket error
+destroy the entry before any new request byte is queued; only a quiet result resets reactor receive
+accounting, queue bounds, and deadlines. Cleartext writes then reuse the socket; rustls state stays
+on the owner and encrypts the next buffered request without another handshake. A close racing after
+the quiet probe fails that request and is never transparently replayed, regardless of method.
 
 Pooling exposed one real lifecycle assumption: the generic spawned loop previously stopped polling
 when its public active-request map became empty. A backend can now declare owner-side idle work, so
@@ -45,6 +48,9 @@ entry. This is not represented by a fake request and does not weaken request ter
 - A response close policy forces the next request onto a second accepted socket.
 - A server-side FIN after a nominally persistent response is detected while idle; 25 repetitions
   prove the entry is evicted and the next request opens a replacement socket.
+- A manual Engine completes and parks one response, then the server injects an entire forged response
+  while no background poll can run. Ten repetitions prove lease-time peek destroys the poisoned
+  socket before request send and the real second response arrives on a replacement connection.
 - A second request leases the first request's clean socket, is cancelled after the server observes
   it, and closes that connection; 10 repetitions prove a third request uses a replacement socket.
 - Existing cancellation, timeout, TLS dirty-EOF, framing, and failure paths remain destructive and
@@ -56,8 +62,9 @@ entry. This is not represented by a fake request and does not weaken request ter
   sockets, TLS close/error after reuse, and shutdown with a mix of idle and leased connections.
 - Add active global/per-origin connection caps, FIFO acquisition pressure, deadline behavior while
   queued, and anti-starvation evidence. The current constants bound idle retention only.
-- Prove cross-origin and TLS-policy isolation under concurrent load, stale-idle failure without
-  replay, idle expiry without waiting 30 wall-clock seconds, and manual-mode reuse.
+- Prove cross-origin and TLS-policy isolation under concurrent load, stale-close failure after a
+  quiet lease probe without replay, idle expiry without waiting 30 wall-clock seconds, and ordinary
+  manual-mode clean reuse.
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency. Pooling reduces handshake frequency but does not make an OS callback interruptible.
 - Redirects remain WP9.3. Incremental upload/download and removal of the one-shot HTTPS body ceiling

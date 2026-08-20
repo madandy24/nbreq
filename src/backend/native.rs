@@ -306,6 +306,28 @@ impl NativeReactor {
         self.reregister(id)
     }
 
+    pub(crate) fn idle_is_quiet(&mut self, id: SlotId) -> Result<bool, NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native idle probe targeted a stale or closed slot")
+        })?;
+        if connection.state != ConnectionState::Connected
+            || connection.peer_read_closed
+            || !connection.outbound.is_empty()
+        {
+            return Ok(false);
+        }
+        let mut byte = [0_u8; 1];
+        match connection.stream.peek(&mut byte) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) => Err(NativeFailure::io(
+                NativeFailureKind::Read,
+                "idle socket probe",
+                &error,
+            )),
+        }
+    }
+
     pub(crate) fn poll(&mut self, deadline: Instant) -> Result<Vec<NativeEvent>, NativeFailure> {
         let wait_until = self
             .nearest_deadline()
