@@ -72,7 +72,9 @@ impl ResolverConfig {
     fn multiple_for_test(nameservers: Vec<SocketAddr>) -> Self {
         Self {
             nameservers,
-            attempt_timeout: Duration::from_millis(20),
+            // This fixture must prove rotation, not make OS scheduling part of DNS policy. Leave
+            // enough room for a loaded CI host to schedule the answering server after failover.
+            attempt_timeout: Duration::from_millis(250),
             attempts: 1,
         }
     }

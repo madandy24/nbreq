@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::{Error, ErrorKind};
 
 const DNS_PORT: u16 = 53;
+#[cfg(windows)]
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_ATTEMPTS: u8 = 3;
 
