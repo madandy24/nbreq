@@ -1,7 +1,7 @@
 # WP7 Rust-native HTTP/1.1 evidence
 
-Status: **Windows cleartext vertical slice passed; WP7 remains open for Ubuntu 20.04 proof and
-review.** Ordinary `Engine::new` still does not select this backend.
+Status: **WP7 accepted on Windows and Ubuntu 20.04.** Ordinary `Engine::new` still does not select
+this backend.
 
 ## Dependency and boundary
 
@@ -54,11 +54,11 @@ Once response bytes begin, socket read failures classify Receive. Malformed reco
 Http, fixed-length premature EOF is Receive, and incomplete chunk framing is Http, matching the
 accepted curl corpus.
 
-## Windows proof
+## Platform proof
 
 `cargo test --offline --no-default-features --features native,test-support` passes:
 
-- 69 unit tests;
+- 70 unit tests;
 - 4 shared public adversarial tests;
 - 4 public-contract tests;
 - 2 compile-fail doctests.
@@ -87,11 +87,38 @@ Current Windows Schannel cannot acquire credentials for registry access or the t
 curl TLS fixtures, so dependency resolution was performed from Cargo's already verified local
 cache and no new curl execution claim is made. No curl source changed.
 
-## Remaining WP7 gate
+The exact corrective source archive for commit `cc96305`, SHA-256
+`70BCAFA3AFE3701991A19E49C55972A2D1D5226B5E73869C154128126E31B95B`, was copied to
+`gds-srv-test2`, Ubuntu 20.04.6 x86-64, and run with Rust/Cargo/Clippy 1.85.0. A fresh extracted
+tree passes the same 70 unit, 4 shared adversarial, 4 public-contract, and 2 compile-fail doctests.
+Strict native/test-support clippy with warnings denied and formatting both pass.
 
-- Run the exact source on Ubuntu 20.04 / Rust 1.85 and repeat the native shared corpus.
-- Review the conservative request-target, request Transfer-Encoding, informational-count, trailer,
-  and reset-stage policies before freezing them.
-- Keep deterministic refused-connect classification with WP8's resolver/connect laboratory.
+The first exact Ubuntu run usefully exposed a real event-batch ordering race: Linux could report
+write progress and then a read-side reset in one reactor pass, after the reactor had already
+removed the socket. The HTTP owner updated useful-progress state but then tried to re-arm the stale
+slot, producing Internal instead of the portable Send result. Commit `81d715e` records terminal
+failure slots before processing the batch, preserves their progress semantics, and suppresses only
+the invalid deadline re-arm. A deterministic same-batch regression now guards that contract.
 
-WP8 must not begin until this cleartext slice is reviewed and its Ubuntu evidence is accepted.
+The subsequent stress run exposed a laboratory problem rather than a transport defect. On the
+small Ubuntu host, repeated 64 MiB allocation/serialization could take longer than the fixture's
+two-second accepted-socket read timeout. The server then reset before observing the request head,
+so Connect was correct and the fixture's Send expectation was false. Commit `cc96305` gives only
+that large-upload precondition a ten-second observation window; the request's five-second total
+deadline remains unchanged, and the server still resets only after seeing the complete head plus
+body progress.
+
+The final exact tree then passes 25 consecutive runs of all 16 native HTTP module tests and 20
+consecutive runs of the ten-trial 64 MiB upload-reset case: 200 observed-progress abortive uploads
+with no failure. No NBReq or adversarial-test process remained after the soak.
+
+## Acceptance and later boundaries
+
+The conservative ASCII origin-form target, buffered-request Transfer-Encoding rejection, bounded
+informational count, validated-but-unexposed trailers, and reset-stage policy are accepted for this
+private cleartext proving backend. They are not yet a consumer-stable native policy freeze; DNS,
+TLS, redirects, reuse, and streaming can supply evidence that deliberately revises them.
+
+WP7 is accepted. Deterministic refused-connect classification remains with WP8's resolver/connect
+laboratory. WP8 may now add DNS and TLS without moving socket ownership, cancellation, framing, or
+the accepted cleartext deadline semantics out of this foundation.

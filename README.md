@@ -71,8 +71,10 @@ queues, deadlines, cancellation, bidirectional half-close, a bounded wake-failur
 shutdown. Windows and Ubuntu 20.04 raw-transfer and Engine-lifecycle fixtures pass, completing
 WP6. WP7 now adds a private cleartext HTTP/1.1 proving backend with pinned `httparse` 1.10.1,
 bounded incremental response framing, all three timeout clocks, and spawned/manual Engine tests.
-It remains literal-IP, one-request-per-connection test support until its Ubuntu/review gate passes.
-Enabling `native` does not make `Engine::new` select it.
+The exact source passes the shared adversarial suite and extended reset soak on Windows and Ubuntu
+20.04, completing WP7. It remains literal-IP, one-request-per-connection test support until WP8
+adds DNS/TLS and later parity work proves consumer selection. Enabling `native` does not make
+`Engine::new` select it.
 
 ## Project documents
 
