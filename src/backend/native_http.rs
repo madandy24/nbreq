@@ -808,6 +808,14 @@ impl NativeHttpFactory {
             tls: Some(NativeTlsConfigs::with_test_root(root_der.into())?),
         })
     }
+
+    pub(super) fn into_backend(self) -> Result<Box<dyn Backend + Send>, Error> {
+        Ok(Box::new(NativeHttpBackend::new(
+            self.limits,
+            self.resolver,
+            self.tls,
+        )?))
+    }
 }
 
 impl BackendFactory for NativeHttpFactory {

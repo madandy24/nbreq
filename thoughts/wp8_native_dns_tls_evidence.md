@@ -23,7 +23,7 @@ default-selection work.
   the existing reactor boundary; plaintext crosses only the private TLS/HTTP boundary. No async
   runtime or TLS worker owns a socket.
 - Resolver and TLS proof constructors remain private test support. `Engine::new` does not select the
-  native backend until WP8/WP9 parity and release-platform gates pass.
+  native backend until later parity and release-platform gates pass.
 
 ## Timeout and cancellation policy
 
@@ -126,8 +126,9 @@ evidence, not WP8 acceptance.
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
 DNS servers only from operational adapters, retains IPv6 scope IDs, ranks them by the applicable
 adapter metric, removes duplicates, and fails closed if none remain. Unix parses `/etc/resolv.conf`,
-clamps retry settings, and rejects scoped link-local IPv6 servers rather than silently discarding an
-interface name. A construction/shutdown fixture initially exposed an unreachable IPv6 server on an
+clamps retry settings, skips scoped link-local IPv6 entries whose textual interface cannot be mapped
+by the selected configuration reader, and fails closed if no usable server remains. A
+construction/shutdown fixture initially exposed an unreachable IPv6 server on an
 otherwise operational Windows adapter; construction now tries the ranked list until the kernel
 accepts a connected UDP route. The fixture proves that selected server, platform TLS configuration,
 resolver thread, and Engine can be created and joined together. A separate two-server fixture proves
@@ -182,8 +183,9 @@ fresh extraction.
   inside an arbitrary operating-system verifier callback.
 - A synthetically oversized peer handshake proves the hard wire ceiling. A valid generated
   certificate chain near that ceiling remains useful stress evidence, but it cannot weaken or
-  replace the bound. Windows platform trust now has one live public HTTPS proof; the exact Ubuntu
-  platform-store run remains. Generated-root success alone does not prove a supported OS store.
+  replace the bound. Windows and exact-source Ubuntu platform trust each have a live public HTTPS
+  proof. Generated-root success remains deterministic policy evidence rather than a substitute for
+  those supported-OS checks.
 - Connection reuse, redirects, streaming/backpressure, proxy policy, and native default selection
   remain WP9/WP10.
 - Parser and DNS wire fuzz targets plus a checked-in seed corpus remain required before native
@@ -194,3 +196,19 @@ unknown root, alert, dirty EOF, and interrupted handshake fail in the intended p
 request cancellation closes resolver/TLS network work promptly; and shutdown leaves no resolver or
 TLS worker alive. WP9 may build pooling, redirects, streaming/backpressure, and production
 connection policy on this owner without reopening the DNS/TLS ownership seam.
+
+## WP9 boundary follow-up
+
+The first WP9 hardening checkpoint gives the resolver the same 50 ms maximum safety poll as the HTTP
+reactor. A deterministic test enters the idle poll, enqueues shutdown without waking it, and proves
+the resolver thread exits inside the 500 ms lifecycle gate. A second end-to-end fixture uses a
+manual Engine and drives injected DNS, verified rustls, request send, and HTTP completion through the
+canonical `drive_until` path.
+
+The current one-shot HTTPS upload boundary is also explicit rather than accidental. A body larger
+than the private 512 KiB TLS flight collector fails at `TransportStage::Send`; it is not mislabeled
+as receive work. WP9 streaming replaces the one-shot plaintext write and ciphertext collection with
+an incremental bounded pump, at which point this temporary regression test must become a successful
+large-upload proof. The Windows native gate at this checkpoint passes 99 unit tests, 4 shared HTTP
+adversarial tests, 4 public-contract tests, and 2 doctests, plus warning-denied native/test-support
+clippy and formatting.

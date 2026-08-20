@@ -155,6 +155,16 @@ pub(crate) fn native_https_factory_with_nameserver_and_test_root(
     ))
 }
 
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_https_backend_with_nameserver_and_test_root(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    root_der: Vec<u8>,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_nameserver_and_test_root(config, nameserver, root_der)?
+        .into_backend()
+}
+
 pub(crate) fn interruptible_poll_deadline(max_wait: Duration) -> Instant {
     Instant::now()
         .checked_add(max_wait)

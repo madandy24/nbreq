@@ -20,7 +20,7 @@ use rustls_platform_verifier::BuilderVerifierExt;
 
 use crate::{Error, ErrorKind, TlsVerification, TransportStage};
 
-const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
+pub(super) const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
 const TLS_PLAINTEXT_CHUNK: usize = 16 * 1024;
 
 #[derive(Clone)]
@@ -170,7 +170,12 @@ impl NativeTls {
                     self.connection
                         .writer()
                         .write_all(&request)
-                        .map_err(|error| tls_io_error(false, "request encryption", error))?;
+                        .map_err(|error| {
+                            Error::transport(
+                                TransportStage::Send,
+                                format!("native TLS request encryption failed: {error}"),
+                            )
+                        })?;
                 }
             }
             self.drain_plaintext(&mut plaintext)?;
@@ -203,8 +208,13 @@ impl NativeTls {
     fn take_outbound(&mut self) -> Result<Vec<u8>, Error> {
         let mut output = BoundedWriter::new(TLS_FLIGHT_LIMIT);
         while self.connection.wants_write() {
+            let stage = if self.connection.is_handshaking() {
+                TransportStage::Tls
+            } else {
+                TransportStage::Send
+            };
             let written = self.connection.write_tls(&mut output).map_err(|error| {
-                tls_io_error(self.connection.is_handshaking(), "record output", error)
+                Error::transport(stage, format!("native TLS record output failed: {error}"))
             })?;
             if written == 0 {
                 break;

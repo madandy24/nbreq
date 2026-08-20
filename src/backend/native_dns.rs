@@ -18,7 +18,7 @@ use hickory_proto::rr::{Name, RData, RecordType};
 use mio::net::{TcpStream, UdpSocket};
 use mio::{Events, Interest, Poll, Token, Waker};
 
-use super::native::NativeWaker;
+use super::native::{NATIVE_SAFETY_POLL, NativeWaker};
 use crate::{Error, ErrorKind};
 
 const WAKE_TOKEN: Token = Token(0);
@@ -145,6 +145,7 @@ struct ResolverState {
     next_tcp_token: usize,
     current_nameserver: usize,
     cache: DnsCache,
+    before_first_poll: Option<Sender<()>>,
 }
 
 #[derive(Clone)]
@@ -234,6 +235,14 @@ pub(super) struct NativeResolver {
 
 impl NativeResolver {
     pub(super) fn new(config: ResolverConfig, result_waker: NativeWaker) -> Result<Self, Error> {
+        Self::new_inner(config, result_waker, None)
+    }
+
+    fn new_inner(
+        config: ResolverConfig,
+        result_waker: NativeWaker,
+        before_first_poll: Option<Sender<()>>,
+    ) -> Result<Self, Error> {
         if config.attempts == 0 || config.attempt_timeout.is_zero() {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -267,6 +276,7 @@ impl NativeResolver {
             next_tcp_token: FIRST_TCP_TOKEN,
             current_nameserver,
             cache: DnsCache::new(),
+            before_first_poll,
         };
         let joined = thread::Builder::new()
             .name("nbreq-native-dns".to_owned())
@@ -447,8 +457,14 @@ fn resolver_main(
             .pending
             .values()
             .map(|query| query.next_attempt.saturating_duration_since(Instant::now()))
-            .min();
-        if poll.poll(&mut events, timeout).is_err() {
+            .min()
+            .map_or(NATIVE_SAFETY_POLL, |timeout| {
+                timeout.min(NATIVE_SAFETY_POLL)
+            });
+        if let Some(barrier) = state.before_first_poll.take() {
+            let _send_result = barrier.send(());
+        }
+        if poll.poll(&mut events, Some(timeout)).is_err() {
             fail_all(
                 &mut state.pending,
                 &mut state.by_key,
@@ -1227,6 +1243,7 @@ mod tests {
 
     use super::*;
     use crate::backend::native::NativeReactor;
+    use crate::backend::native_tls::TLS_FLIGHT_LIMIT;
     use crate::{
         Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, TlsVerification,
         TransportStage,
@@ -1930,6 +1947,39 @@ mod tests {
     }
 
     #[test]
+    fn idle_resolver_safety_poll_recovers_from_a_lost_shutdown_wake() {
+        let silent = StdUdpSocket::bind("127.0.0.1:0").expect("silent DNS socket must bind");
+        let address = silent.local_addr().expect("silent DNS address");
+        let owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let (polling_tx, polling_rx) = test_channel::channel();
+        let mut resolver = NativeResolver::new_inner(
+            ResolverConfig::for_test(address),
+            owner.waker(),
+            Some(polling_tx),
+        )
+        .expect("lost-wake resolver must construct");
+        polling_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver must enter its idle poll");
+
+        let started = Instant::now();
+        resolver
+            .commands
+            .send(Command::Shutdown)
+            .expect("shutdown command must enqueue without waking");
+        resolver
+            .joined
+            .take()
+            .expect("resolver thread must be owned")
+            .join()
+            .expect("resolver thread must survive a lost wake");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "lost resolver wake exceeded the safety gate"
+        );
+    }
+
+    #[test]
     fn hostname_resolution_feeds_the_existing_http_owner() {
         let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
         let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
@@ -2294,5 +2344,132 @@ mod tests {
         assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
         engine.shutdown().expect("TLS limit Engine must stop");
         server.join().expect("TLS limit fixture must join");
+    }
+
+    #[test]
+    fn manual_native_https_drives_dns_tls_and_http_to_completion() {
+        let key = KeyPair::generate().expect("manual HTTPS key must generate");
+        let params = CertificateParams::new(vec!["manual.test".to_owned()])
+            .expect("manual HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("manual HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("manual HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("manual HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manual HTTPS fixture must bind");
+        let address = listener.local_addr().expect("manual HTTPS fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("manual HTTPS fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("manual HTTPS read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("manual HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = tls
+                    .read(&mut buffer)
+                    .expect("manual HTTPS request must read");
+                assert_ne!(read, 0, "client closed before manual HTTPS request");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nmanual")
+                .expect("manual HTTPS response must write");
+            tls.flush().expect("manual HTTPS response must flush");
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let mut engine = crate::testing::native_https_manual_engine_with_nameserver_and_test_root(
+            EngineConfig::manual(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("manual native HTTPS Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get(format!("https://manual.test:{}/manual", address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("manual HTTPS request must build"),
+            )
+            .expect("manual HTTPS request must submit");
+        let completion = engine
+            .drive_until(pending)
+            .expect("manual Engine must drive DNS, TLS, and HTTP");
+        let Completion::Completed(response) = completion else {
+            panic!("manual native HTTPS request did not complete");
+        };
+        assert_eq!(response.body(), b"manual");
+        engine
+            .shutdown()
+            .expect("manual native HTTPS Engine must stop");
+        server.join().expect("manual HTTPS fixture must join");
+    }
+
+    #[test]
+    fn one_shot_https_upload_over_tls_flight_limit_fails_at_send_until_streaming_lands() {
+        let key = KeyPair::generate().expect("large HTTPS key must generate");
+        let params = CertificateParams::new(vec!["large-upload.test".to_owned()])
+            .expect("large HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("large HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("large HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("large HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("large HTTPS fixture must bind");
+        let address = listener.local_addr().expect("large HTTPS fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("large HTTPS fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("large HTTPS read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("large HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut buffer = [0_u8; 1024];
+            loop {
+                match tls.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("large native HTTPS Engine must construct");
+        let result = engine.client().execute(
+            Request::post(format!("https://large-upload.test:{}/", address.port()))
+                .body(vec![b'x'; TLS_FLIGHT_LIMIT + 1])
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("large HTTPS request must build"),
+        );
+        let Err(ExecuteError::Failed(error)) = result else {
+            panic!("one-shot large HTTPS upload must hit the temporary cap, got {result:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(TransportStage::Send));
+        engine.shutdown().expect("large HTTPS Engine must stop");
+        server.join().expect("large HTTPS fixture must join");
     }
 }

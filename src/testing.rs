@@ -124,6 +124,29 @@ pub fn native_https_engine_with_nameserver_and_test_root(
     Engine::with_spawned_factory(config, factory)
 }
 
+/// Creates a manually driven private Rust-native HTTPS proving Engine.
+///
+/// DNS still runs on its Engine-owned resolver thread; the caller owns HTTP and TLS progress by
+/// calling [`Engine::drive`] or [`Engine::drive_until`]. This is test support, not public backend
+/// selection.
+#[cfg(feature = "native")]
+pub fn native_https_manual_engine_with_nameserver_and_test_root(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+    root_der: Vec<u8>,
+) -> Result<Engine, Error> {
+    if config.run_mode() != crate::RunMode::Manual {
+        return Err(Error::new(
+            crate::ErrorKind::WrongMode,
+            "the manual native HTTPS proving constructor requires manual Engine mode",
+        ));
+    }
+    let backend = crate::backend::native_https_backend_with_nameserver_and_test_root(
+        &config, nameserver, root_der,
+    )?;
+    Engine::with_backend(config, backend)
+}
+
 #[cfg(all(test, feature = "curl-pilot"))]
 pub(crate) fn curl_engine_with_test_ca(
     config: EngineConfig,
