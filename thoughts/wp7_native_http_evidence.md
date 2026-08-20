@@ -119,6 +119,12 @@ informational count, validated-but-unexposed trailers, and reset-stage policy ar
 private cleartext proving backend. They are not yet a consumer-stable native policy freeze; DNS,
 TLS, redirects, reuse, and streaming can supply evidence that deliberately revises them.
 
+Every two-part split and the shared adversarial corpus are property coverage, not a fuzzer. A real
+seeded fuzz campaign remains a WP8/WP9 hardening item. Bytes arriving after a complete response in
+one decoder ingest are currently discarded; that is harmless for the one-request,
+`Connection: close` slice and must be revisited before WP9 connection reuse. No Wine native-HTTP
+claim is made.
+
 WP7 is accepted. Deterministic refused-connect classification remains with WP8's resolver/connect
 laboratory. WP8 may now add DNS and TLS without moving socket ownership, cancellation, framing, or
 the accepted cleartext deadline semantics out of this foundation.
