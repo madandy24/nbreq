@@ -65,6 +65,19 @@ pub fn native_http_engine(config: EngineConfig) -> Result<Engine, Error> {
     Engine::with_spawned_factory(config, factory)
 }
 
+/// Creates a private Rust-native HTTP proving Engine with an injected DNS nameserver.
+///
+/// This is a deterministic WP8 laboratory seam, not system resolver configuration and not a
+/// consumer backend-selection API.
+#[cfg(feature = "native")]
+pub fn native_http_engine_with_nameserver(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Result<Engine, Error> {
+    let factory = crate::backend::native_http_factory_with_nameserver(&config, nameserver);
+    Engine::with_spawned_factory(config, factory)
+}
+
 #[cfg(all(test, feature = "curl-pilot"))]
 pub(crate) fn curl_engine_with_test_ca(
     config: EngineConfig,

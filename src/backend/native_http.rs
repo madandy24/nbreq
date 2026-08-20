@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use super::native::{
     NATIVE_SAFETY_POLL, NativeEvent, NativeFailure, NativeFailureKind, NativeReactor, SlotId,
 };
+use super::native_dns::{NativeResolver, ResolveKey, ResolverConfig};
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
 use crate::types::http_origin;
@@ -739,6 +740,7 @@ fn response_body_limit(limit: usize) -> Error {
 #[allow(dead_code)]
 pub(super) struct NativeHttpFactory {
     limits: HttpLimits,
+    resolver: Option<ResolverConfig>,
 }
 
 #[allow(dead_code)]
@@ -746,13 +748,21 @@ impl NativeHttpFactory {
     pub(super) fn new(config: &EngineConfig) -> Self {
         Self {
             limits: HttpLimits::from_config(config),
+            resolver: None,
+        }
+    }
+
+    pub(super) fn new_with_nameserver(config: &EngineConfig, nameserver: SocketAddr) -> Self {
+        Self {
+            limits: HttpLimits::from_config(config),
+            resolver: Some(ResolverConfig::injected(nameserver)),
         }
     }
 }
 
 impl BackendFactory for NativeHttpFactory {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
-        let backend = NativeHttpBackend::new(self.limits)?;
+        let backend = NativeHttpBackend::new(self.limits, self.resolver)?;
         let waker = backend.reactor.waker();
         shared.queue.set_external_waker(Some(Arc::new(move || {
             waker.wake().map_err(|error| {
@@ -820,18 +830,72 @@ impl HttpTransfer {
 
 struct NativeHttpBackend {
     reactor: NativeReactor,
+    resolver: Option<NativeResolver>,
     limits: HttpLimits,
     request_to_slot: HashMap<RequestId, SlotId>,
     transfers: HashMap<SlotId, HttpTransfer>,
+    request_to_resolve: HashMap<RequestId, ResolveKey>,
+    resolves: HashMap<ResolveKey, PendingResolve>,
+    next_resolve_key: u64,
+}
+
+struct PendingResolve {
+    request_id: RequestId,
+    serialized: SerializedRequest,
+    port: u16,
+    body_bearing: bool,
+    connect_deadline: Option<Instant>,
+    total_deadline: Option<Instant>,
+    inactivity_timeout: Option<Duration>,
+    inactivity_deadline: Option<Instant>,
+}
+
+impl PendingResolve {
+    fn next_deadline(&self) -> Option<Instant> {
+        [
+            self.connect_deadline,
+            self.total_deadline,
+            self.inactivity_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn expired_timeout(&self, now: Instant) -> TimeoutKind {
+        if self.total_deadline.is_some_and(|deadline| deadline <= now) {
+            TimeoutKind::Total
+        } else if self
+            .connect_deadline
+            .is_some_and(|deadline| deadline <= now)
+        {
+            TimeoutKind::Connect
+        } else if self
+            .inactivity_deadline
+            .is_some_and(|deadline| deadline <= now)
+        {
+            TimeoutKind::Inactivity
+        } else {
+            TimeoutKind::Unknown
+        }
+    }
 }
 
 impl NativeHttpBackend {
-    fn new(limits: HttpLimits) -> Result<Self, Error> {
+    fn new(limits: HttpLimits, resolver: Option<ResolverConfig>) -> Result<Self, Error> {
+        let reactor = NativeReactor::new(256).map_err(native_internal_error)?;
+        let resolver = resolver
+            .map(|config| NativeResolver::new(config, reactor.waker()))
+            .transpose()?;
         Ok(Self {
-            reactor: NativeReactor::new(256).map_err(native_internal_error)?,
+            reactor,
+            resolver,
             limits,
             request_to_slot: HashMap::new(),
             transfers: HashMap::new(),
+            request_to_resolve: HashMap::new(),
+            resolves: HashMap::new(),
+            next_resolve_key: 1,
         })
     }
 
@@ -849,6 +913,137 @@ impl NativeHttpBackend {
                 completion,
             });
         }
+    }
+
+    fn begin_connection(
+        &mut self,
+        address: SocketAddr,
+        mut pending: PendingResolve,
+    ) -> Option<Completion> {
+        let deadline = pending.next_deadline();
+        let outbound_limit = pending.serialized.bytes.len();
+        let slot = match self.reactor.connect(
+            address,
+            deadline,
+            outbound_limit,
+            self.limits.reactor_receive_limit(),
+        ) {
+            Ok(slot) => slot,
+            Err(failure) => {
+                return Some(Completion::Failed(native_transport_error(failure)));
+            }
+        };
+        if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
+            self.reactor.cancel(slot);
+            return Some(Completion::Failed(native_transport_error(failure)));
+        }
+        let request_id = pending.request_id;
+        let now = Instant::now();
+        pending.inactivity_deadline = pending
+            .inactivity_timeout
+            .and_then(|timeout| now.checked_add(timeout));
+        self.request_to_slot.insert(request_id, slot);
+        self.transfers.insert(
+            slot,
+            HttpTransfer {
+                request_id,
+                decoder: ResponseDecoder::new(pending.serialized.response_to_head, self.limits),
+                body_bearing: pending.body_bearing,
+                response_started: false,
+                connected: false,
+                connect_deadline: pending.connect_deadline,
+                total_deadline: pending.total_deadline,
+                inactivity_timeout: pending.inactivity_timeout,
+                inactivity_deadline: pending.inactivity_deadline,
+            },
+        );
+        None
+    }
+
+    fn process_resolver_results(&mut self) -> Result<Vec<BackendCompletion>, Error> {
+        let results = match &self.resolver {
+            Some(resolver) => resolver.drain()?,
+            None => return Ok(Vec::new()),
+        };
+        let mut completions = Vec::new();
+        for result in results {
+            let Some(pending) = self.resolves.remove(&result.key) else {
+                continue;
+            };
+            self.request_to_resolve.remove(&pending.request_id);
+            match result.result {
+                Ok(answer) => {
+                    let Some(ip) = answer.addresses.into_iter().next() else {
+                        completions.push(BackendCompletion {
+                            id: pending.request_id,
+                            completion: Completion::Failed(Error::transport(
+                                TransportStage::Dns,
+                                "the native resolver returned no usable address",
+                            )),
+                        });
+                        continue;
+                    };
+                    let id = pending.request_id;
+                    if let Some(completion) =
+                        self.begin_connection(SocketAddr::new(ip, pending.port), pending)
+                    {
+                        completions.push(BackendCompletion { id, completion });
+                    }
+                }
+                Err(failure) => completions.push(BackendCompletion {
+                    id: pending.request_id,
+                    completion: Completion::Failed(Error::transport(
+                        TransportStage::Dns,
+                        failure.message,
+                    )),
+                }),
+            }
+        }
+        Ok(completions)
+    }
+
+    fn expire_resolves(&mut self) -> Result<Vec<BackendCompletion>, Error> {
+        let now = Instant::now();
+        let expired = self
+            .resolves
+            .iter()
+            .filter_map(|(key, pending)| {
+                pending
+                    .next_deadline()
+                    .is_some_and(|deadline| deadline <= now)
+                    .then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        let mut completions = Vec::new();
+        for key in expired {
+            let Some(pending) = self.resolves.remove(&key) else {
+                continue;
+            };
+            self.request_to_resolve.remove(&pending.request_id);
+            if let Some(resolver) = &self.resolver {
+                resolver.cancel(key)?;
+            }
+            let timeout = pending.expired_timeout(now);
+            completions.push(BackendCompletion {
+                id: pending.request_id,
+                completion: Completion::Failed(Error::timeout(
+                    timeout,
+                    native_timeout_message(timeout),
+                )),
+            });
+        }
+        Ok(completions)
+    }
+
+    fn next_resolve_key(&mut self) -> Result<ResolveKey, Error> {
+        let key = ResolveKey(self.next_resolve_key);
+        self.next_resolve_key = self.next_resolve_key.checked_add(1).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                "the native resolver request identity space is exhausted",
+            )
+        })?;
+        Ok(key)
     }
 
     fn fail_native(
@@ -1008,15 +1203,6 @@ impl Backend for NativeHttpBackend {
             Ok(origin) => origin,
             Err(error) => return Some(Completion::Failed(error)),
         };
-        let ip = match origin.host.parse::<IpAddr>() {
-            Ok(ip) => ip,
-            Err(_) => {
-                return Some(Completion::Failed(Error::new(
-                    ErrorKind::Unsupported,
-                    "the WP7 native HTTP slice accepts literal IP addresses until DNS lands",
-                )));
-            }
-        };
         let options = request.options();
         let connect_deadline = options
             .connect_timeout
@@ -1027,45 +1213,44 @@ impl Backend for NativeHttpBackend {
         let inactivity_deadline = options
             .inactivity_timeout
             .and_then(|timeout| accepted_at.checked_add(timeout));
-        let deadline = [connect_deadline, total_deadline, inactivity_deadline]
-            .into_iter()
-            .flatten()
-            .min();
-        let outbound_limit = serialized.bytes.len();
-        let slot = match self.reactor.connect(
-            SocketAddr::new(ip, origin.port),
-            deadline,
-            outbound_limit,
-            self.limits.reactor_receive_limit(),
-        ) {
-            Ok(slot) => slot,
-            Err(failure) => {
-                return Some(Completion::Failed(native_transport_error(failure)));
-            }
+        let pending = PendingResolve {
+            request_id: id,
+            serialized,
+            port: origin.port,
+            body_bearing: !request.body().is_empty(),
+            connect_deadline,
+            total_deadline,
+            inactivity_timeout: options.inactivity_timeout,
+            inactivity_deadline,
         };
-        if let Err(failure) = self.reactor.queue_write(slot, &serialized.bytes) {
-            self.reactor.cancel(slot);
-            return Some(Completion::Failed(native_transport_error(failure)));
+        if let Ok(ip) = origin.host.parse::<IpAddr>() {
+            return self.begin_connection(SocketAddr::new(ip, origin.port), pending);
         }
-        self.request_to_slot.insert(id, slot);
-        self.transfers.insert(
-            slot,
-            HttpTransfer {
-                request_id: id,
-                decoder: ResponseDecoder::new(serialized.response_to_head, self.limits),
-                body_bearing: !request.body().is_empty(),
-                response_started: false,
-                connected: false,
-                connect_deadline,
-                total_deadline,
-                inactivity_timeout: options.inactivity_timeout,
-                inactivity_deadline,
-            },
-        );
+        let key = match self.next_resolve_key() {
+            Ok(key) => key,
+            Err(error) => return Some(Completion::Failed(error)),
+        };
+        let Some(resolver) = &self.resolver else {
+            return Some(Completion::Failed(Error::new(
+                ErrorKind::Unsupported,
+                "the native HTTP proving Engine requires an injected resolver for hostnames",
+            )));
+        };
+        if let Err(error) = resolver.resolve(key, origin.host) {
+            return Some(Completion::Failed(error));
+        }
+        self.request_to_resolve.insert(id, key);
+        self.resolves.insert(key, pending);
         None
     }
 
     fn cancel(&mut self, id: RequestId) {
+        if let Some(key) = self.request_to_resolve.remove(&id) {
+            self.resolves.remove(&key);
+            if let Some(resolver) = &self.resolver {
+                let _cancel_result = resolver.cancel(key);
+            }
+        }
         if let Some(slot) = self.request_to_slot.remove(&id) {
             self.transfers.remove(&slot);
             self.reactor.cancel(slot);
@@ -1073,13 +1258,31 @@ impl Backend for NativeHttpBackend {
     }
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
-        let events = self.reactor.poll(deadline).map_err(native_internal_error)?;
-        self.process_events(events)
+        let mut completions = self.process_resolver_results()?;
+        completions.extend(self.expire_resolves()?);
+        let poll_deadline = if completions.is_empty() {
+            deadline
+        } else {
+            Instant::now()
+        };
+        let events = self
+            .reactor
+            .poll(poll_deadline)
+            .map_err(native_internal_error)?;
+        completions.extend(self.process_events(events)?);
+        completions.extend(self.process_resolver_results()?);
+        completions.extend(self.expire_resolves()?);
+        Ok(completions)
     }
 
     fn shutdown(&mut self) -> Result<(), ShutdownError> {
         self.request_to_slot.clear();
         self.transfers.clear();
+        self.request_to_resolve.clear();
+        self.resolves.clear();
+        if let Some(resolver) = &mut self.resolver {
+            resolver.shutdown().map_err(ShutdownError::new)?;
+        }
         self.reactor.shutdown();
         Ok(())
     }
@@ -1145,7 +1348,8 @@ mod tests {
     fn terminal_socket_failure_dominates_same_batch_write_progress() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("batch fixture must bind");
         let address = listener.local_addr().expect("batch fixture address");
-        let mut backend = NativeHttpBackend::new(LIMITS).expect("native backend must construct");
+        let mut backend =
+            NativeHttpBackend::new(LIMITS, None).expect("native backend must construct");
         let deadline = Instant::now() + Duration::from_secs(5);
         let slot = backend
             .reactor
@@ -1537,7 +1741,7 @@ mod tests {
         });
 
         let config = EngineConfig::manual();
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config))
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None)
             .expect("manual native HTTP backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual native HTTP Engine must construct");

@@ -13,6 +13,8 @@ mod curl;
 #[cfg(feature = "native")]
 mod native;
 #[cfg(feature = "native")]
+mod native_dns;
+#[cfg(feature = "native")]
 mod native_http;
 mod scaffold;
 
@@ -96,6 +98,16 @@ pub(crate) fn curl_factory_with_test_ca(
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_http_factory(config: &crate::EngineConfig) -> Box<dyn BackendFactory> {
     Box::new(native_http::NativeHttpFactory::new(config))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_http_factory_with_nameserver(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Box<dyn BackendFactory> {
+    Box::new(native_http::NativeHttpFactory::new_with_nameserver(
+        config, nameserver,
+    ))
 }
 
 pub(crate) fn interruptible_poll_deadline(max_wait: Duration) -> Instant {
