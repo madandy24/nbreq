@@ -100,7 +100,7 @@ the peer has observed ClientHello. The bypass skips certificate-chain and hostna
 rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
 sans-I/O test proves request encryption and response decryption, and the platform verifier
 configuration builds with an explicit Ring provider rather than process-global provider state. The
-complete Windows native suite passes 89 unit, 4 public-contract, and 2 doctests at this point, with
+complete Windows native suite passes 91 unit, 4 public-contract, and 2 doctests at this point, with
 strict clippy and formatting. This is progress evidence, not WP8 acceptance.
 
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
@@ -114,11 +114,19 @@ resolver thread, and Engine can be created and joined together. A separate two-s
 that a kernel-reachable but silent server exhausts its bounded attempt, the owner replaces its
 registered UDP socket, and the same query completes through the next ranked server.
 
+The resolver owner also holds a fixed 256-entry cache. Positive answers retain the DNS TTL up to
+one hour; authoritative NXDOMAIN/no-data results are cached only when the response supplies an SOA
+lifetime, capped at five minutes. Zero-TTL and non-authoritative failures are never cached. Expiry is
+checked before delivery; insertion evicts the least-recently-used entry before crossing the bound.
+Deterministic one-query/two-request fixtures prove positive and authoritative-negative hits, and a
+direct clock fixture proves zero-TTL, expiry, clamp, and capacity behavior. A CNAME that needs a
+second wire query remains uncached until its full-chain TTL can be carried forward.
+
 ## Deliberate remainder
 
-- Bounded positive/negative caching, TTL clamps, search-suffix behavior, and Happy Eyeballs remain
-  after basic system discovery, silent-server failover, and TCP truncation fallback.
-  Discovery of a kernel-reachable ranked server is not yet a production DNS claim.
+- Search-suffix behavior, full CNAME-chain cache lifetime propagation, configurable cache policy,
+  and Happy Eyeballs remain after basic system discovery, bounded caching, silent-server failover,
+  and TCP truncation fallback. This is not yet a production DNS claim.
 - The current slice uses serial A then AAAA lookup and bounded CNAME following. Happy Eyeballs,
   randomized IDs beyond the random sequence seed, adaptive server health, and response-code
   fixtures remain before the resolver can be called consumer-ready. Current failover is a bounded

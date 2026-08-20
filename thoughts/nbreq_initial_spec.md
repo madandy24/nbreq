@@ -495,6 +495,8 @@ The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, 
 
 DNS UDP truncation falls back to an NBReq-owned nonblocking TCP connection on the resolver poll owner. The length prefix and response are incrementally bounded; cancellation and Engine shutdown close that connection and join the resolver exactly like the UDP path.
 
+Native DNS caching is Engine-local and bounded; it is never process-global. Positive records respect an upper TTL clamp, zero-TTL records are not cached, and negative results are cached only when an authoritative DNS response supplies a valid negative lifetime. Expired entries are never delivered, and capacity is enforced before insertion.
+
 Requirements:
 
 - certificate and hostname verification enabled by default;

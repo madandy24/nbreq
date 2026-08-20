@@ -28,6 +28,9 @@ const DNS_PACKET_LIMIT: usize = 4096;
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_ATTEMPTS: u8 = 3;
 const MAX_CNAME_HOPS: u8 = 8;
+const DNS_CACHE_CAPACITY: usize = 256;
+const MAX_POSITIVE_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const MAX_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ResolveKey(pub(super) u64);
@@ -139,6 +142,85 @@ struct ResolverState {
     next_id: u16,
     next_tcp_token: usize,
     current_nameserver: usize,
+    cache: DnsCache,
+}
+
+#[derive(Clone)]
+struct CacheEntry {
+    result: Result<ResolveAnswer, ResolveFailure>,
+    expires: Instant,
+    last_used: u64,
+}
+
+struct DnsCache {
+    entries: HashMap<Name, CacheEntry>,
+    next_use: u64,
+}
+
+impl DnsCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_use: 1,
+        }
+    }
+
+    fn get(&mut self, name: &Name, now: Instant) -> Option<Result<ResolveAnswer, ResolveFailure>> {
+        if self.entries.get(name)?.expires <= now {
+            self.entries.remove(name);
+            return None;
+        }
+        let last_used = self.next_use;
+        self.bump_use();
+        let entry = self.entries.get_mut(name)?;
+        entry.last_used = last_used;
+        Some(entry.result.clone())
+    }
+
+    fn insert(
+        &mut self,
+        name: Name,
+        result: Result<ResolveAnswer, ResolveFailure>,
+        ttl: Duration,
+        maximum_ttl: Duration,
+        now: Instant,
+    ) {
+        if ttl.is_zero() || DNS_CACHE_CAPACITY == 0 {
+            return;
+        }
+        self.entries.retain(|_, entry| entry.expires > now);
+        if self.entries.len() >= DNS_CACHE_CAPACITY && !self.entries.contains_key(&name) {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(name, _)| name.clone())
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        let ttl = ttl.min(maximum_ttl);
+        let Some(expires) = now.checked_add(ttl) else {
+            return;
+        };
+        let last_used = self.next_use;
+        self.bump_use();
+        self.entries.insert(
+            name,
+            CacheEntry {
+                result,
+                expires,
+                last_used,
+            },
+        );
+    }
+
+    fn bump_use(&mut self) {
+        self.next_use = self.next_use.checked_add(1).unwrap_or_else(|| {
+            self.entries.clear();
+            1
+        });
+    }
 }
 
 pub(super) struct NativeResolver {
@@ -182,6 +264,7 @@ impl NativeResolver {
             next_id: u16::from_ne_bytes(initial_id),
             next_tcp_token: FIRST_TCP_TOKEN,
             current_nameserver,
+            cache: DnsCache::new(),
         };
         let joined = thread::Builder::new()
             .name("nbreq-native-dns".to_owned())
@@ -301,9 +384,27 @@ fn resolver_main(
                     if let Some(previous) = state.by_key.remove(&key) {
                         remove_query(previous, &mut state, poll);
                     }
-                    match prepare_query(
+                    let name = match parse_dns_name(&host) {
+                        Ok(name) => name,
+                        Err(failure) => {
+                            send_result(
+                                &results,
+                                &result_waker,
+                                ResolveResult {
+                                    key,
+                                    result: Err(failure),
+                                },
+                            );
+                            continue;
+                        }
+                    };
+                    if let Some(result) = state.cache.get(&name, Instant::now()) {
+                        send_result(&results, &result_waker, ResolveResult { key, result });
+                        continue;
+                    }
+                    match prepare_name_query(
                         key,
-                        &host,
+                        name,
                         RecordType::A,
                         0,
                         &state.pending,
@@ -380,18 +481,11 @@ fn resolver_main(
     }
 }
 
-fn prepare_query(
-    key: ResolveKey,
-    host: &str,
-    record_type: RecordType,
-    cname_hops: u8,
-    pending: &HashMap<u16, PendingQuery>,
-    next_id: &mut u16,
-) -> Result<(u16, PendingQuery), ResolveFailure> {
+fn parse_dns_name(host: &str) -> Result<Name, ResolveFailure> {
     let mut name =
         Name::from_ascii(host).map_err(|_| ResolveFailure::new("the DNS hostname is invalid"))?;
     name.set_fqdn(true);
-    prepare_name_query(key, name, record_type, cname_hops, pending, next_id)
+    Ok(name)
 }
 
 fn prepare_name_query(
@@ -631,6 +725,15 @@ fn finish_answer(
     match result {
         Ok(ParsedAnswer::Answer(answer)) => {
             state.by_key.remove(&query.key);
+            if query.cname_hops == 0 {
+                state.cache.insert(
+                    query.host,
+                    Ok(answer.clone()),
+                    answer.ttl,
+                    MAX_POSITIVE_CACHE_TTL,
+                    Instant::now(),
+                );
+            }
             send_result(
                 results,
                 result_waker,
@@ -679,7 +782,7 @@ fn finish_answer(
                 },
             );
         }
-        Ok(ParsedAnswer::NoRecords) if query.record_type == RecordType::A => {
+        Ok(ParsedAnswer::NoRecords(_)) if query.record_type == RecordType::A => {
             match prepare_name_query(
                 query.key,
                 query.host,
@@ -705,16 +808,49 @@ fn finish_answer(
                 }
             }
         }
-        Ok(ParsedAnswer::NoRecords) => {
+        Ok(ParsedAnswer::NoRecords(negative_ttl)) => {
             state.by_key.remove(&query.key);
+            let failure =
+                ResolveFailure::new("the DNS response contained no usable A or AAAA records");
+            if query.cname_hops == 0 {
+                if let Some(ttl) = negative_ttl {
+                    state.cache.insert(
+                        query.host,
+                        Err(failure.clone()),
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        Instant::now(),
+                    );
+                }
+            }
             send_result(
                 results,
                 result_waker,
                 ResolveResult {
                     key: query.key,
-                    result: Err(ResolveFailure::new(
-                        "the DNS response contained no usable A or AAAA records",
-                    )),
+                    result: Err(failure),
+                },
+            );
+        }
+        Ok(ParsedAnswer::Negative(failure, negative_ttl)) => {
+            state.by_key.remove(&query.key);
+            if query.cname_hops == 0 {
+                if let Some(ttl) = negative_ttl {
+                    state.cache.insert(
+                        query.host,
+                        Err(failure.clone()),
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        Instant::now(),
+                    );
+                }
+            }
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(failure),
                 },
             );
         }
@@ -946,7 +1082,8 @@ fn drive_tcp(
 enum ParsedAnswer {
     Answer(ResolveAnswer),
     Canonical(Name),
-    NoRecords,
+    NoRecords(Option<Duration>),
+    Negative(ResolveFailure, Option<Duration>),
     Truncated,
 }
 
@@ -975,6 +1112,20 @@ fn parse_answer(
     }
     if message.truncated() {
         return Some(Ok(ParsedAnswer::Truncated));
+    }
+    let negative_ttl = message.name_servers().iter().find_map(|record| {
+        let RData::SOA(soa) = record.data() else {
+            return None;
+        };
+        Some(Duration::from_secs(u64::from(
+            record.ttl().min(soa.minimum()),
+        )))
+    });
+    if message.response_code() == ResponseCode::NXDomain {
+        return Some(Ok(ParsedAnswer::Negative(
+            ResolveFailure::new("the DNS server returned NXDomain"),
+            negative_ttl,
+        )));
     }
     if message.response_code() != ResponseCode::NoError {
         return Some(Err(ResolveFailure::new(format!(
@@ -1018,7 +1169,7 @@ fn parse_answer(
         if let Some(canonical) = canonical_target {
             return Some(Ok(ParsedAnswer::Canonical(canonical)));
         }
-        return Some(Ok(ParsedAnswer::NoRecords));
+        return Some(Ok(ParsedAnswer::NoRecords(negative_ttl)));
     }
     Some(Ok(ParsedAnswer::Answer(ResolveAnswer {
         addresses,
@@ -1066,7 +1217,7 @@ mod tests {
     use std::net::UdpSocket as StdUdpSocket;
     use std::sync::mpsc as test_channel;
 
-    use hickory_proto::rr::rdata::{A, AAAA, CNAME};
+    use hickory_proto::rr::rdata::{A, AAAA, CNAME, SOA};
     use hickory_proto::rr::{RData, Record};
     use rcgen::{CertificateParams, KeyPair};
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -1571,6 +1722,135 @@ mod tests {
         resolver
             .shutdown()
             .expect("multi-server resolver must join");
+    }
+
+    #[test]
+    fn positive_and_authoritative_negative_results_are_cached() {
+        let positive = ScriptedDnsFixture::new(1, |request| {
+            let query = request.query().expect("positive cache query").clone();
+            let mut response = Message::new();
+            response
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .add_query(query.clone())
+                .add_answer(Record::from_rdata(
+                    query.name().clone(),
+                    60,
+                    RData::A(A(Ipv4Addr::new(127, 0, 0, 41))),
+                ));
+            response
+        });
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver =
+            NativeResolver::new(ResolverConfig::for_test(positive.address), owner.waker())
+                .expect("positive-cache resolver must construct");
+        for key in [ResolveKey(90), ResolveKey(91)] {
+            resolver
+                .resolve(key, "positive-cache.test".to_owned())
+                .expect("positive-cache resolution must submit");
+            assert_eq!(
+                wait_for_resolution(&mut owner, &resolver)
+                    .result
+                    .expect("positive-cache resolution must succeed")
+                    .addresses,
+                vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 41))]
+            );
+        }
+        resolver
+            .shutdown()
+            .expect("positive-cache resolver must join");
+
+        let negative = ScriptedDnsFixture::new(1, |request| {
+            let query = request.query().expect("negative cache query").clone();
+            let zone = fqdn("test");
+            let mut response = Message::new();
+            response
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .set_response_code(ResponseCode::NXDomain)
+                .add_query(query)
+                .add_name_server(Record::from_rdata(
+                    zone,
+                    60,
+                    RData::SOA(SOA::new(
+                        fqdn("ns.test"),
+                        fqdn("hostmaster.test"),
+                        1,
+                        60,
+                        60,
+                        600,
+                        30,
+                    )),
+                ));
+            response
+        });
+        let mut resolver =
+            NativeResolver::new(ResolverConfig::for_test(negative.address), owner.waker())
+                .expect("negative-cache resolver must construct");
+        for key in [ResolveKey(92), ResolveKey(93)] {
+            resolver
+                .resolve(key, "negative-cache.test".to_owned())
+                .expect("negative-cache resolution must submit");
+            let failure = wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect_err("negative-cache resolution must fail");
+            assert!(failure.message.contains("NXDomain"));
+        }
+        resolver
+            .shutdown()
+            .expect("negative-cache resolver must join");
+    }
+
+    #[test]
+    fn cache_is_bounded_skips_zero_ttl_and_clamps_lifetime() {
+        let now = Instant::now();
+        let answer = ResolveAnswer {
+            addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            ttl: Duration::from_secs(60),
+        };
+        let mut cache = DnsCache::new();
+        cache.insert(
+            fqdn("zero.test"),
+            Ok(answer.clone()),
+            Duration::ZERO,
+            MAX_POSITIVE_CACHE_TTL,
+            now,
+        );
+        assert!(cache.entries.is_empty());
+        let expiring = fqdn("expiring.test");
+        cache.insert(
+            expiring.clone(),
+            Ok(answer.clone()),
+            Duration::from_secs(1),
+            MAX_POSITIVE_CACHE_TTL,
+            now,
+        );
+        assert!(
+            cache
+                .get(
+                    &expiring,
+                    now.checked_add(Duration::from_secs(2))
+                        .expect("fixture future"),
+                )
+                .is_none()
+        );
+        for index in 0..=DNS_CACHE_CAPACITY {
+            cache.insert(
+                fqdn(&format!("entry-{index}.test")),
+                Ok(answer.clone()),
+                MAX_POSITIVE_CACHE_TTL + Duration::from_secs(1),
+                MAX_POSITIVE_CACHE_TTL,
+                now,
+            );
+        }
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+        assert!(!cache.entries.contains_key(&fqdn("entry-0.test")));
+        assert!(cache.entries.values().all(|entry| {
+            entry.expires
+                <= now
+                    .checked_add(MAX_POSITIVE_CACHE_TTL)
+                    .expect("fixture expiry")
+        }));
     }
 
     #[test]
