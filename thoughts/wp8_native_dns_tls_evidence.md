@@ -1,8 +1,9 @@
 # WP8 native DNS and TLS evidence
 
-Status: **in progress — ownership seam frozen on 2026-08-20.** WP7 supplies the accepted socket,
-deadline, cancellation, and HTTP/1.1 owner. This document records WP8 proof as it lands; it is not
-yet a production-native or GDS-selection claim.
+Status: **accepted on 2026-08-20 for the private native backend.** WP7 supplies the accepted socket,
+deadline, cancellation, and HTTP/1.1 owner. This is native DNS/TLS acceptance, not yet a
+production-native or GDS-selection claim; WP9–WP10 retain pooling, redirects, pressure/parity, and
+default-selection work.
 
 ## Frozen ownership seam
 
@@ -141,7 +142,31 @@ Deterministic one-query/two-request fixtures prove positive and authoritative-ne
 direct clock fixture proves zero-TTL, expiry, clamp, and capacity behavior. A CNAME that needs a
 second wire query remains uncached until its full-chain TTL can be carried forward.
 
-## Deliberate remainder
+## Ubuntu 20.04 acceptance
+
+The final exact source is commit `c1f123e`, archive SHA-256
+`777E1123EA2CA95A8D46CF4DDD0D6E2AC8CD2BBC6B734DA00781C91E657C70E2`. It was copied to
+`gds-srv-test2`, verified before extraction, and built in a fresh directory on Ubuntu 20.04.6
+x86-64 with Rust/Cargo/Clippy 1.85.0.
+
+The final tree passes 96 unit tests, 4 public-contract tests, and 2 compile-fail doctests. Strict
+clippy over all targets with `native,test-support` and warnings denied passes; formatting and the
+all-feature compile pass. The reusable proving executable then uses that host's `/etc/resolv.conf`
+discovery and platform trust to complete `https://example.com/` with HTTP 200 and a 559-byte body,
+printing no response content.
+
+The exact tree subsequently passes 25 complete repetitions of the native DNS module followed by
+the native TLS module. This includes UDP/TCP resolution and cancellation, failover, cache,
+generated certificate policy, TLS alert/flight/multi-record/dirty-EOF behavior, HTTPS limits, and
+ClientHello-barrier cancellation. No NBReq test process remains afterward.
+
+The exact-source path found two useful defects rather than being ceremonial. The first archive's
+functional suite passed, but Unix warning-denied lint caught a Windows-only DNS timeout constant
+without a target guard. A later live platform-trust request exposed the multi-record rustls input
+batching bug described above. Both were corrected and the final archive reran every gate from a
+fresh extraction.
+
+## Accepted boundary and deliberate remainder
 
 - Search-suffix behavior, full CNAME-chain cache lifetime propagation, configurable cache policy,
   and Happy Eyeballs remain after basic system discovery, bounded caching, silent-server failover,
@@ -151,8 +176,10 @@ second wire query remains uncached until its full-chain TTL can be carried forwa
   fixtures remain before the resolver can be called consumer-ready. Current failover is a bounded
   ordered walk, not a latency-ranking pool.
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
-  state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
-  targets and must not claim prompt cancellation around an unbounded verifier call without proof.
+  state machine. Network stalls before and after verification remain cancellable through the owner;
+  the verifier callback itself cannot be pre-empted until it returns. Current Windows and Linux
+  platform-trust requests complete normally, but NBReq does not claim a hard cancellation latency
+  inside an arbitrary operating-system verifier callback.
 - A synthetically oversized peer handshake proves the hard wire ceiling. A valid generated
   certificate chain near that ceiling remains useful stress evidence, but it cannot weaken or
   replace the bound. Windows platform trust now has one live public HTTPS proof; the exact Ubuntu
@@ -161,3 +188,9 @@ second wire query remains uncached until its full-chain TTL can be carried forwa
   remain WP9/WP10.
 - Parser and DNS wire fuzz targets plus a checked-in seed corpus remain required before native
   release. Deterministic fragmentation/property tests alone do not close fuzzing.
+
+WP8's acceptance contract is met: valid verified HTTPS succeeds; wrong host, expired certificate,
+unknown root, alert, dirty EOF, and interrupted handshake fail in the intended portable category;
+request cancellation closes resolver/TLS network work promptly; and shutdown leaves no resolver or
+TLS worker alive. WP9 may build pooling, redirects, streaming/backpressure, and production
+connection policy on this owner without reopening the DNS/TLS ownership seam.
