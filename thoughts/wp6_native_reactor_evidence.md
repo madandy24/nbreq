@@ -1,7 +1,7 @@
 # WP6 Rust-native reactor evidence
 
-Status: **Windows foundation slice passed; WP6 remains open for Ubuntu proof and review.** This
-slice is deliberately below DNS, TLS, and HTTP.
+Status: **WP6 accepted on Windows and Ubuntu 20.04.** This slice is deliberately below DNS, TLS,
+and HTTP.
 
 ## Boundary and ownership
 
@@ -73,16 +73,24 @@ The full `--all-features` run remains green alongside curl: 68 unit tests, 5 adv
 tests, 4 public-contract tests, and 2 doctests. Native-only and all-feature clippy runs pass with
 warnings denied; formatting is clean.
 
-## Remaining WP6 gates
+## Ubuntu 20.04 proof
 
-- Run the native-only suite on the Ubuntu 20.04 / Rust 1.85 target and record poll/wake behaviour.
-- Review resource cleanup under a longer repeated/high-concurrency run and, where available, an
-  OS handle/socket baseline.
-- Decide whether deterministic refused-connect/firewall fixtures belong at the end of WP6 or with
-  the DNS/connect stage laboratory; finite native deadlines already close and release the slot.
-- Retain the feature as a private foundation: ordinary `Engine::new` must not silently select it
-  until the HTTP backend exists and the later parity gates pass.
+The exact `b367247` source archive, SHA-256
+`356B588EE03A52EEE5898E12CFBC5CAC15B7C7C467E9709F9E0C14E445D3FF33`, was copied to
+`gds-srv-test2`, Ubuntu 20.04.6, and run with Rust/Cargo 1.85.0. The native suite passes 51 unit
+tests, 4 public-contract tests, and 2 doctests in 0.49 seconds after its initial dependency build.
+Strict native clippy with warnings denied and formatting both pass. The ten native fixtures then
+passed 25 consecutive iterations in seven seconds, after which no NBReq test executable remained.
 
-WP7 may begin only after this foundation is reviewed and the remaining WP6 platform evidence is
-accepted. WP7 will add HTTP/1.1 serialization and framing with `httparse`; it must not move socket
-ownership or cancellation out of this core.
+## Acceptance and later boundaries
+
+WP6 is accepted. Windows and Ubuntu prove the same readiness, wake, raw-transfer, cancellation,
+manual movement, and teardown contract. Deterministic firewall/refused-connect classification
+belongs with the later DNS/connect stage laboratory: this core already proves cancellation of a
+connecting slot and deadline-driven release without relying on machine firewall policy.
+
+The feature remains a private foundation. Ordinary `Engine::new` must not silently select it until
+the HTTP backend exists and the later parity gates pass.
+
+WP7 may now add HTTP/1.1 serialization and framing with `httparse`; it must not move socket
+ownership or cancellation out of this accepted core.
