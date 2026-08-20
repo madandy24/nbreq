@@ -99,9 +99,19 @@ rejection as `TransportStage::Tls`, the explicit chain-and-hostname bypass, and 
 the peer has observed ClientHello. The bypass skips certificate-chain and hostname acceptance only;
 rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
 sans-I/O test proves request encryption and response decryption, and the platform verifier
-configuration builds with an explicit Ring provider rather than process-global provider state. The
-complete Windows native suite passes 91 unit, 4 public-contract, and 2 doctests at this point, with
-strict clippy and formatting. This is progress evidence, not WP8 acceptance.
+configuration builds with an explicit Ring provider rather than process-global provider state.
+
+The TLS abuse seam is now explicit. A peer alert during handshake is a `Tls`-stage transport
+failure. Incoming handshake bytes and outgoing rustls flights each have a fixed 512 KiB private
+budget checked before owned growth. A real encrypted chunked response proves the portable
+plaintext response-body limit still wins after decryption. A real server that encrypts a
+close-delimited response and then drops TCP without `close_notify` is rejected at `Receive` rather
+than being accepted as authenticated EOF; cleartext HTTP retains its ordinary FIN-delimited rule.
+The first complete run of these fixtures exposed a parallel-test-only Windows port-reservation
+race in the DNS-over-TCP laboratory. The fixture now reserves the shared UDP/TCP numeric port in
+the Windows-compatible order and retries collisions. The complete Windows native suite passes 95
+unit, 4 public-contract, and 2 doctests at this point, with strict clippy and formatting. This is
+progress evidence, not WP8 acceptance.
 
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
 DNS servers only from operational adapters, retains IPv6 scope IDs, ranks them by the applicable
@@ -134,8 +144,9 @@ second wire query remains uncached until its full-chain TTL can be carried forwa
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
   state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.
-- Native TLS-alert, abrupt encrypted EOF, large certificate-chain, and encrypted response-limit
-  fixtures remain. Verified system/platform trust has only a configuration smoke test so far;
+- A synthetically oversized peer handshake proves the hard wire ceiling. A valid generated
+  certificate chain near that ceiling remains useful stress evidence, but it cannot weaken or
+  replace the bound. Verified system/platform trust has only a configuration smoke test so far;
   generated-root success does not prove the supported OS stores.
 - Connection reuse, redirects, streaming/backpressure, proxy policy, and native default selection
   remain WP9/WP10.

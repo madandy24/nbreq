@@ -1225,7 +1225,10 @@ mod tests {
 
     use super::*;
     use crate::backend::native::NativeReactor;
-    use crate::{Completion, EngineConfig, ExecuteError, Request, TlsVerification, TransportStage};
+    use crate::{
+        Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, TlsVerification,
+        TransportStage,
+    };
 
     struct DnsFixture {
         address: SocketAddr,
@@ -1449,14 +1452,30 @@ mod tests {
         }
     }
 
+    fn bind_dns_tcp_udp_pair(context: &str) -> (TcpListener, StdUdpSocket, SocketAddr) {
+        for _ in 0..64 {
+            // Windows may refuse a UDP bind to a numeric port already selected by a TCP
+            // listener, while accepting the reverse reservation order. Claim UDP first and retry
+            // if another parallel fixture owns the matching TCP number.
+            let udp = StdUdpSocket::bind("127.0.0.1:0")
+                .unwrap_or_else(|error| panic!("{context}: UDP bind failed: {error}"));
+            let address = udp
+                .local_addr()
+                .unwrap_or_else(|error| panic!("{context}: UDP address failed: {error}"));
+            match TcpListener::bind(address) {
+                Ok(listener) => return (listener, udp, address),
+                Err(_) => continue,
+            }
+        }
+        panic!("{context}: could not reserve one numeric port for both TCP and UDP");
+    }
+
     #[test]
     fn truncated_udp_response_falls_back_to_fragmented_tcp() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("DNS TCP fixture must bind");
+        let (listener, udp, address) = bind_dns_tcp_udp_pair("DNS fallback fixture");
         listener
             .set_nonblocking(true)
             .expect("DNS TCP listener must be nonblocking");
-        let address = listener.local_addr().expect("DNS TCP fixture address");
-        let udp = StdUdpSocket::bind(address).expect("DNS UDP fixture must share the TCP port");
         udp.set_read_timeout(Some(Duration::from_secs(2)))
             .expect("DNS UDP fixture timeout");
         let joined = thread::spawn(move || {
@@ -1540,12 +1559,10 @@ mod tests {
 
     #[test]
     fn cancellation_closes_an_active_dns_tcp_fallback() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("DNS TCP barrier must bind");
+        let (listener, udp, address) = bind_dns_tcp_udp_pair("DNS cancellation fixture");
         listener
             .set_nonblocking(true)
             .expect("DNS TCP barrier must be nonblocking");
-        let address = listener.local_addr().expect("DNS TCP barrier address");
-        let udp = StdUdpSocket::bind(address).expect("DNS UDP barrier must share the TCP port");
         udp.set_read_timeout(Some(Duration::from_secs(2)))
             .expect("DNS UDP barrier timeout");
         let (accepted_tx, accepted_rx) = test_channel::channel();
@@ -2155,5 +2172,125 @@ mod tests {
         let started = Instant::now();
         engine.shutdown().expect("TLS stall Engine must stop");
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn https_rejects_dirty_close_delimited_eof() {
+        let key = KeyPair::generate().expect("dirty EOF key must generate");
+        let params = CertificateParams::new(vec!["dirty.test".to_owned()])
+            .expect("dirty EOF parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("dirty EOF certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("dirty EOF versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("dirty EOF identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("dirty EOF fixture must bind");
+        let address = listener.local_addr().expect("dirty EOF fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("dirty EOF fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("dirty EOF read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("dirty EOF server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = tls.read(&mut buffer).expect("dirty EOF request must read");
+                assert_ne!(read, 0, "client closed before dirty EOF request");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            tls.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial")
+                .expect("dirty EOF response must encrypt");
+            tls.flush().expect("dirty EOF response must flush");
+            // Dropping the transport without send_close_notify deliberately produces raw TCP EOF.
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("dirty EOF Engine must construct");
+        let result = engine.client().execute(
+            Request::get(format!("https://dirty.test:{}/", address.port()))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("dirty EOF request must build"),
+        );
+        let Err(ExecuteError::Failed(error)) = result else {
+            panic!("dirty TLS EOF must fail, got {result:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(TransportStage::Receive));
+        engine.shutdown().expect("dirty EOF Engine must stop");
+        server.join().expect("dirty EOF fixture must join");
+    }
+
+    #[test]
+    fn https_plaintext_response_limit_wins_before_buffer_growth() {
+        let key = KeyPair::generate().expect("TLS limit key must generate");
+        let params = CertificateParams::new(vec!["limit.test".to_owned()])
+            .expect("TLS limit parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("TLS limit certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("TLS limit versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("TLS limit identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS limit fixture must bind");
+        let address = listener.local_addr().expect("TLS limit fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("TLS limit fixture must accept");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("TLS limit server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = tls.read(&mut buffer).expect("TLS limit request must read");
+                assert_ne!(read, 0, "client closed before TLS limit request");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            tls.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n",
+            )
+            .expect("TLS oversize response must encrypt");
+            tls.flush().expect("TLS oversize response must flush");
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned().with_max_response_body_bytes(4),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("TLS limit Engine must construct");
+        let result = engine.client().execute(
+            Request::get(format!("https://limit.test:{}/", address.port()))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("TLS limit request must build"),
+        );
+        let Err(ExecuteError::Failed(error)) = result else {
+            panic!("oversize TLS plaintext must fail, got {result:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::Limit);
+        assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+        engine.shutdown().expect("TLS limit Engine must stop");
+        server.join().expect("TLS limit fixture must join");
     }
 }

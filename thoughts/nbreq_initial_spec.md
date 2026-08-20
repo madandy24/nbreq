@@ -507,7 +507,11 @@ Requirements:
 - the existing GDS no-verify configuration remains supported for deployments that still require it; the bypass is explicit, prominently named, never the library default, and recorded in safe diagnostics. The likely legacy motivation is an older installation's trust store or TLS backend not recognising a newer issuing chain/root, but WP4/WP5 must confirm that history rather than encoding the recollection as security policy;
 - integration tests must determine whether the legacy switch disables chain validation, hostname validation, or both, and map that behaviour deliberately rather than broadening it accidentally;
 - TLS errors are distinguishable from TCP and HTTP errors;
-- cancellation works during handshake and encrypted reads/writes.
+- cancellation works during handshake and encrypted reads/writes;
+- TLS handshake and record buffering is bounded before growth independently of HTTP plaintext
+  limits;
+- a close-delimited HTTPS response completes only after authenticated TLS `close_notify`; raw TCP
+  EOF is a receive failure and cannot silently weaken truncation protection.
 
 The curl pilot's generated local fixture already proves verified success with a request-scoped
 direct trust anchor, wrong-host rejection, unknown-root rejection, expired-certificate rejection,

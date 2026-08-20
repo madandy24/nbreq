@@ -104,6 +104,7 @@ impl NativeTlsConfigs {
         Ok(NativeTls {
             connection,
             request: Some(request),
+            handshake_received: 0,
         })
     }
 }
@@ -111,6 +112,7 @@ impl NativeTlsConfigs {
 pub(super) struct NativeTls {
     connection: ClientConnection,
     request: Option<Vec<u8>>,
+    handshake_received: usize,
 }
 
 #[derive(Debug)]
@@ -128,6 +130,15 @@ impl NativeTls {
 
     pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
         let was_handshaking = self.connection.is_handshaking();
+        if was_handshaking {
+            self.handshake_received = self
+                .handshake_received
+                .checked_add(encrypted.len())
+                .ok_or_else(tls_handshake_flight_limit)?;
+            if self.handshake_received > TLS_FLIGHT_LIMIT {
+                return Err(tls_handshake_flight_limit());
+            }
+        }
         let consumed = self
             .connection
             .read_tls(&mut Cursor::new(encrypted))
@@ -295,6 +306,13 @@ fn tls_io_error(handshaking: bool, operation: &str, error: io::Error) -> Error {
         TransportStage::Receive
     };
     Error::transport(stage, format!("native TLS {operation} failed: {error}"))
+}
+
+fn tls_handshake_flight_limit() -> Error {
+    Error::new(
+        ErrorKind::Limit,
+        "the native TLS peer handshake exceeded its private wire budget",
+    )
 }
 
 #[cfg(test)]
@@ -493,5 +511,48 @@ mod tests {
         let expired_error = first_server_flight(&mut expired_client, expired, expired_key)
             .expect_err("expired certificate must fail");
         assert_eq!(expired_error.transport_stage(), Some(TransportStage::Tls));
+    }
+
+    #[test]
+    fn explicit_peer_alert_is_a_tls_stage_failure() {
+        let (cert, _) = identity();
+        let configs = NativeTlsConfigs::with_test_root(cert).expect("TLS client config must build");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("TLS client state must build");
+        let _client_hello = client.start().expect("ClientHello must encode");
+
+        // A plaintext TLS alert is permitted before encrypted handshake traffic begins.
+        let alert = [21, 3, 3, 0, 2, 2, 40];
+        let error = client
+            .receive(&alert)
+            .expect_err("peer handshake alert must fail");
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+    }
+
+    #[test]
+    fn incoming_and_outgoing_tls_flights_are_bounded_before_growth() {
+        let mut writer = BoundedWriter::new(4);
+        writer.write_all(b"four").expect("bounded write must fit");
+        assert_eq!(writer.bytes.len(), 4);
+        let error = writer
+            .write_all(b"x")
+            .expect_err("bounded writer must reject overflow");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(writer.bytes.len(), 4);
+
+        let (cert, _) = identity();
+        let configs = NativeTlsConfigs::with_test_root(cert).expect("TLS client config must build");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("TLS client state must build");
+        let _client_hello = client.start().expect("ClientHello must encode");
+        let oversized = vec![0_u8; TLS_FLIGHT_LIMIT + 1];
+        let error = client
+            .receive(&oversized)
+            .expect_err("oversized peer handshake must fail before rustls input");
+        assert_eq!(error.kind(), ErrorKind::Limit);
+        assert_eq!(client.handshake_received, TLS_FLIGHT_LIMIT + 1);
     }
 }

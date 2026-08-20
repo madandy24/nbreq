@@ -1335,17 +1335,28 @@ impl NativeHttpBackend {
                     self.handle_data(slot, bytes, !failed_slots.contains(&slot), &mut completions)?;
                 }
                 NativeEvent::PeerClosed(slot) => {
-                    if self
+                    let tls_state = self
                         .transfers
                         .get(&slot)
                         .and_then(|transfer| transfer.tls.as_ref())
-                        .is_some_and(NativeTls::is_handshaking)
-                    {
+                        .map(|tls| tls.is_handshaking());
+                    if tls_state == Some(true) {
                         self.finish(
                             slot,
                             Completion::Failed(Error::transport(
                                 TransportStage::Tls,
                                 "the peer closed during the TLS handshake",
+                            )),
+                            &mut completions,
+                        );
+                        continue;
+                    }
+                    if tls_state == Some(false) {
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::transport(
+                                TransportStage::Receive,
+                                "the TLS peer closed without an authenticated close notification",
                             )),
                             &mut completions,
                         );
