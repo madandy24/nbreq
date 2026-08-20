@@ -113,6 +113,7 @@ pub(super) struct NativeTls {
     request: Option<Vec<u8>>,
 }
 
+#[derive(Debug)]
 pub(super) struct TlsProgress {
     pub(super) outbound: Vec<u8>,
     pub(super) plaintext: Vec<u8>,
@@ -302,14 +303,25 @@ mod tests {
     use rustls::ServerConnection;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
-    use rcgen::{CertificateParams, KeyPair};
+    use rcgen::{CertificateParams, KeyPair, date_time_ymd};
 
     use super::*;
 
     fn identity() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+        identity_for("resolved.test", false)
+    }
+
+    fn identity_for(
+        host: &str,
+        expired: bool,
+    ) -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
         let key = KeyPair::generate().expect("TLS test key must generate");
-        let params = CertificateParams::new(vec!["resolved.test".to_owned()])
-            .expect("TLS test parameters must build");
+        let mut params =
+            CertificateParams::new(vec![host.to_owned()]).expect("TLS test parameters must build");
+        if expired {
+            params.not_before = date_time_ymd(2010, 1, 1);
+            params.not_after = date_time_ymd(2011, 1, 1);
+        }
         let cert = params
             .self_signed(&key)
             .expect("TLS test certificate must sign");
@@ -332,6 +344,29 @@ mod tests {
                 .expect("TLS server identity must configure");
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Arc::new(config)
+    }
+
+    fn first_server_flight(
+        client: &mut NativeTls,
+        cert: CertificateDer<'static>,
+        key: PrivateKeyDer<'static>,
+    ) -> Result<TlsProgress, Error> {
+        let mut server =
+            ServerConnection::new(server_config(cert, key)).expect("TLS server state must build");
+        let client_hello = client.start().expect("ClientHello must encode");
+        server
+            .read_tls(&mut Cursor::new(client_hello))
+            .expect("server ClientHello must read");
+        server
+            .process_new_packets()
+            .expect("server ClientHello must process");
+        let mut server_flight = Vec::new();
+        while server.wants_write() {
+            server
+                .write_tls(&mut server_flight)
+                .expect("server flight must encode");
+        }
+        client.receive(&server_flight)
     }
 
     #[test]
@@ -433,5 +468,30 @@ mod tests {
     #[test]
     fn platform_verifier_config_constructs_without_global_provider_state() {
         NativeTlsConfigs::platform().expect("platform TLS configuration must construct");
+    }
+
+    #[test]
+    fn verified_unknown_root_and_expired_certificate_fail_at_tls() {
+        let (trusted, _) = identity_for("resolved.test", false);
+        let configs = NativeTlsConfigs::with_test_root(trusted)
+            .expect("trusted TLS client config must build");
+
+        let (unknown, unknown_key) = identity_for("resolved.test", false);
+        let mut unknown_client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("unknown-root client state must build");
+        let unknown_error = first_server_flight(&mut unknown_client, unknown, unknown_key)
+            .expect_err("unknown root must fail");
+        assert_eq!(unknown_error.transport_stage(), Some(TransportStage::Tls));
+
+        let (expired, expired_key) = identity_for("resolved.test", true);
+        let expired_configs = NativeTlsConfigs::with_test_root(expired.clone())
+            .expect("expired-root client config must build");
+        let mut expired_client = expired_configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("expired client state must build");
+        let expired_error = first_server_flight(&mut expired_client, expired, expired_key)
+            .expect_err("expired certificate must fail");
+        assert_eq!(expired_error.transport_stage(), Some(TransportStage::Tls));
     }
 }

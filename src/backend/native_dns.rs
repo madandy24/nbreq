@@ -5,7 +5,7 @@
 //! Hickory is used only for DNS wire encoding and decoding. NBReq owns the socket, poll loop,
 //! retry clock, command/result queues, cancellation, wakeup, and joined shutdown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -26,6 +26,7 @@ const SOCKET_TOKEN: Token = Token(1);
 const DNS_PACKET_LIMIT: usize = 4096;
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_ATTEMPTS: u8 = 3;
+const MAX_CNAME_HOPS: u8 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ResolveKey(pub(super) u64);
@@ -89,6 +90,8 @@ enum Command {
 struct PendingQuery {
     key: ResolveKey,
     host: Name,
+    record_type: RecordType,
+    cname_hops: u8,
     wire: Vec<u8>,
     attempts_sent: u8,
     next_attempt: Instant,
@@ -231,19 +234,10 @@ fn resolver_main(
                     if let Some(previous) = by_key.remove(&key) {
                         pending.remove(&previous);
                     }
-                    match prepare_query(&host, &pending, &mut next_id) {
+                    match prepare_query(key, &host, RecordType::A, 0, &pending, &mut next_id) {
                         Ok((id, query)) => {
                             by_key.insert(key, id);
-                            pending.insert(
-                                id,
-                                PendingQuery {
-                                    key,
-                                    host: query.0,
-                                    wire: query.1,
-                                    attempts_sent: 0,
-                                    next_attempt: Instant::now(),
-                                },
-                            );
+                            pending.insert(id, query);
                         }
                         Err(failure) => send_result(
                             &results,
@@ -297,30 +291,62 @@ fn resolver_main(
             .iter()
             .any(|event| event.token() == SOCKET_TOKEN && event.is_readable());
         if socket_ready {
-            receive_packets(socket, &mut pending, &mut by_key, &results, &result_waker);
+            receive_packets(
+                socket,
+                &mut pending,
+                &mut by_key,
+                &results,
+                &result_waker,
+                &mut next_id,
+            );
         }
     }
 }
 
 fn prepare_query(
+    key: ResolveKey,
     host: &str,
+    record_type: RecordType,
+    cname_hops: u8,
     pending: &HashMap<u16, PendingQuery>,
     next_id: &mut u16,
-) -> Result<(u16, (Name, Vec<u8>)), ResolveFailure> {
+) -> Result<(u16, PendingQuery), ResolveFailure> {
     let mut name =
         Name::from_ascii(host).map_err(|_| ResolveFailure::new("the DNS hostname is invalid"))?;
     name.set_fqdn(true);
+    prepare_name_query(key, name, record_type, cname_hops, pending, next_id)
+}
+
+fn prepare_name_query(
+    key: ResolveKey,
+    name: Name,
+    record_type: RecordType,
+    cname_hops: u8,
+    pending: &HashMap<u16, PendingQuery>,
+    next_id: &mut u16,
+) -> Result<(u16, PendingQuery), ResolveFailure> {
     let id = allocate_id(pending, next_id)
         .ok_or_else(|| ResolveFailure::new("the native resolver transaction space is exhausted"))?;
     let mut message = Message::new();
     message
         .set_id(id)
         .set_recursion_desired(true)
-        .add_query(Query::query(name.clone(), RecordType::A));
+        .add_query(Query::query(name.clone(), record_type));
     let wire = message
         .to_vec()
         .map_err(|_| ResolveFailure::new("the DNS query could not be encoded"))?;
-    Ok((id, (name, wire)))
+    Ok((
+        id,
+        PendingQuery {
+            key,
+            host: name,
+            record_type,
+            cname_hops,
+            wire,
+            attempts_sent: 0,
+            next_attempt: Instant::now(),
+        },
+    ))
 }
 
 fn allocate_id(pending: &HashMap<u16, PendingQuery>, next_id: &mut u16) -> Option<u16> {
@@ -396,6 +422,7 @@ fn receive_packets(
     by_key: &mut HashMap<ResolveKey, u16>,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
+    next_id: &mut u16,
 ) {
     let mut buffer = [0_u8; DNS_PACKET_LIMIT];
     loop {
@@ -411,30 +438,130 @@ fn receive_packets(
         let Some(query) = pending.get(&id) else {
             continue;
         };
-        let result = parse_answer(&buffer[..length], id, &query.host);
+        let result = parse_answer(&buffer[..length], id, &query.host, query.record_type);
         let Some(result) = result else {
             continue;
         };
         let Some(query) = pending.remove(&id) else {
             continue;
         };
-        by_key.remove(&query.key);
-        send_result(
-            results,
-            result_waker,
-            ResolveResult {
-                key: query.key,
-                result,
-            },
-        );
+        match result {
+            Ok(ParsedAnswer::Answer(answer)) => {
+                by_key.remove(&query.key);
+                send_result(
+                    results,
+                    result_waker,
+                    ResolveResult {
+                        key: query.key,
+                        result: Ok(answer),
+                    },
+                );
+            }
+            Ok(ParsedAnswer::Canonical(canonical)) if query.cname_hops < MAX_CNAME_HOPS => {
+                match prepare_name_query(
+                    query.key,
+                    canonical,
+                    query.record_type,
+                    query.cname_hops + 1,
+                    pending,
+                    next_id,
+                ) {
+                    Ok((next, replacement)) => {
+                        by_key.insert(query.key, next);
+                        pending.insert(next, replacement);
+                    }
+                    Err(failure) => {
+                        by_key.remove(&query.key);
+                        send_result(
+                            results,
+                            result_waker,
+                            ResolveResult {
+                                key: query.key,
+                                result: Err(failure),
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(ParsedAnswer::Canonical(_)) => {
+                by_key.remove(&query.key);
+                send_result(
+                    results,
+                    result_waker,
+                    ResolveResult {
+                        key: query.key,
+                        result: Err(ResolveFailure::new(
+                            "the DNS CNAME chain exceeds the private hop limit",
+                        )),
+                    },
+                );
+            }
+            Ok(ParsedAnswer::NoRecords) if query.record_type == RecordType::A => {
+                match prepare_name_query(
+                    query.key,
+                    query.host,
+                    RecordType::AAAA,
+                    query.cname_hops,
+                    pending,
+                    next_id,
+                ) {
+                    Ok((next, replacement)) => {
+                        by_key.insert(query.key, next);
+                        pending.insert(next, replacement);
+                    }
+                    Err(failure) => {
+                        by_key.remove(&query.key);
+                        send_result(
+                            results,
+                            result_waker,
+                            ResolveResult {
+                                key: query.key,
+                                result: Err(failure),
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(ParsedAnswer::NoRecords) => {
+                by_key.remove(&query.key);
+                send_result(
+                    results,
+                    result_waker,
+                    ResolveResult {
+                        key: query.key,
+                        result: Err(ResolveFailure::new(
+                            "the DNS response contained no usable A or AAAA records",
+                        )),
+                    },
+                );
+            }
+            Err(failure) => {
+                by_key.remove(&query.key);
+                send_result(
+                    results,
+                    result_waker,
+                    ResolveResult {
+                        key: query.key,
+                        result: Err(failure),
+                    },
+                );
+            }
+        }
     }
+}
+
+enum ParsedAnswer {
+    Answer(ResolveAnswer),
+    Canonical(Name),
+    NoRecords,
 }
 
 fn parse_answer(
     bytes: &[u8],
     expected_id: u16,
     expected_name: &Name,
-) -> Option<Result<ResolveAnswer, ResolveFailure>> {
+    expected_type: RecordType,
+) -> Option<Result<ParsedAnswer, ResolveFailure>> {
     let message = match Message::from_vec(bytes) {
         Ok(message) => message,
         Err(_) => {
@@ -448,7 +575,7 @@ fn parse_answer(
     }
     if message.queries().len() != 1
         || message.queries()[0].name() != expected_name
-        || message.queries()[0].query_type() != RecordType::A
+        || message.queries()[0].query_type() != expected_type
     {
         return None;
     }
@@ -463,25 +590,48 @@ fn parse_answer(
             message.response_code()
         ))));
     }
-    let mut addresses = Vec::new();
+    let mut accepted_names = HashSet::from([expected_name.clone()]);
+    let mut canonical_target = None;
     let mut ttl = u32::MAX;
-    for answer in message.answers() {
-        if answer.name() == expected_name {
-            if let RData::A(address) = answer.data() {
-                addresses.push(IpAddr::V4(address.0));
-                ttl = ttl.min(answer.ttl());
+    for _ in 0..MAX_CNAME_HOPS {
+        let mut added = false;
+        for answer in message.answers() {
+            if accepted_names.contains(answer.name()) {
+                if let RData::CNAME(canonical) = answer.data() {
+                    if accepted_names.insert(canonical.0.clone()) {
+                        ttl = ttl.min(answer.ttl());
+                        canonical_target = Some(canonical.0.clone());
+                        added = true;
+                    }
+                }
             }
         }
+        if !added {
+            break;
+        }
+    }
+    let mut addresses = Vec::new();
+    for answer in message.answers() {
+        if !accepted_names.contains(answer.name()) {
+            continue;
+        }
+        match (expected_type, answer.data()) {
+            (RecordType::A, RData::A(address)) => addresses.push(IpAddr::V4(address.0)),
+            (RecordType::AAAA, RData::AAAA(address)) => addresses.push(IpAddr::V6(address.0)),
+            _ => continue,
+        }
+        ttl = ttl.min(answer.ttl());
     }
     if addresses.is_empty() {
-        return Some(Err(ResolveFailure::new(
-            "the DNS response contained no usable A records",
-        )));
+        if let Some(canonical) = canonical_target {
+            return Some(Ok(ParsedAnswer::Canonical(canonical)));
+        }
+        return Some(Ok(ParsedAnswer::NoRecords));
     }
-    Some(Ok(ResolveAnswer {
+    Some(Ok(ParsedAnswer::Answer(ResolveAnswer {
         addresses,
         ttl: Duration::from_secs(u64::from(ttl)),
-    }))
+    })))
 }
 
 fn send_result(results: &Sender<ResolveResult>, waker: &NativeWaker, result: ResolveResult) {
@@ -524,7 +674,7 @@ mod tests {
     use std::net::UdpSocket as StdUdpSocket;
     use std::sync::mpsc as test_channel;
 
-    use hickory_proto::rr::rdata::A;
+    use hickory_proto::rr::rdata::{A, AAAA, CNAME};
     use hickory_proto::rr::{RData, Record};
     use rcgen::{CertificateParams, KeyPair};
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -538,6 +688,53 @@ mod tests {
         address: SocketAddr,
         stop: Sender<()>,
         joined: Option<JoinHandle<()>>,
+    }
+
+    struct ScriptedDnsFixture {
+        address: SocketAddr,
+        joined: Option<JoinHandle<()>>,
+    }
+
+    impl ScriptedDnsFixture {
+        fn new(
+            request_count: usize,
+            mut handler: impl FnMut(Message) -> Message + Send + 'static,
+        ) -> Self {
+            let socket = StdUdpSocket::bind("127.0.0.1:0").expect("scripted DNS must bind");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("scripted DNS timeout must configure");
+            let address = socket.local_addr().expect("scripted DNS address");
+            let joined = thread::spawn(move || {
+                let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+                for _ in 0..request_count {
+                    let (length, peer) = socket
+                        .recv_from(&mut buffer)
+                        .expect("scripted DNS request must arrive");
+                    let request = Message::from_vec(&buffer[..length])
+                        .expect("scripted DNS request must parse");
+                    let response = handler(request);
+                    let wire = response
+                        .to_vec()
+                        .expect("scripted DNS response must encode");
+                    socket
+                        .send_to(&wire, peer)
+                        .expect("scripted DNS response must send");
+                }
+            });
+            Self {
+                address,
+                joined: Some(joined),
+            }
+        }
+    }
+
+    impl Drop for ScriptedDnsFixture {
+        fn drop(&mut self) {
+            if let Some(joined) = self.joined.take() {
+                joined.join().expect("scripted DNS fixture must join");
+            }
+        }
     }
 
     impl DnsFixture {
@@ -604,6 +801,182 @@ mod tests {
                 joined.join().expect("DNS fixture must join");
             }
         }
+    }
+
+    fn fqdn(name: &str) -> Name {
+        let mut name = Name::from_ascii(name).expect("fixture DNS name must parse");
+        name.set_fqdn(true);
+        name
+    }
+
+    #[test]
+    fn parser_accepts_bounded_cname_chain_and_aaaa_answers() {
+        let alias = fqdn("alias.test");
+        let canonical = fqdn("canonical.test");
+        let mut cname_response = Message::new();
+        cname_response
+            .set_id(41)
+            .set_message_type(MessageType::Response)
+            .add_query(Query::query(alias.clone(), RecordType::A))
+            .add_answer(Record::from_rdata(
+                alias.clone(),
+                30,
+                RData::CNAME(CNAME(canonical.clone())),
+            ))
+            .add_answer(Record::from_rdata(
+                canonical,
+                20,
+                RData::A(A(Ipv4Addr::new(127, 0, 0, 9))),
+            ));
+        let cname_wire = cname_response.to_vec().expect("CNAME response must encode");
+        let Some(Ok(ParsedAnswer::Answer(answer))) =
+            parse_answer(&cname_wire, 41, &alias, RecordType::A)
+        else {
+            panic!("CNAME response must resolve");
+        };
+        assert_eq!(
+            answer.addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9))]
+        );
+        assert_eq!(answer.ttl, Duration::from_secs(20));
+
+        let ipv6_name = fqdn("ipv6.test");
+        let ipv6 = Ipv6Addr::LOCALHOST;
+        let mut aaaa_response = Message::new();
+        aaaa_response
+            .set_id(42)
+            .set_message_type(MessageType::Response)
+            .add_query(Query::query(ipv6_name.clone(), RecordType::AAAA))
+            .add_answer(Record::from_rdata(
+                ipv6_name.clone(),
+                60,
+                RData::AAAA(AAAA(ipv6)),
+            ));
+        let aaaa_wire = aaaa_response.to_vec().expect("AAAA response must encode");
+        let Some(Ok(ParsedAnswer::Answer(answer))) =
+            parse_answer(&aaaa_wire, 42, &ipv6_name, RecordType::AAAA)
+        else {
+            panic!("AAAA response must resolve");
+        };
+        assert_eq!(answer.addresses, vec![IpAddr::V6(ipv6)]);
+    }
+
+    #[test]
+    fn parser_rejects_truncation_and_ignores_wrong_question() {
+        let name = fqdn("expected.test");
+        let mut truncated = Message::new();
+        truncated
+            .set_id(51)
+            .set_message_type(MessageType::Response)
+            .set_truncated(true)
+            .add_query(Query::query(name.clone(), RecordType::A));
+        let wire = truncated.to_vec().expect("truncated response must encode");
+        assert!(matches!(
+            parse_answer(&wire, 51, &name, RecordType::A),
+            Some(Err(_))
+        ));
+
+        let mut wrong = Message::new();
+        wrong
+            .set_id(52)
+            .set_message_type(MessageType::Response)
+            .add_query(Query::query(fqdn("other.test"), RecordType::A));
+        let wire = wrong.to_vec().expect("wrong response must encode");
+        assert!(parse_answer(&wire, 52, &name, RecordType::A).is_none());
+    }
+
+    fn wait_for_resolution(owner: &mut NativeReactor, resolver: &NativeResolver) -> ResolveResult {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let results = resolver.drain().expect("resolver results must remain live");
+            if let Some(result) = results.into_iter().next() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "scripted resolution timed out");
+            owner.poll(deadline).expect("owner wake poll must succeed");
+        }
+    }
+
+    #[test]
+    fn resolver_follows_cname_and_falls_back_from_a_to_aaaa() {
+        let alias = fqdn("alias-only.test");
+        let canonical = fqdn("canonical-only.test");
+        let cname_fixture = ScriptedDnsFixture::new(2, move |request| {
+            let query = request.query().expect("CNAME query must exist").clone();
+            let mut response = Message::new();
+            response
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .add_query(query.clone());
+            if query.name() == &alias {
+                response.add_answer(Record::from_rdata(
+                    alias.clone(),
+                    30,
+                    RData::CNAME(CNAME(canonical.clone())),
+                ));
+            } else {
+                assert_eq!(query.name(), &canonical);
+                response.add_answer(Record::from_rdata(
+                    canonical.clone(),
+                    20,
+                    RData::A(A(Ipv4Addr::new(127, 0, 0, 12))),
+                ));
+            }
+            response
+        });
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver = NativeResolver::new(
+            ResolverConfig::for_test(cname_fixture.address),
+            owner.waker(),
+        )
+        .expect("CNAME resolver must construct");
+        resolver
+            .resolve(ResolveKey(60), "alias-only.test".to_owned())
+            .expect("CNAME resolution must submit");
+        assert_eq!(
+            wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect("CNAME resolution must succeed")
+                .addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 12))]
+        );
+        resolver.shutdown().expect("CNAME resolver must stop");
+
+        let ipv6_fixture = ScriptedDnsFixture::new(2, move |request| {
+            let query = request.query().expect("IPv6 query must exist").clone();
+            let mut response = Message::new();
+            response
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .add_query(query.clone());
+            if query.query_type() == RecordType::AAAA {
+                response.add_answer(Record::from_rdata(
+                    query.name().clone(),
+                    60,
+                    RData::AAAA(AAAA(Ipv6Addr::LOCALHOST)),
+                ));
+            } else {
+                assert_eq!(query.query_type(), RecordType::A);
+            }
+            response
+        });
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver = NativeResolver::new(
+            ResolverConfig::for_test(ipv6_fixture.address),
+            owner.waker(),
+        )
+        .expect("IPv6 resolver must construct");
+        resolver
+            .resolve(ResolveKey(61), "ipv6-only.test".to_owned())
+            .expect("IPv6 resolution must submit");
+        assert_eq!(
+            wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect("IPv6 resolution must succeed")
+                .addresses,
+            vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]
+        );
+        resolver.shutdown().expect("IPv6 resolver must stop");
     }
 
     #[test]

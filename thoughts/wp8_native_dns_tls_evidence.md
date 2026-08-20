@@ -72,15 +72,16 @@ yet a production-native or GDS-selection claim.
 
 ## Windows progress
 
-The first A-record/injected-nameserver slice is implemented. One connected ephemeral UDP socket
+The injected-nameserver slice is implemented. One connected ephemeral UDP socket
 accepts replies only from the configured fixture server. A random starting transaction ID plus the
 question name and type are checked before a response can complete a request. Hickory encodes and
 parses the packet; NBReq owns retry clocks, bounds, commands, cancellation, and the thread.
 
 Focused tests prove direct resolver wake/result/join, cancellation without late delivery, a public
-request cancelled while the fixture holds its DNS reply, and an end-to-end hostname request that
-connects to the returned IPv4 address while retaining the original hostname and port in the HTTP
-Host field.
+request cancelled while the fixture holds its DNS reply, bounded CNAME following, serial A-to-AAAA
+fallback, rejection of wrong questions, and explicit failure of truncated UDP replies pending TCP
+fallback. An end-to-end hostname request connects to the returned IPv4 address while retaining the
+original hostname and port in the HTTP Host field.
 
 Rustls is now driven over that same real socket path. The TLS state is sans-I/O and remains on the
 native backend owner; it emits bounded encrypted flights and accepts bounded encrypted reactor
@@ -88,30 +89,29 @@ events. The HTTP request is not encrypted or queued until the handshake succeeds
 therefore remains live through DNS, TCP, and TLS, while encrypted and plaintext progress refreshes
 inactivity. Only `http/1.1` is offered through ALPN.
 
-Generated-root fixtures prove verified HTTPS success, wrong-host rejection as
-`TransportStage::Tls`, the explicit chain-and-hostname bypass, and cancellation after the peer has
-observed ClientHello. The bypass skips certificate-chain and hostname acceptance only; rustls still
-cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate sans-I/O test
-proves request encryption and response decryption, and the platform verifier configuration builds
-with an explicit Ring provider rather than process-global provider state. The complete Windows
-native suite passes 79 unit, 4 public-contract, and 2 doctests at this point, with strict clippy and
-formatting. This is progress evidence, not WP8 acceptance.
+Generated-root fixtures prove verified HTTPS success, wrong-host, unknown-root, and expired-certificate
+rejection as `TransportStage::Tls`, the explicit chain-and-hostname bypass, and cancellation after
+the peer has observed ClientHello. The bypass skips certificate-chain and hostname acceptance only;
+rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
+sans-I/O test proves request encryption and response decryption, and the platform verifier
+configuration builds with an explicit Ring provider rather than process-global provider state. The
+complete Windows native suite passes 83 unit, 4 public-contract, and 2 doctests at this point, with
+strict clippy and formatting. This is progress evidence, not WP8 acceptance.
 
 ## Deliberate remainder
 
 - System resolver configuration discovery, bounded positive/negative caching, TTL clamps, IPv4/IPv6
   ordering, TCP fallback for truncated DNS replies, and Happy Eyeballs follow the injected-fixture
   vertical slice. A fixture-only resolver is not a production DNS claim.
-- The current first slice deliberately accepts direct A answers for the original name only. AAAA,
-  CNAME-chain validation, randomized IDs beyond the random sequence seed, DNS-over-TCP fallback,
-  richer server rotation, and response-code fixtures remain before the resolver can be called
-  consumer-ready.
+- The current slice uses serial A then AAAA lookup and bounded CNAME following. Happy Eyeballs,
+  randomized IDs beyond the random sequence seed, DNS-over-TCP fallback, richer server rotation,
+  and response-code fixtures remain before the resolver can be called consumer-ready.
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
   state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.
-- Native unknown-root, expired-certificate, TLS-alert, abrupt encrypted EOF, large certificate
-  chain, and encrypted response-limit fixtures remain. Verified system/platform trust has only a
-  configuration smoke test so far; generated-root success does not prove the supported OS stores.
+- Native TLS-alert, abrupt encrypted EOF, large certificate-chain, and encrypted response-limit
+  fixtures remain. Verified system/platform trust has only a configuration smoke test so far;
+  generated-root success does not prove the supported OS stores.
 - Connection reuse, redirects, streaming/backpressure, proxy policy, and native default selection
   remain WP9/WP10.
 - Parser and DNS wire fuzz targets plus a checked-in seed corpus remain required before native
