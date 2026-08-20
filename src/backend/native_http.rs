@@ -3,7 +3,7 @@
 //! `httparse` recognizes response heads and chunk-size lines. NBReq owns request policy, body
 //! framing, limits, EOF semantics, and the state transition that eventually releases a socket.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -873,17 +873,123 @@ impl NativeHttpBackend {
         self.finish(slot, Completion::Failed(error), completions);
     }
 
-    fn note_progress(&mut self, slot: SlotId, connected: bool) -> Result<(), Error> {
+    fn note_progress(
+        &mut self,
+        slot: SlotId,
+        connected: bool,
+        arm_deadline: bool,
+    ) -> Result<(), Error> {
         let deadline = self
             .transfers
             .get_mut(&slot)
             .map(|transfer| transfer.note_progress(Instant::now(), connected));
-        if let Some(deadline) = deadline {
-            self.reactor
-                .set_deadline(slot, deadline)
-                .map_err(native_internal_error)?;
+        if arm_deadline {
+            if let Some(deadline) = deadline {
+                self.reactor
+                    .set_deadline(slot, deadline)
+                    .map_err(native_internal_error)?;
+            }
         }
         Ok(())
+    }
+
+    fn process_events(
+        &mut self,
+        events: Vec<NativeEvent>,
+    ) -> Result<Vec<BackendCompletion>, Error> {
+        // A readiness pass can make write progress and then observe a read-side reset before it
+        // returns to the protocol owner. The reactor has already removed that socket by the time
+        // this batch is processed, so progress remains meaningful but must not re-arm its deadline.
+        let failed_slots = events
+            .iter()
+            .filter_map(|event| match event {
+                NativeEvent::Failed(slot, _) => Some(*slot),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut completions = Vec::new();
+        for event in events {
+            match event {
+                NativeEvent::Connected(slot) => {
+                    self.note_progress(slot, true, !failed_slots.contains(&slot))?
+                }
+                NativeEvent::WriteProgress(slot) | NativeEvent::WriteDrained(slot) => {
+                    self.note_progress(slot, false, !failed_slots.contains(&slot))?;
+                }
+                NativeEvent::Data(slot, bytes) => {
+                    self.note_progress(slot, false, !failed_slots.contains(&slot))?;
+                    let decoded = self.transfers.get_mut(&slot).map(|transfer| {
+                        transfer.response_started |= !bytes.is_empty();
+                        transfer.decoder.ingest(&bytes)
+                    });
+                    match decoded {
+                        Some(Ok(Some(response))) => {
+                            self.finish(slot, Completion::Completed(response), &mut completions)
+                        }
+                        Some(Err(error)) => {
+                            self.finish(slot, Completion::Failed(error), &mut completions);
+                        }
+                        Some(Ok(None)) | None => {}
+                    }
+                }
+                NativeEvent::PeerClosed(slot) => {
+                    let decoded = self
+                        .transfers
+                        .get_mut(&slot)
+                        .map(|transfer| transfer.decoder.eof());
+                    match decoded {
+                        Some(Ok(Some(response))) => {
+                            self.finish(slot, Completion::Completed(response), &mut completions)
+                        }
+                        Some(Ok(None)) => self.finish(
+                            slot,
+                            Completion::Failed(Error::transport(
+                                TransportStage::Receive,
+                                "the peer closed without completing a response",
+                            )),
+                            &mut completions,
+                        ),
+                        Some(Err(error)) => {
+                            self.finish(slot, Completion::Failed(error), &mut completions);
+                        }
+                        None => {
+                            self.reactor.cancel(slot);
+                        }
+                    }
+                }
+                NativeEvent::Failed(slot, failure) => {
+                    self.fail_native(slot, failure, &mut completions);
+                }
+                NativeEvent::DeadlineExpired(slot) => {
+                    let now = Instant::now();
+                    let deadline = self
+                        .transfers
+                        .get(&slot)
+                        .and_then(HttpTransfer::next_deadline);
+                    if deadline.is_some_and(|deadline| deadline <= now) {
+                        let timeout = self
+                            .transfers
+                            .get(&slot)
+                            .map_or(TimeoutKind::Unknown, |transfer| {
+                                transfer.expired_timeout(now)
+                            });
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::timeout(
+                                timeout,
+                                native_timeout_message(timeout),
+                            )),
+                            &mut completions,
+                        );
+                    } else if let Some(deadline) = deadline {
+                        self.reactor
+                            .set_deadline(slot, Some(deadline))
+                            .map_err(native_internal_error)?;
+                    }
+                }
+            }
+        }
+        Ok(completions)
     }
 }
 
@@ -968,87 +1074,7 @@ impl Backend for NativeHttpBackend {
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
         let events = self.reactor.poll(deadline).map_err(native_internal_error)?;
-        let mut completions = Vec::new();
-        for event in events {
-            match event {
-                NativeEvent::Connected(slot) => self.note_progress(slot, true)?,
-                NativeEvent::WriteProgress(slot) | NativeEvent::WriteDrained(slot) => {
-                    self.note_progress(slot, false)?;
-                }
-                NativeEvent::Data(slot, bytes) => {
-                    self.note_progress(slot, false)?;
-                    let decoded = self.transfers.get_mut(&slot).map(|transfer| {
-                        transfer.response_started |= !bytes.is_empty();
-                        transfer.decoder.ingest(&bytes)
-                    });
-                    match decoded {
-                        Some(Ok(Some(response))) => {
-                            self.finish(slot, Completion::Completed(response), &mut completions)
-                        }
-                        Some(Err(error)) => {
-                            self.finish(slot, Completion::Failed(error), &mut completions);
-                        }
-                        Some(Ok(None)) | None => {}
-                    }
-                }
-                NativeEvent::PeerClosed(slot) => {
-                    let decoded = self
-                        .transfers
-                        .get_mut(&slot)
-                        .map(|transfer| transfer.decoder.eof());
-                    match decoded {
-                        Some(Ok(Some(response))) => {
-                            self.finish(slot, Completion::Completed(response), &mut completions)
-                        }
-                        Some(Ok(None)) => self.finish(
-                            slot,
-                            Completion::Failed(Error::transport(
-                                TransportStage::Receive,
-                                "the peer closed without completing a response",
-                            )),
-                            &mut completions,
-                        ),
-                        Some(Err(error)) => {
-                            self.finish(slot, Completion::Failed(error), &mut completions);
-                        }
-                        None => {
-                            self.reactor.cancel(slot);
-                        }
-                    }
-                }
-                NativeEvent::Failed(slot, failure) => {
-                    self.fail_native(slot, failure, &mut completions);
-                }
-                NativeEvent::DeadlineExpired(slot) => {
-                    let now = Instant::now();
-                    let deadline = self
-                        .transfers
-                        .get(&slot)
-                        .and_then(HttpTransfer::next_deadline);
-                    if deadline.is_some_and(|deadline| deadline <= now) {
-                        let timeout = self
-                            .transfers
-                            .get(&slot)
-                            .map_or(TimeoutKind::Unknown, |transfer| {
-                                transfer.expired_timeout(now)
-                            });
-                        self.finish(
-                            slot,
-                            Completion::Failed(Error::timeout(
-                                timeout,
-                                native_timeout_message(timeout),
-                            )),
-                            &mut completions,
-                        );
-                    } else if let Some(deadline) = deadline {
-                        self.reactor
-                            .set_deadline(slot, Some(deadline))
-                            .map_err(native_internal_error)?;
-                    }
-                }
-            }
-        }
-        Ok(completions)
+        self.process_events(events)
     }
 
     fn shutdown(&mut self) -> Result<(), ShutdownError> {
@@ -1114,6 +1140,59 @@ mod tests {
         header_bytes: 1024,
         header_count: 16,
     };
+
+    #[test]
+    fn terminal_socket_failure_dominates_same_batch_write_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("batch fixture must bind");
+        let address = listener.local_addr().expect("batch fixture address");
+        let mut backend = NativeHttpBackend::new(LIMITS).expect("native backend must construct");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let slot = backend
+            .reactor
+            .connect(address, Some(deadline), 1024, 1024)
+            .expect("batch fixture must connect");
+        let (_peer, _) = listener.accept().expect("batch fixture must accept");
+        let request_id = RequestId {
+            engine: 1,
+            sequence: 1,
+        };
+        backend.request_to_slot.insert(request_id, slot);
+        backend.transfers.insert(
+            slot,
+            HttpTransfer {
+                request_id,
+                decoder: ResponseDecoder::new(false, LIMITS),
+                body_bearing: true,
+                response_started: false,
+                connected: true,
+                connect_deadline: None,
+                total_deadline: Some(deadline),
+                inactivity_timeout: Some(Duration::from_secs(1)),
+                inactivity_deadline: Some(deadline),
+            },
+        );
+
+        assert!(backend.reactor.cancel(slot));
+        let completions = backend
+            .process_events(vec![
+                NativeEvent::WriteProgress(slot),
+                NativeEvent::Failed(
+                    slot,
+                    NativeFailure {
+                        kind: NativeFailureKind::Read,
+                        message: "simulated same-batch reset".to_owned(),
+                    },
+                ),
+            ])
+            .expect("same-batch progress must not re-arm a removed socket");
+
+        assert_eq!(completions.len(), 1);
+        let Completion::Failed(error) = &completions[0].completion else {
+            panic!("same-batch reset must fail the request");
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(TransportStage::Send));
+    }
 
     fn assert_socket_closed(stream: &mut std::net::TcpStream, buffer: &mut [u8], context: &str) {
         match stream.read(buffer) {
