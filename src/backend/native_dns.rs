@@ -2487,6 +2487,206 @@ mod tests {
     }
 
     #[test]
+    fn native_pool_key_isolates_host_and_tls_verification_policy() {
+        let key = KeyPair::generate().expect("pool-key TLS key must generate");
+        let params = CertificateParams::new(vec!["a.test".to_owned(), "b.test".to_owned()])
+            .expect("pool-key TLS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("pool-key TLS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config = Arc::new(
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("pool-key TLS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("pool-key TLS identity must configure"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("pool-key fixture must bind");
+        let address = listener.local_addr().expect("pool-key fixture address");
+        let server = thread::spawn(move || {
+            let mut live_connections = Vec::new();
+            for body in [b"verified-a".as_slice(), b"bypass-a", b"verified-b"] {
+                let (stream, _) = listener
+                    .accept()
+                    .expect("each distinct pool key must open a socket");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("pool-key TLS read timeout");
+                let connection = ServerConnection::new(Arc::clone(&server_config))
+                    .expect("pool-key TLS server state must build");
+                let mut tls = StreamOwned::new(connection, stream);
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = tls.read(&mut buffer).expect("pool-key request must read");
+                    assert_ne!(read, 0, "pool-key request closed early");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                tls.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+                )
+                .expect("pool-key response head must write");
+                tls.write_all(body)
+                    .expect("pool-key response body must write");
+                tls.flush().expect("pool-key response must flush");
+                live_connections.push(tls);
+            }
+            assert_eq!(live_connections.len(), 3);
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("pool-key native HTTPS Engine must construct");
+        for (host, verification, expected) in [
+            ("a.test", TlsVerification::Verify, b"verified-a".as_slice()),
+            (
+                "a.test",
+                TlsVerification::DangerouslyDisableCertificateVerification,
+                b"bypass-a".as_slice(),
+            ),
+            ("b.test", TlsVerification::Verify, b"verified-b".as_slice()),
+        ] {
+            let response = engine
+                .client()
+                .execute(
+                    Request::get(format!("https://{host}:{}/pool-key", address.port()))
+                        .tls_verification(verification)
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("pool-key request must build"),
+                )
+                .expect("pool-key request must complete");
+            assert_eq!(response.body(), expected);
+        }
+        engine.shutdown().expect("pool-key Engine must stop");
+        server.join().expect("pool-key fixture must join");
+    }
+
+    #[test]
+    fn encrypted_record_error_after_reuse_destroys_connection_before_replacement() {
+        let key = KeyPair::generate().expect("reused TLS-error key must generate");
+        let params = CertificateParams::new(vec!["reuse-error.test".to_owned()])
+            .expect("reused TLS-error parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("reused TLS-error certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config = Arc::new(
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("reused TLS-error versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("reused TLS-error identity must configure"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reused TLS-error must bind");
+        let address = listener.local_addr().expect("reused TLS-error address");
+        let server = thread::spawn(move || {
+            let read_head = |tls: &mut StreamOwned<ServerConnection, std::net::TcpStream>| {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = tls
+                        .read(&mut buffer)
+                        .expect("reused TLS-error request must read");
+                    assert_ne!(read, 0, "reused TLS-error request closed early");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+            };
+            let (first_stream, _) = listener
+                .accept()
+                .expect("reused TLS-error first socket must accept");
+            first_stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("reused TLS-error first timeout");
+            let first_connection = ServerConnection::new(Arc::clone(&server_config))
+                .expect("reused TLS-error first state must build");
+            let mut first = StreamOwned::new(first_connection, first_stream);
+            read_head(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .expect("reused TLS-error clean response must write");
+            first
+                .flush()
+                .expect("reused TLS-error clean response must flush");
+            read_head(&mut first);
+            first
+                .sock
+                .write_all(&[0x17, 0x03, 0x03, 0x00, 0x01, 0x00])
+                .expect("invalid TLS record must write");
+            first.sock.flush().expect("invalid TLS record must flush");
+            drop(first);
+
+            let (replacement_stream, _) = listener
+                .accept()
+                .expect("TLS-error replacement socket must accept");
+            replacement_stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("TLS-error replacement timeout");
+            let replacement_connection = ServerConnection::new(server_config)
+                .expect("TLS-error replacement state must build");
+            let mut replacement = StreamOwned::new(replacement_connection, replacement_stream);
+            read_head(&mut replacement);
+            replacement
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .expect("TLS-error replacement response must write");
+            replacement
+                .flush()
+                .expect("TLS-error replacement response must flush");
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("reused TLS-error Engine must construct");
+        let request = || {
+            Request::get(format!(
+                "https://reuse-error.test:{}/reuse-error",
+                address.port()
+            ))
+            .total_timeout(Duration::from_secs(2))
+            .build()
+            .expect("reused TLS-error request must build")
+        };
+        assert_eq!(
+            engine
+                .client()
+                .execute(request())
+                .expect("reused TLS-error first request must complete")
+                .body(),
+            b"ok"
+        );
+        let Err(ExecuteError::Failed(error)) = engine.client().execute(request()) else {
+            panic!("invalid TLS record on reused connection did not fail");
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        // TLS handshake failures use `Tls`; corruption after an established handshake is a
+        // receive-stage transport failure. Both are destructive to the lease.
+        assert_eq!(error.transport_stage(), Some(TransportStage::Receive));
+        assert_eq!(
+            engine
+                .client()
+                .execute(request())
+                .expect("TLS-error replacement request must complete")
+                .body(),
+            b"new"
+        );
+        engine
+            .shutdown()
+            .expect("reused TLS-error Engine must stop");
+        server.join().expect("reused TLS-error fixture must join");
+    }
+
+    #[test]
     fn one_shot_https_upload_over_tls_flight_limit_fails_at_send_until_streaming_lands() {
         let key = KeyPair::generate().expect("large HTTPS key must generate");
         let params = CertificateParams::new(vec!["large-upload.test".to_owned()])

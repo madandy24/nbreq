@@ -1,8 +1,8 @@
 # WP9 native pooling, redirects, and streaming evidence
 
-Status: **in progress.** WP8's DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed
-at `a39adb1`; the conservative connection-reuse slice below is not yet WP9.1 acceptance and does not
-change ordinary `Engine::new` or any GDS backend selection.
+Status: **WP9.1 implementation complete on Windows; exact-source Ubuntu acceptance pending.** WP8's
+DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; the conservative
+connection-reuse slice below does not change ordinary `Engine::new` or any GDS backend selection.
 
 ## Frozen pool ownership contract
 
@@ -68,18 +68,30 @@ entry. This is not represented by a fake request and does not weaken request ter
   reused socket.
 - With both active limits reduced to one, a second accepted request expires from the acquisition
   queue under its original 100 ms total deadline without opening a second socket.
+- Manual mode completes two sequential requests on one accepted cleartext socket.
+- Malformed and declared-oversize responses on a reused cleartext connection fail with their
+  portable HTTP/limit classifications, destroy that connection, and let only a later explicit
+  request open a clean replacement.
+- A corrupt encrypted record after a clean reused TLS request fails at the established receive
+  stage, destroys the rustls connection, and lets a later explicit request create a fresh TLS
+  session. Host identity and verified-versus-bypass TLS policy each force separate live sockets even
+  when all names resolve to the same address and port.
+- A reused connection closed after the peer observed the second request fails at Receive. A 200 ms
+  accept probe proves NBReq does not replay it—even though it was GET—and only request three opens a
+  replacement. Ten repetitions pass.
+- Synthetic owner time advances a parked entry to its 30-second expiry without wall-clock waiting;
+  the socket closes and both idle and active reservations return to zero. A separate spawned
+  shutdown fixture closes one parked and one leased socket, cancels the leased waiter, and joins.
 - Existing cancellation, timeout, TLS dirty-EOF, framing, and failure paths remain destructive and
   never call the pool-return path.
 
 ## Remainder before WP9.1 acceptance
 
-- Add explicit contamination/replacement fixtures for malformed/oversize responses on reused
-  sockets, TLS close/error after reuse, and shutdown with a mix of idle and leased connections.
-- Prove cross-origin and TLS-policy isolation under concurrent load, stale-close failure after a
-  quiet lease probe without replay, idle expiry without waiting 30 wall-clock seconds, and ordinary
-  manual-mode clean reuse.
+- Run the exact committed source on Ubuntu 20.04/Rust 1.85: complete native gate, strict clippy and
+  formatting, repeated reuse/contamination/cap/shutdown modules, and a surviving-process check.
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
-  concurrency. Pooling reduces handshake frequency but does not make an OS callback interruptible.
+  concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
+  interruptible.
 - Redirects remain WP9.3. Incremental upload/download and removal of the one-shot HTTPS body ceiling
   remain WP9.4. Public limits, metrics, fuzzing, pressure runs, and supported-platform evidence remain
   WP9.5/WP10.

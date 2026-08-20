@@ -1043,6 +1043,7 @@ struct ConnectionKey {
 struct IdleConnection {
     slot: SlotId,
     tls: Option<NativeTls>,
+    expires_at: Instant,
 }
 
 struct PendingResolve {
@@ -1316,6 +1317,19 @@ impl NativeHttpBackend {
         self.release_connection(&key);
     }
 
+    fn expire_idle(&mut self, now: Instant) {
+        let expired = self
+            .idle
+            .values()
+            .flat_map(|connections| connections.iter())
+            .filter(|connection| connection.expires_at <= now)
+            .map(|connection| connection.slot)
+            .collect::<Vec<_>>();
+        for slot in expired {
+            self.discard_idle_slot(slot);
+        }
+    }
+
     fn try_begin_reused(&mut self, pending: PendingResolve) -> Option<PendingResolve> {
         let Some(mut idle) = self.take_idle(&pending.key) else {
             return Some(pending);
@@ -1405,8 +1419,15 @@ impl NativeHttpBackend {
             && self.idle_count < MAX_IDLE_CONNECTIONS
             && per_origin_idle < MAX_IDLE_CONNECTIONS_PER_ORIGIN;
         if reusable {
-            let idle_deadline = Instant::now().checked_add(IDLE_CONNECTION_LIFETIME);
-            if self.reactor.set_deadline(slot, idle_deadline).is_ok() {
+            let parked =
+                Instant::now()
+                    .checked_add(IDLE_CONNECTION_LIFETIME)
+                    .filter(|idle_deadline| {
+                        self.reactor
+                            .set_deadline(slot, Some(*idle_deadline))
+                            .is_ok()
+                    });
+            if let Some(expires_at) = parked {
                 self.idle_slots.insert(slot, transfer.key.clone());
                 self.idle
                     .entry(transfer.key)
@@ -1414,10 +1435,12 @@ impl NativeHttpBackend {
                     .push_back(IdleConnection {
                         slot,
                         tls: transfer.tls,
+                        expires_at,
                     });
                 self.idle_count += 1;
             } else {
                 self.reactor.cancel(slot);
+                self.release_connection(&transfer.key);
             }
         } else {
             self.reactor.cancel(slot);
@@ -2038,6 +2061,7 @@ impl Backend for NativeHttpBackend {
     }
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+        self.expire_idle(Instant::now());
         let mut completions = self.dispatch_waiting();
         completions.extend(self.process_resolver_results()?);
         completions.extend(self.expire_resolves()?);
@@ -2136,6 +2160,39 @@ mod tests {
         header_bytes: 1024,
         header_count: 16,
     };
+
+    fn read_request_head(stream: &mut std::net::TcpStream, label: &str) {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 512];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream
+                .read(&mut buffer)
+                .unwrap_or_else(|error| panic!("{label} must read: {error}"));
+            assert_ne!(read, 0, "client closed before {label}");
+            request.extend_from_slice(&buffer[..read]);
+        }
+    }
+
+    fn peer_observed_close(stream: &mut std::net::TcpStream) -> bool {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("peer close timeout must configure");
+        let mut buffer = [0_u8; 64];
+        match stream.read(&mut buffer) {
+            Ok(0) => true,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                true
+            }
+            Ok(_) | Err(_) => false,
+        }
+    }
 
     #[test]
     fn terminal_socket_failure_dominates_same_batch_write_progress() {
@@ -2549,6 +2606,358 @@ mod tests {
         }
         engine.shutdown().expect("reuse Engine must stop");
         server.join().expect("reuse fixture must join");
+    }
+
+    #[test]
+    fn manual_native_http_reuses_one_clean_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manual reuse fixture must bind");
+        let address = listener.local_addr().expect("manual reuse address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("manual reuse fixture must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("manual reuse read timeout");
+            for body in [b"one".as_slice(), b"two".as_slice()] {
+                read_request_head(&mut stream, "manual reused request");
+                stream
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len())
+                            .as_bytes(),
+                    )
+                    .expect("manual reused response head must write");
+                stream
+                    .write_all(body)
+                    .expect("manual reused response body must write");
+                stream.flush().expect("manual reused response must flush");
+            }
+        });
+        let config = EngineConfig::manual();
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
+            .expect("manual reuse backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("manual reuse Engine must construct");
+        for expected in [b"one".as_slice(), b"two".as_slice()] {
+            let pending = engine
+                .client()
+                .submit(
+                    Request::get(format!("http://{address}/manual-reuse"))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("manual reuse request must build"),
+                )
+                .expect("manual reuse request must submit");
+            let Completion::Completed(response) = engine
+                .drive_until(pending)
+                .expect("manual reuse request must drive")
+            else {
+                panic!("manual reused request did not complete");
+            };
+            assert_eq!(response.body(), expected);
+        }
+        engine.shutdown().expect("manual reuse Engine must stop");
+        server.join().expect("manual reuse fixture must join");
+    }
+
+    #[test]
+    fn reused_protocol_or_limit_failure_closes_before_replacement() {
+        #[derive(Clone, Copy)]
+        enum Poison {
+            Malformed,
+            Oversize,
+        }
+
+        for poison in [Poison::Malformed, Poison::Oversize] {
+            let listener =
+                TcpListener::bind("127.0.0.1:0").expect("reused contamination fixture must bind");
+            let address = listener.local_addr().expect("reused contamination address");
+            let server = thread::spawn(move || {
+                let (mut first, _) = listener
+                    .accept()
+                    .expect("reused contamination first socket must accept");
+                first
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("reused contamination first timeout");
+                read_request_head(&mut first, "first clean request");
+                first
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .expect("first clean response must write");
+                first.flush().expect("first clean response must flush");
+                read_request_head(&mut first, "reused poisoned request");
+                let bytes = match poison {
+                    Poison::Malformed => {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx"
+                            .as_slice()
+                    }
+                    Poison::Oversize => {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nxxxx".as_slice()
+                    }
+                };
+                first
+                    .write_all(bytes)
+                    .expect("poisoned response must write");
+                first.flush().expect("poisoned response must flush");
+                drop(first);
+
+                let (mut replacement, _) = listener
+                    .accept()
+                    .expect("replacement socket must accept after poison");
+                replacement
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("replacement timeout");
+                read_request_head(&mut replacement, "replacement request");
+                replacement
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                    .expect("replacement response must write");
+            });
+            let config = EngineConfig::spawned().with_max_response_body_bytes(3);
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("reused contamination Engine must construct");
+            let request = || {
+                Request::get(format!("http://{address}/contamination"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("contamination request must build")
+            };
+            assert_eq!(
+                engine
+                    .client()
+                    .execute(request())
+                    .expect("first clean request must complete")
+                    .body(),
+                b"ok"
+            );
+            let Err(ExecuteError::Failed(error)) = engine.client().execute(request()) else {
+                panic!("reused poisoned response did not fail");
+            };
+            match poison {
+                Poison::Malformed => {
+                    assert_eq!(error.kind(), ErrorKind::Transport);
+                    assert_eq!(error.transport_stage(), Some(TransportStage::Http));
+                }
+                Poison::Oversize => {
+                    assert_eq!(error.kind(), ErrorKind::Limit);
+                    assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+                }
+            }
+            assert_eq!(
+                engine
+                    .client()
+                    .execute(request())
+                    .expect("replacement request must complete")
+                    .body(),
+                b"new"
+            );
+            engine
+                .shutdown()
+                .expect("reused contamination Engine must stop");
+            server
+                .join()
+                .expect("reused contamination fixture must join");
+        }
+    }
+
+    #[test]
+    fn synthetic_idle_expiry_destroys_the_socket_and_releases_capacity() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("idle expiry fixture must bind");
+        let address = listener.local_addr().expect("idle expiry address");
+        let mut backend =
+            NativeHttpBackend::new(LIMITS, None, None).expect("idle expiry backend must construct");
+        let expires_at = Instant::now() + IDLE_CONNECTION_LIFETIME;
+        let slot = backend
+            .reactor
+            .connect(address, Some(expires_at), 1, 1)
+            .expect("idle expiry socket must connect");
+        let (mut peer, _) = listener.accept().expect("idle expiry peer must accept");
+        let key = ConnectionKey {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: address.port(),
+            dangerously_disable_tls_verification: false,
+        };
+        assert!(backend.reserve_connection(&key));
+        backend.idle_slots.insert(slot, key.clone());
+        backend
+            .idle
+            .entry(key)
+            .or_default()
+            .push_back(IdleConnection {
+                slot,
+                tls: None,
+                expires_at,
+            });
+        backend.idle_count = 1;
+
+        backend.expire_idle(expires_at);
+
+        assert_eq!(backend.idle_count, 0);
+        assert_eq!(backend.connection_count, 0);
+        assert!(backend.idle.is_empty());
+        assert!(backend.idle_slots.is_empty());
+        assert!(peer_observed_close(&mut peer));
+        backend.shutdown().expect("idle expiry backend must stop");
+    }
+
+    #[test]
+    fn shutdown_closes_mixed_idle_and_leased_connections() {
+        let idle_listener = TcpListener::bind("127.0.0.1:0").expect("mixed idle fixture must bind");
+        let idle_address = idle_listener.local_addr().expect("mixed idle address");
+        let idle_server = thread::spawn(move || {
+            let (mut stream, _) = idle_listener
+                .accept()
+                .expect("mixed idle socket must accept");
+            read_request_head(&mut stream, "mixed idle request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nidle")
+                .expect("mixed idle response must write");
+            stream.flush().expect("mixed idle response must flush");
+            peer_observed_close(&mut stream)
+        });
+
+        let leased_listener =
+            TcpListener::bind("127.0.0.1:0").expect("mixed leased fixture must bind");
+        let leased_address = leased_listener.local_addr().expect("mixed leased address");
+        let (leased_tx, leased_rx) = mpsc::channel();
+        let leased_server = thread::spawn(move || {
+            let (mut stream, _) = leased_listener
+                .accept()
+                .expect("mixed leased socket must accept");
+            read_request_head(&mut stream, "mixed leased request");
+            leased_tx
+                .send(())
+                .expect("mixed leased barrier must signal");
+            peer_observed_close(&mut stream)
+        });
+
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("mixed shutdown Engine must construct");
+        let idle = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{idle_address}/idle"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("mixed idle request must build"),
+            )
+            .expect("mixed idle request must complete");
+        assert_eq!(idle.body(), b"idle");
+        let leased = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{leased_address}/leased"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("mixed leased request must build"),
+            )
+            .expect("mixed leased request must submit");
+        leased_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("mixed leased request must reach the peer");
+
+        engine.shutdown().expect("mixed shutdown Engine must stop");
+
+        assert!(matches!(leased.wait(), Completion::Cancelled));
+        assert!(idle_server.join().expect("mixed idle fixture must join"));
+        assert!(
+            leased_server
+                .join()
+                .expect("mixed leased fixture must join")
+        );
+    }
+
+    #[test]
+    fn reused_peer_close_fails_without_transparent_replay() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("no-replay fixture must bind");
+        let address = listener.local_addr().expect("no-replay fixture address");
+        let (no_replay_tx, no_replay_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener
+                .accept()
+                .expect("no-replay first socket must accept");
+            first
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("no-replay first timeout");
+            read_request_head(&mut first, "no-replay first request");
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .expect("no-replay first response must write");
+            first.flush().expect("no-replay first response must flush");
+            read_request_head(&mut first, "no-replay reused request");
+            drop(first);
+
+            listener
+                .set_nonblocking(true)
+                .expect("no-replay listener must become nonblocking");
+            let deadline = Instant::now() + Duration::from_millis(200);
+            loop {
+                match listener.accept() {
+                    Ok(_) => panic!("failed reused request was transparently replayed"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("no-replay accept probe failed: {error}"),
+                }
+            }
+            listener
+                .set_nonblocking(false)
+                .expect("no-replay listener must return to blocking");
+            no_replay_tx
+                .send(())
+                .expect("no-replay observation must signal");
+
+            let (mut replacement, _) = listener
+                .accept()
+                .expect("explicit replacement request must open a socket");
+            read_request_head(&mut replacement, "explicit replacement request");
+            replacement
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .expect("explicit replacement response must write");
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("no-replay Engine must construct");
+        let request = || {
+            Request::get(format!("http://{address}/no-replay"))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("no-replay request must build")
+        };
+        assert_eq!(
+            engine
+                .client()
+                .execute(request())
+                .expect("no-replay first request must complete")
+                .body(),
+            b"ok"
+        );
+        let Err(ExecuteError::Failed(error)) = engine.client().execute(request()) else {
+            panic!("closed reused request did not fail");
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(TransportStage::Receive));
+        no_replay_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server must observe no automatic replacement");
+        assert_eq!(
+            engine
+                .client()
+                .execute(request())
+                .expect("explicit replacement request must complete")
+                .body(),
+            b"new"
+        );
+        engine.shutdown().expect("no-replay Engine must stop");
+        server.join().expect("no-replay fixture must join");
     }
 
     #[test]
