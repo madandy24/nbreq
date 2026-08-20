@@ -64,6 +64,15 @@ impl ResolverConfig {
         config.attempts = 2;
         config
     }
+
+    #[cfg(test)]
+    fn multiple_for_test(nameservers: Vec<SocketAddr>) -> Self {
+        Self {
+            nameservers,
+            attempt_timeout: Duration::from_millis(20),
+            attempts: 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +113,7 @@ struct PendingQuery {
     cname_hops: u8,
     wire: Vec<u8>,
     attempts_sent: u8,
+    servers_tried: usize,
     next_attempt: Instant,
     transport: QueryTransport,
 }
@@ -128,6 +138,7 @@ struct ResolverState {
     tcp_by_token: HashMap<Token, u16>,
     next_id: u16,
     next_tcp_token: usize,
+    current_nameserver: usize,
 }
 
 pub(super) struct NativeResolver {
@@ -150,11 +161,7 @@ impl NativeResolver {
             Waker::new(poll.registry(), WAKE_TOKEN)
                 .map_err(|error| resolver_internal("waker creation", &error))?,
         );
-        let (mut socket, nameserver) = connect_nameserver(&config.nameservers)?;
-        let config = ResolverConfig {
-            nameservers: vec![nameserver],
-            ..config
-        };
+        let (mut socket, current_nameserver) = connect_nameserver(&config.nameservers)?;
         poll.registry()
             .register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
             .map_err(|error| resolver_internal("socket registration", &error))?;
@@ -168,6 +175,14 @@ impl NativeResolver {
 
         let (command_tx, command_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
+        let state = ResolverState {
+            pending: HashMap::new(),
+            by_key: HashMap::new(),
+            tcp_by_token: HashMap::new(),
+            next_id: u16::from_ne_bytes(initial_id),
+            next_tcp_token: FIRST_TCP_TOKEN,
+            current_nameserver,
+        };
         let joined = thread::Builder::new()
             .name("nbreq-native-dns".to_owned())
             .spawn(move || {
@@ -178,7 +193,7 @@ impl NativeResolver {
                     result_tx,
                     result_waker,
                     config,
-                    u16::from_ne_bytes(initial_id),
+                    state,
                 );
             })
             .map_err(|error| resolver_internal("thread start", &error))?;
@@ -237,18 +252,11 @@ impl NativeResolver {
     }
 }
 
-fn connect_nameserver(nameservers: &[SocketAddr]) -> Result<(UdpSocket, SocketAddr), Error> {
+fn connect_nameserver(nameservers: &[SocketAddr]) -> Result<(UdpSocket, usize), Error> {
     let mut last_error = None;
-    for nameserver in nameservers {
-        let bind_address = match nameserver {
-            SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        };
-        match UdpSocket::bind(bind_address).and_then(|socket| {
-            socket.connect(*nameserver)?;
-            Ok(socket)
-        }) {
-            Ok(socket) => return Ok((socket, *nameserver)),
+    for (index, nameserver) in nameservers.iter().enumerate() {
+        match connect_one_nameserver(*nameserver) {
+            Ok(socket) => return Ok((socket, index)),
             Err(error) => last_error = Some(error),
         }
     }
@@ -257,6 +265,16 @@ fn connect_nameserver(nameservers: &[SocketAddr]) -> Result<(UdpSocket, SocketAd
         |error| format!("no configured DNS nameserver was reachable: {error}"),
     );
     Err(Error::new(ErrorKind::Internal, detail))
+}
+
+fn connect_one_nameserver(nameserver: SocketAddr) -> io::Result<UdpSocket> {
+    let bind_address = match nameserver {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+    let socket = UdpSocket::bind(bind_address)?;
+    socket.connect(nameserver)?;
+    Ok(socket)
 }
 
 impl Drop for NativeResolver {
@@ -272,16 +290,9 @@ fn resolver_main(
     results: Sender<ResolveResult>,
     result_waker: NativeWaker,
     config: ResolverConfig,
-    next_id: u16,
+    mut state: ResolverState,
 ) {
     let mut events = Events::with_capacity(16);
-    let mut state = ResolverState {
-        pending: HashMap::new(),
-        by_key: HashMap::new(),
-        tcp_by_token: HashMap::new(),
-        next_id,
-        next_tcp_token: FIRST_TCP_TOKEN,
-    };
     loop {
         let mut stop = false;
         loop {
@@ -410,6 +421,7 @@ fn prepare_name_query(
             cname_hops,
             wire,
             attempts_sent: 0,
+            servers_tried: 1,
             next_attempt: Instant::now(),
             transport: QueryTransport::Udp,
         },
@@ -466,20 +478,36 @@ fn transmit_due(
             matches!(query.transport, QueryTransport::Udp) && query.attempts_sent >= config.attempts
         });
         if exhausted {
-            if let Some(query) = state.pending.remove(&id) {
-                state.by_key.remove(&query.key);
-                send_result(
-                    results,
-                    result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Err(ResolveFailure::new(
-                            "the DNS server did not answer within the retry budget",
-                        )),
-                    },
-                );
+            let may_try_another = state
+                .pending
+                .get(&id)
+                .is_some_and(|query| query.servers_tried < config.nameservers.len());
+            if may_try_another
+                && advance_nameserver(socket, poll, config, &mut state.current_nameserver)
+            {
+                for query in state.pending.values_mut() {
+                    if matches!(query.transport, QueryTransport::Udp) {
+                        query.attempts_sent = 0;
+                        query.servers_tried = query.servers_tried.saturating_add(1);
+                        query.next_attempt = now;
+                    }
+                }
+            } else {
+                if let Some(query) = state.pending.remove(&id) {
+                    state.by_key.remove(&query.key);
+                    send_result(
+                        results,
+                        result_waker,
+                        ResolveResult {
+                            key: query.key,
+                            result: Err(ResolveFailure::new(
+                                "the configured DNS servers did not answer within the retry budget",
+                            )),
+                        },
+                    );
+                }
+                continue;
             }
-            continue;
         }
         let Some(query) = state.pending.get_mut(&id) else {
             continue;
@@ -505,6 +533,32 @@ fn transmit_due(
             }
         }
     }
+}
+
+fn advance_nameserver(
+    socket: &mut UdpSocket,
+    poll: &Poll,
+    config: &ResolverConfig,
+    current: &mut usize,
+) -> bool {
+    for offset in 1..config.nameservers.len() {
+        let index = (*current + offset) % config.nameservers.len();
+        let Ok(mut replacement) = connect_one_nameserver(config.nameservers[index]) else {
+            continue;
+        };
+        if poll
+            .registry()
+            .register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
+            .is_err()
+        {
+            continue;
+        }
+        let _deregister_result = poll.registry().deregister(socket);
+        *socket = replacement;
+        *current = index;
+        return true;
+    }
+    false
 }
 
 fn receive_packets(
@@ -541,7 +595,7 @@ fn receive_packets(
                 id,
                 &mut query,
                 poll,
-                config.nameservers[0],
+                config.nameservers[state.current_nameserver],
                 config.attempt_timeout,
                 &mut state.tcp_by_token,
                 &mut state.next_tcp_token,
@@ -1493,6 +1547,30 @@ mod tests {
             vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]
         );
         resolver.shutdown().expect("IPv6 resolver must stop");
+    }
+
+    #[test]
+    fn silent_nameserver_rotates_to_the_next_ranked_server() {
+        let silent = StdUdpSocket::bind("127.0.0.1:0").expect("silent DNS server must bind");
+        let silent_address = silent.local_addr().expect("silent DNS server address");
+        let answering = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 31));
+        let config = ResolverConfig::multiple_for_test(vec![silent_address, answering.address]);
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver = NativeResolver::new(config, owner.waker())
+            .expect("multi-server resolver must construct");
+        resolver
+            .resolve(ResolveKey(80), "rotate.test".to_owned())
+            .expect("multi-server resolution must submit");
+        let answer = wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("second DNS server must resolve");
+        assert_eq!(
+            answer.addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 31))]
+        );
+        resolver
+            .shutdown()
+            .expect("multi-server resolver must join");
     }
 
     #[test]

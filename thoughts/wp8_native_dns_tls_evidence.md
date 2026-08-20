@@ -100,7 +100,7 @@ the peer has observed ClientHello. The bypass skips certificate-chain and hostna
 rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
 sans-I/O test proves request encryption and response decryption, and the platform verifier
 configuration builds with an explicit Ring provider rather than process-global provider state. The
-complete Windows native suite passes 88 unit, 4 public-contract, and 2 doctests at this point, with
+complete Windows native suite passes 89 unit, 4 public-contract, and 2 doctests at this point, with
 strict clippy and formatting. This is progress evidence, not WP8 acceptance.
 
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
@@ -110,17 +110,19 @@ clamps retry settings, and rejects scoped link-local IPv6 servers rather than si
 interface name. A construction/shutdown fixture initially exposed an unreachable IPv6 server on an
 otherwise operational Windows adapter; construction now tries the ranked list until the kernel
 accepts a connected UDP route. The fixture proves that selected server, platform TLS configuration,
-resolver thread, and Engine can be created and joined together. Response-time failover between
-kernel-reachable but silent servers remains explicit work.
+resolver thread, and Engine can be created and joined together. A separate two-server fixture proves
+that a kernel-reachable but silent server exhausts its bounded attempt, the owner replaces its
+registered UDP socket, and the same query completes through the next ranked server.
 
 ## Deliberate remainder
 
-- Bounded positive/negative caching, TTL clamps, search-suffix behavior, multi-server failover,
-  and Happy Eyeballs remain after basic system discovery and TCP truncation fallback.
+- Bounded positive/negative caching, TTL clamps, search-suffix behavior, and Happy Eyeballs remain
+  after basic system discovery, silent-server failover, and TCP truncation fallback.
   Discovery of a kernel-reachable ranked server is not yet a production DNS claim.
 - The current slice uses serial A then AAAA lookup and bounded CNAME following. Happy Eyeballs,
-  randomized IDs beyond the random sequence seed, richer server rotation, and response-code
-  fixtures remain before the resolver can be called consumer-ready.
+  randomized IDs beyond the random sequence seed, adaptive server health, and response-code
+  fixtures remain before the resolver can be called consumer-ready. Current failover is a bounded
+  ordered walk, not a latency-ranking pool.
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
   state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.
