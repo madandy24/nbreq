@@ -10,12 +10,13 @@ publish = false
 default = []
 curl-pilot = ["dep:curl"]
 curl-pilot-vendored = ["curl-pilot", "curl/ssl"]
-native = []
+native = ["dep:mio"]
 test-support = []
 ffi = []
 
 [dependencies]
 curl = { version = "=0.4.50", optional = true, default-features = false, features = ["poll_7_68_0", "nbreq-explicit-init"] }
+mio = { version = "=1.0.4", optional = true, features = ["net", "os-poll"] }
 
 [dev-dependencies]
 rcgen = "=0.13.2"

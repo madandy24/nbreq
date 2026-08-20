@@ -3,7 +3,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(feature = "curl-pilot")]
 use crate::backend::BackendFactory;
 use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
 use crate::registry::{RequestState, Shared};
@@ -162,7 +161,7 @@ fn spawned_main_inner<B: Backend + ?Sized>(
     }
 }
 
-#[cfg(feature = "curl-pilot")]
+#[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
 pub(crate) fn spawned_main_factory(
     shared: Arc<Shared>,
     factory: Box<dyn BackendFactory>,

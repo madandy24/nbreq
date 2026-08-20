@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
-#[cfg(feature = "curl-pilot")]
 use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
@@ -155,6 +154,20 @@ impl Engine {
             ));
         }
 
+        Self::with_spawned_factory(config, factory)
+    }
+
+    #[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
+    pub(crate) fn with_spawned_factory(
+        config: EngineConfig,
+        factory: Box<dyn backend::BackendFactory>,
+    ) -> Result<Self, Error> {
+        if config.run_mode() != RunMode::Spawned {
+            return Err(Error::new(
+                ErrorKind::WrongMode,
+                "a spawned backend factory requires spawned Engine mode",
+            ));
+        }
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
             return Err(Error::new(
@@ -177,7 +190,7 @@ impl Engine {
                 dispatcher.seal();
                 Error::new(
                     ErrorKind::Internal,
-                    format!("failed to spawn NBReq curl reactor: {error}"),
+                    format!("failed to spawn NBReq reactor factory: {error}"),
                 )
             });
         let handle = match handle {

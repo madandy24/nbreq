@@ -4,10 +4,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "curl-pilot")]
 use crate::EngineConfig;
-#[cfg(feature = "curl-pilot")]
 use crate::registry::Shared;
 use crate::{Completion, Error, Request, RequestId, ShutdownError};
-#[cfg(feature = "curl-pilot")]
 use std::sync::Arc;
 
 #[cfg(feature = "curl-pilot")]
@@ -54,7 +52,7 @@ pub(crate) trait Backend {
     }
 }
 
-#[cfg(feature = "curl-pilot")]
+#[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
 pub(crate) trait BackendFactory: Send {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
 }

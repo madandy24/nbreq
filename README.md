@@ -62,12 +62,22 @@ Engine configuration independently bounds accepted/inflight requests, queued com
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
 until it returns; blocking-only requests do not consume callback capacity.
 
+## Native reactor status
+
+The private `native` feature now builds the HTTP-independent nonblocking TCP foundation using
+`mio` for portable OS readiness and notification. `mio` is not an executor and NBReq does not
+adopt Tokio or any async runtime. NBReq owns socket state, generation-safe identities, bounded byte
+queues, deadlines, cancellation, and shutdown. Windows raw-transfer and Engine-lifecycle fixtures
+pass; Ubuntu proof remains before WP6 acceptance. Enabling `native` does not yet make
+`Engine::new` select it—HTTP serialization and framing begin in WP7.
+
 ## Project documents
 
 - [Initial product specification](thoughts/nbreq_initial_spec.md)
 - [Delivery plan](thoughts/project_nbreq_plan.html)
 - [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)
 - [WP4 adversarial HTTP laboratory evidence](thoughts/wp4_http_lab_evidence.md)
+- [WP6 native reactor evidence](thoughts/wp6_native_reactor_evidence.md)
 - [GDS curl-pilot integration plan](thoughts/gds_curl_pilot_integration_plan.md)
 - [GDS G4 packaging and loader evidence](thoughts/gds_curl_pilot_g4_evidence.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
