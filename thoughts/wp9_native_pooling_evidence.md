@@ -33,6 +33,15 @@ accounting, queue bounds, and deadlines. Cleartext writes then reuse the socket;
 on the owner and encrypts the next buffered request without another handshake. A close racing after
 the quiet probe fails that request and is never transparently replayed, regardless of method.
 
+Connecting, leased, and idle sockets now share separate private active bounds of 32 globally and 8
+per origin/policy key. A fresh connection reserves capacity before DNS or socket creation and every
+terminal path releases it exactly once; an idle socket keeps its reservation until reuse or close.
+When capacity is exhausted, accepted requests wait in an Engine-owned queue already bounded by the
+public inflight limit. The owner starts the oldest eligible request: a head request blocked only by
+its per-origin cap does not prevent an older-capacity-free origin from using a global slot, but keeps
+its place and starts once that origin becomes eligible. Queue time remains part of the original
+total and inactivity deadlines. There is still no replay after a leased socket fails.
+
 Pooling exposed one real lifecycle assumption: the generic spawned loop previously stopped polling
 when its public active-request map became empty. A backend can now declare owner-side idle work, so
 the 50 ms native poll continues until FIN, error, expiry, reuse, or shutdown removes the last idle
@@ -53,6 +62,12 @@ entry. This is not represented by a fake request and does not weaken request ter
   socket before request send and the real second response arrives on a replacement connection.
 - A second request leases the first request's clean socket, is cancelled after the server observes
   it, and closes that connection; 10 repetitions prove a third request uses a replacement socket.
+- With private limits reduced to two globally and one per origin, a stalled first-origin request
+  holds its slot, a second same-origin request waits, and a later eligible second-origin request
+  completes. Releasing the first request then admits the queued same-origin request on the clean
+  reused socket.
+- With both active limits reduced to one, a second accepted request expires from the acquisition
+  queue under its original 100 ms total deadline without opening a second socket.
 - Existing cancellation, timeout, TLS dirty-EOF, framing, and failure paths remain destructive and
   never call the pool-return path.
 
@@ -60,8 +75,6 @@ entry. This is not represented by a fake request and does not weaken request ter
 
 - Add explicit contamination/replacement fixtures for malformed/oversize responses on reused
   sockets, TLS close/error after reuse, and shutdown with a mix of idle and leased connections.
-- Add active global/per-origin connection caps, FIFO acquisition pressure, deadline behavior while
-  queued, and anti-starvation evidence. The current constants bound idle retention only.
 - Prove cross-origin and TLS-policy isolation under concurrent load, stale-close failure after a
   quiet lease probe without replay, idle expiry without waiting 30 wall-clock seconds, and ordinary
   manual-mode clean reuse.

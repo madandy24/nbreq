@@ -27,6 +27,21 @@ const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
 const MAX_IDLE_CONNECTIONS: usize = 32;
 const MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
 const IDLE_CONNECTION_LIFETIME: Duration = Duration::from_secs(30);
+const MAX_NATIVE_CONNECTIONS: usize = 32;
+const MAX_NATIVE_CONNECTIONS_PER_ORIGIN: usize = 8;
+
+#[derive(Clone, Copy)]
+struct ConnectionLimits {
+    global: usize,
+    per_origin: usize,
+}
+
+impl ConnectionLimits {
+    const DEFAULT: Self = Self {
+        global: MAX_NATIVE_CONNECTIONS,
+        per_origin: MAX_NATIVE_CONNECTIONS_PER_ORIGIN,
+    };
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct HttpLimits {
@@ -1011,6 +1026,10 @@ struct NativeHttpBackend {
     idle: HashMap<ConnectionKey, VecDeque<IdleConnection>>,
     idle_slots: HashMap<SlotId, ConnectionKey>,
     idle_count: usize,
+    connection_count: usize,
+    connections_per_key: HashMap<ConnectionKey, usize>,
+    waiting: VecDeque<PendingResolve>,
+    connection_limits: ConnectionLimits,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1078,6 +1097,24 @@ impl NativeHttpBackend {
         resolver: Option<ResolverConfig>,
         tls: Option<NativeTlsConfigs>,
     ) -> Result<Self, Error> {
+        Self::new_with_connection_limits(limits, resolver, tls, ConnectionLimits::DEFAULT)
+    }
+
+    fn new_with_connection_limits(
+        limits: HttpLimits,
+        resolver: Option<ResolverConfig>,
+        tls: Option<NativeTlsConfigs>,
+        connection_limits: ConnectionLimits,
+    ) -> Result<Self, Error> {
+        if connection_limits.global == 0
+            || connection_limits.per_origin == 0
+            || connection_limits.per_origin > connection_limits.global
+        {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native connection limits are invalid",
+            ));
+        }
         let reactor = NativeReactor::new(256).map_err(native_internal_error)?;
         let resolver = resolver
             .map(|config| NativeResolver::new(config, reactor.waker()))
@@ -1095,7 +1132,140 @@ impl NativeHttpBackend {
             idle: HashMap::new(),
             idle_slots: HashMap::new(),
             idle_count: 0,
+            connection_count: 0,
+            connections_per_key: HashMap::new(),
+            waiting: VecDeque::new(),
+            connection_limits,
         })
+    }
+
+    fn can_reserve_connection(&self, key: &ConnectionKey) -> bool {
+        self.connection_count < self.connection_limits.global
+            && self.connections_per_key.get(key).copied().unwrap_or(0)
+                < self.connection_limits.per_origin
+    }
+
+    fn reserve_connection(&mut self, key: &ConnectionKey) -> bool {
+        if !self.can_reserve_connection(key) {
+            return false;
+        }
+        self.connection_count += 1;
+        *self.connections_per_key.entry(key.clone()).or_default() += 1;
+        true
+    }
+
+    fn release_connection(&mut self, key: &ConnectionKey) {
+        let Some(count) = self.connections_per_key.get_mut(key) else {
+            debug_assert!(false, "released an unreserved native connection");
+            return;
+        };
+        if self.connection_count == 0 || *count == 0 {
+            debug_assert!(false, "native connection reservation count underflowed");
+            return;
+        }
+        self.connection_count -= 1;
+        *count -= 1;
+        if *count == 0 {
+            self.connections_per_key.remove(key);
+        }
+    }
+
+    fn evict_idle_for_key(&mut self, key: &ConnectionKey) -> bool {
+        let slot = self
+            .idle
+            .get(key)
+            .and_then(|connections| connections.front())
+            .map(|connection| connection.slot);
+        if let Some(slot) = slot {
+            self.discard_idle_slot(slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn evict_any_idle(&mut self) -> bool {
+        let slot = self
+            .idle
+            .values()
+            .find_map(|connections| connections.front())
+            .map(|connection| connection.slot);
+        if let Some(slot) = slot {
+            self.discard_idle_slot(slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn make_connection_capacity(&mut self, key: &ConnectionKey) -> bool {
+        while self.connections_per_key.get(key).copied().unwrap_or(0)
+            >= self.connection_limits.per_origin
+        {
+            if !self.evict_idle_for_key(key) {
+                return false;
+            }
+        }
+        while self.connection_count >= self.connection_limits.global {
+            if !self.evict_any_idle() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn expire_waiting(&mut self) -> Vec<BackendCompletion> {
+        let now = Instant::now();
+        let mut completions = Vec::new();
+        let mut index = 0;
+        while index < self.waiting.len() {
+            if !self.waiting[index]
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= now)
+            {
+                index += 1;
+                continue;
+            }
+            let Some(pending) = self.waiting.remove(index) else {
+                break;
+            };
+            let timeout = pending.expired_timeout(now);
+            completions.push(BackendCompletion {
+                id: pending.request_id,
+                completion: Completion::Failed(Error::timeout(
+                    timeout,
+                    native_timeout_message(timeout),
+                )),
+            });
+        }
+        completions
+    }
+
+    fn dispatch_waiting(&mut self) -> Vec<BackendCompletion> {
+        let mut completions = self.expire_waiting();
+        let mut index = 0;
+        while index < self.waiting.len() {
+            let Some(pending) = self.waiting.remove(index) else {
+                break;
+            };
+            let Some(pending) = self.try_begin_reused(pending) else {
+                index = 0;
+                continue;
+            };
+            if !self.make_connection_capacity(&pending.key)
+                || !self.reserve_connection(&pending.key)
+            {
+                self.waiting.insert(index, pending);
+                index += 1;
+                continue;
+            }
+            let id = pending.request_id;
+            if let Some(completion) = self.start_reserved(pending) {
+                completions.push(BackendCompletion { id, completion });
+            }
+            index = 0;
+        }
+        completions
     }
 
     fn finish(
@@ -1107,6 +1277,7 @@ impl NativeHttpBackend {
         self.reactor.cancel(slot);
         if let Some(transfer) = self.transfers.remove(&slot) {
             self.request_to_slot.remove(&transfer.request_id);
+            self.release_connection(&transfer.key);
             completions.push(BackendCompletion {
                 id: transfer.request_id,
                 completion,
@@ -1142,6 +1313,7 @@ impl NativeHttpBackend {
             }
         }
         self.reactor.cancel(slot);
+        self.release_connection(&key);
     }
 
     fn try_begin_reused(&mut self, pending: PendingResolve) -> Option<PendingResolve> {
@@ -1150,6 +1322,7 @@ impl NativeHttpBackend {
         };
         if self.reactor.idle_is_quiet(idle.slot) != Ok(true) {
             self.reactor.cancel(idle.slot);
+            self.release_connection(&pending.key);
             return Some(pending);
         }
         let deadline = pending.next_deadline();
@@ -1169,6 +1342,7 @@ impl NativeHttpBackend {
             .is_err()
         {
             self.reactor.cancel(idle.slot);
+            self.release_connection(&pending.key);
             return Some(pending);
         }
         let outbound = match idle.tls.as_mut() {
@@ -1176,6 +1350,7 @@ impl NativeHttpBackend {
                 Ok(outbound) => outbound,
                 Err(_) => {
                     self.reactor.cancel(idle.slot);
+                    self.release_connection(&pending.key);
                     return Some(pending);
                 }
             },
@@ -1183,6 +1358,7 @@ impl NativeHttpBackend {
         };
         if self.reactor.queue_write(idle.slot, &outbound).is_err() {
             self.reactor.cancel(idle.slot);
+            self.release_connection(&pending.key);
             return Some(pending);
         }
         let request_id = pending.request_id;
@@ -1245,6 +1421,7 @@ impl NativeHttpBackend {
             }
         } else {
             self.reactor.cancel(slot);
+            self.release_connection(&transfer.key);
         }
         completions.push(BackendCompletion {
             id: transfer.request_id,
@@ -1260,6 +1437,7 @@ impl NativeHttpBackend {
         let deadline = pending.next_deadline();
         let tls = if pending.scheme == "https" {
             let Some(configs) = &self.tls else {
+                self.release_connection(&pending.key);
                 return Some(Completion::Failed(Error::new(
                     ErrorKind::Unsupported,
                     "the selected native proving Engine has no TLS configuration",
@@ -1271,7 +1449,10 @@ impl NativeHttpBackend {
                 pending.serialized.bytes.clone(),
             ) {
                 Ok(tls) => Some(tls),
-                Err(error) => return Some(Completion::Failed(error)),
+                Err(error) => {
+                    self.release_connection(&pending.key);
+                    return Some(Completion::Failed(error));
+                }
             }
         } else {
             None
@@ -1292,12 +1473,14 @@ impl NativeHttpBackend {
         {
             Ok(slot) => slot,
             Err(failure) => {
+                self.release_connection(&pending.key);
                 return Some(Completion::Failed(native_transport_error(failure)));
             }
         };
         if tls.is_none() {
             if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
                 self.reactor.cancel(slot);
+                self.release_connection(&pending.key);
                 return Some(Completion::Failed(native_transport_error(failure)));
             }
         }
@@ -1342,6 +1525,7 @@ impl NativeHttpBackend {
             match result.result {
                 Ok(answer) => {
                     let Some(ip) = answer.addresses.into_iter().next() else {
+                        self.release_connection(&pending.key);
                         completions.push(BackendCompletion {
                             id: pending.request_id,
                             completion: Completion::Failed(Error::transport(
@@ -1358,13 +1542,16 @@ impl NativeHttpBackend {
                         completions.push(BackendCompletion { id, completion });
                     }
                 }
-                Err(failure) => completions.push(BackendCompletion {
-                    id: pending.request_id,
-                    completion: Completion::Failed(Error::transport(
-                        TransportStage::Dns,
-                        failure.message,
-                    )),
-                }),
+                Err(failure) => {
+                    self.release_connection(&pending.key);
+                    completions.push(BackendCompletion {
+                        id: pending.request_id,
+                        completion: Completion::Failed(Error::transport(
+                            TransportStage::Dns,
+                            failure.message,
+                        )),
+                    });
+                }
             }
         }
         Ok(completions)
@@ -1388,6 +1575,7 @@ impl NativeHttpBackend {
                 continue;
             };
             self.request_to_resolve.remove(&pending.request_id);
+            self.release_connection(&pending.key);
             if let Some(resolver) = &self.resolver {
                 resolver.cancel(key)?;
             }
@@ -1412,6 +1600,33 @@ impl NativeHttpBackend {
             )
         })?;
         Ok(key)
+    }
+
+    fn start_reserved(&mut self, pending: PendingResolve) -> Option<Completion> {
+        if let Ok(ip) = pending.host.parse::<IpAddr>() {
+            return self.begin_connection(SocketAddr::new(ip, pending.port), pending);
+        }
+        let key = match self.next_resolve_key() {
+            Ok(key) => key,
+            Err(error) => {
+                self.release_connection(&pending.key);
+                return Some(Completion::Failed(error));
+            }
+        };
+        let Some(resolver) = &self.resolver else {
+            self.release_connection(&pending.key);
+            return Some(Completion::Failed(Error::new(
+                ErrorKind::Unsupported,
+                "the native HTTP proving Engine requires an injected resolver for hostnames",
+            )));
+        };
+        if let Err(error) = resolver.resolve(key, pending.host.clone()) {
+            self.release_connection(&pending.key);
+            return Some(Completion::Failed(error));
+        }
+        self.request_to_resolve.insert(pending.request_id, key);
+        self.resolves.insert(key, pending);
+        None
     }
 
     fn fail_native(
@@ -1791,43 +2006,42 @@ impl Backend for NativeHttpBackend {
             key,
         };
         let pending = self.try_begin_reused(pending)?;
-        if let Ok(ip) = origin.host.parse::<IpAddr>() {
-            return self.begin_connection(SocketAddr::new(ip, origin.port), pending);
+        if !self.make_connection_capacity(&pending.key) || !self.reserve_connection(&pending.key) {
+            self.waiting.push_back(pending);
+            return None;
         }
-        let key = match self.next_resolve_key() {
-            Ok(key) => key,
-            Err(error) => return Some(Completion::Failed(error)),
-        };
-        let Some(resolver) = &self.resolver else {
-            return Some(Completion::Failed(Error::new(
-                ErrorKind::Unsupported,
-                "the native HTTP proving Engine requires an injected resolver for hostnames",
-            )));
-        };
-        if let Err(error) = resolver.resolve(key, origin.host) {
-            return Some(Completion::Failed(error));
-        }
-        self.request_to_resolve.insert(id, key);
-        self.resolves.insert(key, pending);
-        None
+        self.start_reserved(pending)
     }
 
     fn cancel(&mut self, id: RequestId) {
+        if let Some(index) = self
+            .waiting
+            .iter()
+            .position(|pending| pending.request_id == id)
+        {
+            self.waiting.remove(index);
+        }
         if let Some(key) = self.request_to_resolve.remove(&id) {
-            self.resolves.remove(&key);
+            if let Some(pending) = self.resolves.remove(&key) {
+                self.release_connection(&pending.key);
+            }
             if let Some(resolver) = &self.resolver {
                 let _cancel_result = resolver.cancel(key);
             }
         }
         if let Some(slot) = self.request_to_slot.remove(&id) {
-            self.transfers.remove(&slot);
+            if let Some(transfer) = self.transfers.remove(&slot) {
+                self.release_connection(&transfer.key);
+            }
             self.reactor.cancel(slot);
         }
     }
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
-        let mut completions = self.process_resolver_results()?;
+        let mut completions = self.dispatch_waiting();
+        completions.extend(self.process_resolver_results()?);
         completions.extend(self.expire_resolves()?);
+        completions.extend(self.dispatch_waiting());
         let poll_deadline = if completions.is_empty() {
             deadline
         } else {
@@ -1840,6 +2054,7 @@ impl Backend for NativeHttpBackend {
         completions.extend(self.process_events(events)?);
         completions.extend(self.process_resolver_results()?);
         completions.extend(self.expire_resolves()?);
+        completions.extend(self.dispatch_waiting());
         Ok(completions)
     }
 
@@ -1851,6 +2066,9 @@ impl Backend for NativeHttpBackend {
         self.idle.clear();
         self.idle_slots.clear();
         self.idle_count = 0;
+        self.connection_count = 0;
+        self.connections_per_key.clear();
+        self.waiting.clear();
         if let Some(resolver) = &mut self.resolver {
             resolver.shutdown().map_err(ShutdownError::new)?;
         }
@@ -1936,6 +2154,13 @@ mod tests {
             sequence: 1,
         };
         backend.request_to_slot.insert(request_id, slot);
+        let connection_key = ConnectionKey {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: address.port(),
+            dangerously_disable_tls_verification: false,
+        };
+        assert!(backend.reserve_connection(&connection_key));
         backend.transfers.insert(
             slot,
             HttpTransfer {
@@ -1949,12 +2174,7 @@ mod tests {
                 total_deadline: Some(deadline),
                 inactivity_timeout: Some(Duration::from_secs(1)),
                 inactivity_deadline: Some(deadline),
-                key: ConnectionKey {
-                    scheme: "http".to_owned(),
-                    host: "127.0.0.1".to_owned(),
-                    port: address.port(),
-                    dangerously_disable_tls_verification: false,
-                },
+                key: connection_key,
                 request_permits_reuse: true,
                 request_write_drained: false,
             },
@@ -2351,6 +2571,9 @@ mod tests {
                         Err(error) => panic!("close fixture accept failed: {error}"),
                     }
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("close fixture stream must be blocking");
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 256];
                 while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -2418,6 +2641,9 @@ mod tests {
                         Err(error) => panic!("idle-close fixture accept failed: {error}"),
                     }
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("idle-close fixture stream must be blocking");
                 stream
                     .set_nonblocking(false)
                     .expect("idle-close peer must become blocking");
@@ -2693,6 +2919,199 @@ mod tests {
         assert_eq!(second.body(), b"good");
         engine.shutdown().expect("lease-probe Engine must stop");
         assert!(server.join().expect("lease-probe fixture must join"));
+    }
+
+    #[test]
+    fn connection_queue_starts_the_oldest_eligible_origin_without_starving_its_head() {
+        let listener_a = TcpListener::bind("127.0.0.1:0").expect("origin A must bind");
+        let address_a = listener_a.local_addr().expect("origin A address");
+        let listener_b = TcpListener::bind("127.0.0.1:0").expect("origin B must bind");
+        let address_b = listener_b.local_addr().expect("origin B address");
+        let (a_ready_tx, a_ready_rx) = std::sync::mpsc::channel();
+        let (release_a_tx, release_a_rx) = std::sync::mpsc::channel();
+        let server_a = thread::spawn(move || {
+            let read_head = |stream: &mut std::net::TcpStream| {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut buffer)
+                        .expect("origin A request must read");
+                    assert_ne!(read, 0, "origin A closed before request head");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+            };
+            let (mut stream, _) = listener_a.accept().expect("origin A must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("origin A timeout");
+            read_head(&mut stream);
+            a_ready_tx.send(()).expect("origin A barrier must signal");
+            release_a_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("origin A must be released");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\na1")
+                .expect("origin A first response must write");
+            stream.flush().expect("origin A first response must flush");
+            read_head(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\na2")
+                .expect("origin A second response must write");
+        });
+        let server_b = thread::spawn(move || {
+            let (mut stream, _) = listener_b.accept().expect("origin B must accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 256];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("origin B request must read");
+                assert_ne!(read, 0, "origin B closed before request head");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nb1")
+                .expect("origin B response must write");
+        });
+
+        let config = EngineConfig::manual();
+        let backend = NativeHttpBackend::new_with_connection_limits(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits {
+                global: 2,
+                per_origin: 1,
+            },
+        )
+        .expect("bounded native backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("bounded manual Engine must construct");
+        let request = |url: String| {
+            Request::get(url)
+                .total_timeout(Duration::from_secs(3))
+                .build()
+                .expect("bounded request must build")
+        };
+        let a1 = engine
+            .client()
+            .submit(request(format!("http://{address_a}/a1")))
+            .expect("A1 must submit");
+        let a2 = engine
+            .client()
+            .submit(request(format!("http://{address_a}/a2")))
+            .expect("A2 must submit");
+        let b1 = engine
+            .client()
+            .submit(request(format!("http://{address_b}/b1")))
+            .expect("B1 must submit");
+        let Completion::Completed(b1) = engine.drive_until(b1).expect("B1 must drive") else {
+            panic!("oldest eligible request on origin B did not complete");
+        };
+        assert_eq!(b1.body(), b"b1");
+        a_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("A1 must already own its connection");
+        release_a_tx.send(()).expect("A1 must release");
+        let Completion::Completed(a1) = engine.drive_until(a1).expect("A1 must drive") else {
+            panic!("A1 did not complete");
+        };
+        assert_eq!(a1.body(), b"a1");
+        let Completion::Completed(a2) = engine.drive_until(a2).expect("A2 must drive") else {
+            panic!("queued A2 did not complete");
+        };
+        assert_eq!(a2.body(), b"a2");
+        engine.shutdown().expect("bounded Engine must stop");
+        server_a.join().expect("origin A fixture must join");
+        server_b.join().expect("origin B fixture must join");
+    }
+
+    #[test]
+    fn connection_queue_preserves_acceptance_timeouts_without_opening_past_the_cap() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("queue-timeout fixture must bind");
+        let address = listener
+            .local_addr()
+            .expect("queue-timeout fixture address");
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("queue-timeout fixture must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("queue-timeout socket timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 256];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("first capped request must read");
+                assert_ne!(read, 0, "first capped request closed too soon");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            first_tx.send(()).expect("first capped barrier must signal");
+            match stream.read(&mut buffer) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
+                other => panic!("first capped socket was not closed: {other:?}"),
+            }
+        });
+        let config = EngineConfig::manual();
+        let backend = NativeHttpBackend::new_with_connection_limits(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits {
+                global: 1,
+                per_origin: 1,
+            },
+        )
+        .expect("queue-timeout backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("queue-timeout Engine must construct");
+        let first = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{address}/first"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("first capped request must build"),
+            )
+            .expect("first capped request must submit");
+        let second = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{address}/second"))
+                    .total_timeout(Duration::from_millis(100))
+                    .build()
+                    .expect("queued timeout request must build"),
+            )
+            .expect("queued timeout request must submit");
+        let Completion::Failed(error) = engine
+            .drive_until(second)
+            .expect("queued timeout request must drive")
+        else {
+            panic!("queued request did not time out");
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first capped request must own the only connection");
+        first
+            .handle()
+            .cancel()
+            .expect("first capped request must cancel");
+        assert!(matches!(first.wait(), Completion::Cancelled));
+        engine.shutdown().expect("queue-timeout Engine must stop");
+        server.join().expect("queue-timeout fixture must join");
     }
 
     #[test]
