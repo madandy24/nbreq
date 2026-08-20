@@ -2416,6 +2416,77 @@ mod tests {
     }
 
     #[test]
+    fn native_https_reuses_one_clean_tls_connection_for_sequential_requests() {
+        let key = KeyPair::generate().expect("reused HTTPS key must generate");
+        let params = CertificateParams::new(vec!["reuse.test".to_owned()])
+            .expect("reused HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("reused HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("reused HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("reused HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reused HTTPS fixture must bind");
+        let address = listener.local_addr().expect("reused HTTPS fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener
+                .accept()
+                .expect("reused HTTPS fixture must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("reused HTTPS read timeout");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("reused HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            for body in [b"one".as_slice(), b"two".as_slice()] {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = tls
+                        .read(&mut buffer)
+                        .expect("reused HTTPS request must read");
+                    assert_ne!(read, 0, "client closed the reusable TLS connection early");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                tls.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+                )
+                .expect("reused HTTPS response head must write");
+                tls.write_all(body)
+                    .expect("reused HTTPS response body must write");
+                tls.flush().expect("reused HTTPS response must flush");
+            }
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            EngineConfig::spawned(),
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("reused native HTTPS Engine must construct");
+        for expected in [b"one".as_slice(), b"two".as_slice()] {
+            let response = engine
+                .client()
+                .execute(
+                    Request::get(format!("https://reuse.test:{}/reuse", address.port()))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("reused HTTPS request must build"),
+                )
+                .expect("reused HTTPS request must complete");
+            assert_eq!(response.body(), expected);
+        }
+        engine.shutdown().expect("reused HTTPS Engine must stop");
+        server.join().expect("reused HTTPS fixture must join");
+    }
+
+    #[test]
     fn one_shot_https_upload_over_tls_flight_limit_fails_at_send_until_streaming_lands() {
         let key = KeyPair::generate().expect("large HTTPS key must generate");
         let params = CertificateParams::new(vec!["large-upload.test".to_owned()])

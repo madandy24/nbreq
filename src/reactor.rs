@@ -83,7 +83,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
     }
 
     pub(crate) fn transport_wait(&self) -> Option<std::time::Duration> {
-        if self.active.is_empty() {
+        if self.active.is_empty() && !self.backend.wants_poll_without_requests() {
             return None;
         }
         match self.backend.poll_mode() {

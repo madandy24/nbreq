@@ -3,7 +3,7 @@
 //! `httparse` recognizes response heads and chunk-size lines. NBReq owns request policy, body
 //! framing, limits, EOF semantics, and the state transition that eventually releases a socket.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +24,9 @@ use crate::{
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
+const MAX_IDLE_CONNECTIONS: usize = 32;
+const MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
+const IDLE_CONNECTION_LIFETIME: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy)]
 pub(super) struct HttpLimits {
@@ -53,6 +56,7 @@ impl HttpLimits {
 pub(super) struct SerializedRequest {
     pub(super) bytes: Vec<u8>,
     pub(super) response_to_head: bool,
+    permits_reuse: bool,
 }
 
 pub(super) fn serialize_request(
@@ -73,7 +77,7 @@ pub(super) fn serialize_request(
 
     let mut host_count = 0_usize;
     let mut content_length = None;
-    let mut has_connection = false;
+    let mut connection_policy = None;
     for header in request.headers() {
         if header.name().eq_ignore_ascii_case("host") {
             host_count += 1;
@@ -97,7 +101,13 @@ pub(super) fn serialize_request(
                 "buffered native requests do not support Transfer-Encoding",
             ));
         } else if header.name().eq_ignore_ascii_case("connection") {
-            has_connection = true;
+            let parsed = parse_connection_policy(header.value())?;
+            connection_policy = Some(match (connection_policy, parsed) {
+                (None | Some(ConnectionPolicy::KeepAlive), ConnectionPolicy::KeepAlive) => {
+                    ConnectionPolicy::KeepAlive
+                }
+                _ => ConnectionPolicy::Close,
+            });
         }
     }
     if host_count > 1 {
@@ -115,10 +125,7 @@ pub(super) fn serialize_request(
 
     let generated_host = host_count == 0;
     let generated_length = content_length.is_none() && !request.body().is_empty();
-    let generated_connection = !has_connection;
-    let generated_count = usize::from(generated_host)
-        + usize::from(generated_length)
-        + usize::from(generated_connection);
+    let generated_count = usize::from(generated_host) + usize::from(generated_length);
     let field_count = request
         .headers()
         .len()
@@ -139,7 +146,6 @@ pub(super) fn serialize_request(
             b"Content-Length".as_slice(),
             generated_length_value.as_bytes(),
         )),
-        generated_connection.then_some((b"Connection".as_slice(), b"close".as_slice())),
     ]
     .into_iter()
     .flatten()
@@ -185,14 +191,12 @@ pub(super) fn serialize_request(
             generated_length_value.as_bytes(),
         );
     }
-    if generated_connection {
-        append_header(&mut bytes, b"Connection", b"close");
-    }
     bytes.extend_from_slice(b"\r\n");
     bytes.extend_from_slice(request.body());
     Ok(SerializedRequest {
         bytes,
         response_to_head: matches!(request.method(), Method::Head),
+        permits_reuse: connection_policy.is_none_or(|policy| policy == ConnectionPolicy::KeepAlive),
     })
 }
 
@@ -264,6 +268,53 @@ fn append_header(output: &mut Vec<u8>, name: &[u8], value: &[u8]) {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectionPolicy {
+    KeepAlive,
+    Close,
+}
+
+fn parse_connection_policy(value: &[u8]) -> Result<ConnectionPolicy, Error> {
+    let mut saw_token = false;
+    let mut reusable = true;
+    for raw in value.split(|byte| *byte == b',') {
+        let token = trim_ascii_whitespace(raw);
+        if token.is_empty()
+            || !token
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(byte))
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "request Connection header contains an invalid token",
+            ));
+        }
+        saw_token = true;
+        reusable &= token.eq_ignore_ascii_case(b"keep-alive");
+    }
+    if !saw_token {
+        return Err(Error::new(
+            ErrorKind::InvalidRequest,
+            "request Connection header is empty",
+        ));
+    }
+    Ok(if reusable {
+        ConnectionPolicy::KeepAlive
+    } else {
+        ConnectionPolicy::Close
+    })
+}
+
+fn trim_ascii_whitespace(mut value: &[u8]) -> &[u8] {
+    while value.first().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[1..];
+    }
+    while value.last().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecodeState {
     Head,
     Fixed { remaining: usize },
@@ -285,6 +336,14 @@ pub(super) struct ResponseDecoder {
     body: Vec<u8>,
     informational_responses: u8,
     framing_bytes: usize,
+    permits_reuse: bool,
+}
+
+#[derive(Debug)]
+struct DecodeProgress {
+    response: Option<Response>,
+    consumed: usize,
+    permits_reuse: bool,
 }
 
 impl ResponseDecoder {
@@ -299,22 +358,31 @@ impl ResponseDecoder {
             body: Vec::new(),
             informational_responses: 0,
             framing_bytes: 0,
+            permits_reuse: false,
         }
     }
 
-    pub(super) fn ingest(&mut self, bytes: &[u8]) -> Result<Option<Response>, Error> {
+    fn ingest(&mut self, bytes: &[u8]) -> Result<DecodeProgress, Error> {
         if self.state == DecodeState::Complete {
             return Err(Error::new(
                 ErrorKind::Internal,
                 "native HTTP decoder received bytes after completion",
             ));
         }
-        for byte in bytes {
+        for (index, byte) in bytes.iter().enumerate() {
             if let Some(response) = self.consume(*byte)? {
-                return Ok(Some(response));
+                return Ok(DecodeProgress {
+                    response: Some(response),
+                    consumed: index + 1,
+                    permits_reuse: self.permits_reuse,
+                });
             }
         }
-        Ok(None)
+        Ok(DecodeProgress {
+            response: None,
+            consumed: bytes.len(),
+            permits_reuse: false,
+        })
     }
 
     pub(super) fn eof(&mut self) -> Result<Option<Response>, Error> {
@@ -360,9 +428,11 @@ impl ResponseDecoder {
                             status,
                             headers,
                             framing,
+                            permits_reuse,
                         } => {
                             self.status = Some(status);
                             self.headers = headers;
+                            self.permits_reuse = permits_reuse;
                             match framing {
                                 BodyFraming::None | BodyFraming::Fixed(0) => {
                                     return self.complete().map(Some);
@@ -516,6 +586,7 @@ enum ParsedHead {
         status: u16,
         headers: Vec<Header>,
         framing: BodyFraming,
+        permits_reuse: bool,
     },
 }
 
@@ -595,11 +666,48 @@ fn parse_response_head(
     } else {
         BodyFraming::CloseDelimited
     };
+    let permits_reuse = response_permits_reuse(version, &headers, framing)?;
     Ok(ParsedHead::Final {
         status,
         headers,
         framing,
+        permits_reuse,
     })
+}
+
+fn response_permits_reuse(
+    version: u8,
+    headers: &[Header],
+    framing: BodyFraming,
+) -> Result<bool, Error> {
+    if matches!(framing, BodyFraming::CloseDelimited) {
+        return Ok(false);
+    }
+    let mut close = false;
+    let mut keep_alive = false;
+    let mut other = false;
+    for header in headers
+        .iter()
+        .filter(|header| header.name().eq_ignore_ascii_case("connection"))
+    {
+        for raw in header.value().split(|byte| *byte == b',') {
+            let token = trim_ascii_whitespace(raw);
+            if token.is_empty()
+                || !token
+                    .iter()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(byte))
+            {
+                return Err(http_error(
+                    "HTTP response Connection header contains an invalid token",
+                ));
+            }
+            close |= token.eq_ignore_ascii_case(b"close");
+            keep_alive |= token.eq_ignore_ascii_case(b"keep-alive");
+            other |=
+                !token.eq_ignore_ascii_case(b"close") && !token.eq_ignore_ascii_case(b"keep-alive");
+        }
+    }
+    Ok(!close && !other && (version == 1 || keep_alive))
 }
 
 fn response_content_length(headers: &[Header]) -> Result<Option<usize>, Error> {
@@ -845,6 +953,9 @@ struct HttpTransfer {
     total_deadline: Option<Instant>,
     inactivity_timeout: Option<Duration>,
     inactivity_deadline: Option<Instant>,
+    key: ConnectionKey,
+    request_permits_reuse: bool,
+    request_write_drained: bool,
 }
 
 impl HttpTransfer {
@@ -897,6 +1008,22 @@ struct NativeHttpBackend {
     request_to_resolve: HashMap<RequestId, ResolveKey>,
     resolves: HashMap<ResolveKey, PendingResolve>,
     next_resolve_key: u64,
+    idle: HashMap<ConnectionKey, VecDeque<IdleConnection>>,
+    idle_slots: HashMap<SlotId, ConnectionKey>,
+    idle_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ConnectionKey {
+    scheme: String,
+    host: String,
+    port: u16,
+    dangerously_disable_tls_verification: bool,
+}
+
+struct IdleConnection {
+    slot: SlotId,
+    tls: Option<NativeTls>,
 }
 
 struct PendingResolve {
@@ -911,6 +1038,7 @@ struct PendingResolve {
     total_deadline: Option<Instant>,
     inactivity_timeout: Option<Duration>,
     inactivity_deadline: Option<Instant>,
+    key: ConnectionKey,
 }
 
 impl PendingResolve {
@@ -964,6 +1092,9 @@ impl NativeHttpBackend {
             request_to_resolve: HashMap::new(),
             resolves: HashMap::new(),
             next_resolve_key: 1,
+            idle: HashMap::new(),
+            idle_slots: HashMap::new(),
+            idle_count: 0,
         })
     }
 
@@ -981,6 +1112,140 @@ impl NativeHttpBackend {
                 completion,
             });
         }
+    }
+
+    fn take_idle(&mut self, key: &ConnectionKey) -> Option<IdleConnection> {
+        let connection = self.idle.get_mut(key)?.pop_front()?;
+        if self.idle.get(key).is_some_and(VecDeque::is_empty) {
+            self.idle.remove(key);
+        }
+        self.idle_slots.remove(&connection.slot);
+        self.idle_count = self.idle_count.saturating_sub(1);
+        Some(connection)
+    }
+
+    fn discard_idle_slot(&mut self, slot: SlotId) {
+        let Some(key) = self.idle_slots.remove(&slot) else {
+            self.reactor.cancel(slot);
+            return;
+        };
+        if let Some(connections) = self.idle.get_mut(&key) {
+            if let Some(index) = connections
+                .iter()
+                .position(|connection| connection.slot == slot)
+            {
+                connections.remove(index);
+                self.idle_count = self.idle_count.saturating_sub(1);
+            }
+            if connections.is_empty() {
+                self.idle.remove(&key);
+            }
+        }
+        self.reactor.cancel(slot);
+    }
+
+    fn try_begin_reused(&mut self, pending: PendingResolve) -> Option<PendingResolve> {
+        let Some(mut idle) = self.take_idle(&pending.key) else {
+            return Some(pending);
+        };
+        let deadline = pending.next_deadline();
+        let outbound_limit = if idle.tls.is_some() {
+            encrypted_outbound_limit(pending.serialized.bytes.len())
+        } else {
+            pending.serialized.bytes.len()
+        };
+        let receive_limit = if idle.tls.is_some() {
+            encrypted_receive_limit(self.limits.reactor_receive_limit())
+        } else {
+            self.limits.reactor_receive_limit()
+        };
+        if self
+            .reactor
+            .prepare_reuse(idle.slot, deadline, outbound_limit, receive_limit)
+            .is_err()
+        {
+            self.reactor.cancel(idle.slot);
+            return Some(pending);
+        }
+        let outbound = match idle.tls.as_mut() {
+            Some(tls) => match tls.encrypt_request(&pending.serialized.bytes) {
+                Ok(outbound) => outbound,
+                Err(_) => {
+                    self.reactor.cancel(idle.slot);
+                    return Some(pending);
+                }
+            },
+            None => pending.serialized.bytes.clone(),
+        };
+        if self.reactor.queue_write(idle.slot, &outbound).is_err() {
+            self.reactor.cancel(idle.slot);
+            return Some(pending);
+        }
+        let request_id = pending.request_id;
+        self.request_to_slot.insert(request_id, idle.slot);
+        self.transfers.insert(
+            idle.slot,
+            HttpTransfer {
+                request_id,
+                decoder: ResponseDecoder::new(pending.serialized.response_to_head, self.limits),
+                body_bearing: pending.body_bearing,
+                response_started: false,
+                connected: true,
+                tls: idle.tls,
+                connect_deadline: pending.connect_deadline,
+                total_deadline: pending.total_deadline,
+                inactivity_timeout: pending.inactivity_timeout,
+                inactivity_deadline: pending.inactivity_deadline,
+                key: pending.key,
+                request_permits_reuse: pending.serialized.permits_reuse,
+                request_write_drained: false,
+            },
+        );
+        None
+    }
+
+    fn complete_response(
+        &mut self,
+        slot: SlotId,
+        response: Response,
+        response_permits_reuse: bool,
+        peer_closed: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) {
+        let Some(transfer) = self.transfers.remove(&slot) else {
+            self.reactor.cancel(slot);
+            return;
+        };
+        self.request_to_slot.remove(&transfer.request_id);
+        let per_origin_idle = self.idle.get(&transfer.key).map_or(0, VecDeque::len);
+        let reusable = response_permits_reuse
+            && transfer.request_permits_reuse
+            && transfer.request_write_drained
+            && !peer_closed
+            && self.idle_count < MAX_IDLE_CONNECTIONS
+            && per_origin_idle < MAX_IDLE_CONNECTIONS_PER_ORIGIN;
+        if reusable {
+            let idle_deadline = Instant::now().checked_add(IDLE_CONNECTION_LIFETIME);
+            if self.reactor.set_deadline(slot, idle_deadline).is_ok() {
+                self.idle_slots.insert(slot, transfer.key.clone());
+                self.idle
+                    .entry(transfer.key)
+                    .or_default()
+                    .push_back(IdleConnection {
+                        slot,
+                        tls: transfer.tls,
+                    });
+                self.idle_count += 1;
+            } else {
+                self.reactor.cancel(slot);
+            }
+        } else {
+            self.reactor.cancel(slot);
+        }
+        completions.push(BackendCompletion {
+            id: transfer.request_id,
+            completion: Completion::Completed(response),
+        });
     }
 
     fn begin_connection(
@@ -1051,6 +1316,9 @@ impl NativeHttpBackend {
                 total_deadline: pending.total_deadline,
                 inactivity_timeout: pending.inactivity_timeout,
                 inactivity_deadline: pending.inactivity_deadline,
+                key: pending.key,
+                request_permits_reuse: pending.serialized.permits_reuse,
+                request_write_drained: false,
             },
         );
         None
@@ -1266,11 +1534,25 @@ impl NativeHttpBackend {
             transfer.decoder.ingest(&plaintext)
         });
         match decoded {
-            Some(Ok(Some(response))) => {
-                self.finish(slot, Completion::Completed(response), completions)
+            Some(Ok(DecodeProgress {
+                response: Some(response),
+                consumed,
+                permits_reuse,
+            })) if consumed == plaintext.len() => {
+                self.complete_response(slot, response, permits_reuse, peer_closed, completions)
             }
+            Some(Ok(DecodeProgress {
+                response: Some(_), ..
+            })) => self.finish(
+                slot,
+                Completion::Failed(Error::transport(
+                    TransportStage::Http,
+                    "the peer sent bytes after the completed HTTP response",
+                )),
+                completions,
+            ),
             Some(Err(error)) => self.finish(slot, Completion::Failed(error), completions),
-            Some(Ok(None)) if peer_closed => {
+            Some(Ok(DecodeProgress { response: None, .. })) if peer_closed => {
                 let eof = self
                     .transfers
                     .get_mut(&slot)
@@ -1291,7 +1573,7 @@ impl NativeHttpBackend {
                     None => {}
                 }
             }
-            Some(Ok(None)) | None => {}
+            Some(Ok(DecodeProgress { response: None, .. })) | None => {}
         }
         Ok(())
     }
@@ -1332,12 +1614,38 @@ impl NativeHttpBackend {
             .collect::<HashSet<_>>();
         let mut completions = Vec::new();
         for event in events {
+            let event_slot = match &event {
+                NativeEvent::Connected(slot)
+                | NativeEvent::WriteProgress(slot)
+                | NativeEvent::WriteDrained(slot)
+                | NativeEvent::Data(slot, _)
+                | NativeEvent::PeerClosed(slot)
+                | NativeEvent::Failed(slot, _)
+                | NativeEvent::DeadlineExpired(slot) => *slot,
+            };
+            if self.idle_slots.contains_key(&event_slot) {
+                match event {
+                    NativeEvent::WriteProgress(_) | NativeEvent::WriteDrained(_) => {}
+                    NativeEvent::Connected(_)
+                    | NativeEvent::Data(_, _)
+                    | NativeEvent::PeerClosed(_)
+                    | NativeEvent::Failed(_, _)
+                    | NativeEvent::DeadlineExpired(_) => self.discard_idle_slot(event_slot),
+                }
+                continue;
+            }
             match event {
                 NativeEvent::Connected(slot) => {
                     self.handle_connected(slot, !failed_slots.contains(&slot), &mut completions)?
                 }
-                NativeEvent::WriteProgress(slot) | NativeEvent::WriteDrained(slot) => {
+                NativeEvent::WriteProgress(slot) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
+                }
+                NativeEvent::WriteDrained(slot) => {
+                    self.note_progress(slot, false, !failed_slots.contains(&slot))?;
+                    if let Some(transfer) = self.transfers.get_mut(&slot) {
+                        transfer.request_write_drained |= transfer.connected;
+                    }
                 }
                 NativeEvent::Data(slot, bytes) => {
                     self.handle_data(slot, bytes, !failed_slots.contains(&slot), &mut completions)?;
@@ -1455,6 +1763,15 @@ impl Backend for NativeHttpBackend {
         let inactivity_deadline = options
             .inactivity_timeout
             .and_then(|timeout| accepted_at.checked_add(timeout));
+        let key = ConnectionKey {
+            scheme: origin.scheme.clone(),
+            host: origin.host.to_ascii_lowercase(),
+            port: origin.port,
+            dangerously_disable_tls_verification: matches!(
+                options.tls_verification,
+                crate::TlsVerification::DangerouslyDisableCertificateVerification
+            ),
+        };
         let pending = PendingResolve {
             request_id: id,
             serialized,
@@ -1467,7 +1784,9 @@ impl Backend for NativeHttpBackend {
             total_deadline,
             inactivity_timeout: options.inactivity_timeout,
             inactivity_deadline,
+            key,
         };
+        let pending = self.try_begin_reused(pending)?;
         if let Ok(ip) = origin.host.parse::<IpAddr>() {
             return self.begin_connection(SocketAddr::new(ip, origin.port), pending);
         }
@@ -1525,6 +1844,9 @@ impl Backend for NativeHttpBackend {
         self.transfers.clear();
         self.request_to_resolve.clear();
         self.resolves.clear();
+        self.idle.clear();
+        self.idle_slots.clear();
+        self.idle_count = 0;
         if let Some(resolver) = &mut self.resolver {
             resolver.shutdown().map_err(ShutdownError::new)?;
         }
@@ -1536,6 +1858,10 @@ impl Backend for NativeHttpBackend {
         PollMode::Interruptible {
             max_wait: NATIVE_SAFETY_POLL,
         }
+    }
+
+    fn wants_poll_without_requests(&self) -> bool {
+        self.idle_count != 0
     }
 }
 
@@ -1619,6 +1945,14 @@ mod tests {
                 total_deadline: Some(deadline),
                 inactivity_timeout: Some(Duration::from_secs(1)),
                 inactivity_deadline: Some(deadline),
+                key: ConnectionKey {
+                    scheme: "http".to_owned(),
+                    host: "127.0.0.1".to_owned(),
+                    port: address.port(),
+                    dangerously_disable_tls_verification: false,
+                },
+                request_permits_reuse: true,
+                request_write_drained: false,
             },
         );
 
@@ -1666,7 +2000,7 @@ mod tests {
     ) -> Result<Response, Error> {
         let mut decoder = ResponseDecoder::new(response_to_head, LIMITS);
         for byte in bytes {
-            if let Some(response) = decoder.ingest(std::slice::from_ref(byte))? {
+            if let Some(response) = decoder.ingest(std::slice::from_ref(byte))?.response {
                 return Ok(response);
             }
         }
@@ -1684,7 +2018,7 @@ mod tests {
     fn decode_at_split(bytes: &[u8], split: usize, eof: bool) -> Result<Response, Error> {
         let mut decoder = ResponseDecoder::new(false, LIMITS);
         for part in [&bytes[..split], &bytes[split..]] {
-            if let Some(response) = decoder.ingest(part)? {
+            if let Some(response) = decoder.ingest(part)?.response {
                 return Ok(response);
             }
         }
@@ -1709,9 +2043,10 @@ mod tests {
         let serialized = serialize_request(&request, LIMITS).expect("request must serialize");
         assert_eq!(
             serialized.bytes,
-            b"POST /path?q=yes HTTP/1.1\r\nX-Binary: \x80x\r\nHost: example.test:8080\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+            b"POST /path?q=yes HTTP/1.1\r\nX-Binary: \x80x\r\nHost: example.test:8080\r\nContent-Length: 5\r\n\r\nhello"
         );
         assert!(!serialized.response_to_head);
+        assert!(serialized.permits_reuse);
 
         let query_only = Request::get("http://example.test?x=1")
             .build()
@@ -1743,11 +2078,11 @@ mod tests {
         let error = serialize_request(
             &request,
             HttpLimits {
-                header_count: 1,
+                header_count: 0,
                 ..LIMITS
             },
         )
-        .expect_err("generated Host and Connection must count");
+        .expect_err("generated Host must count");
         assert_eq!(error.limit_kind(), Some(LimitKind::RequestHeaderCount));
     }
 
@@ -1897,6 +2232,346 @@ mod tests {
             .expect_err("oversize head must fail while receiving it");
         assert_eq!(error.limit_kind(), Some(LimitKind::ResponseHeaderBytes));
         assert_eq!(decoder.scratch.len(), limits.header_bytes);
+    }
+
+    #[test]
+    fn decoder_reports_the_exact_boundary_before_trailing_bytes() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokjunk";
+        let expected = wire.len() - b"junk".len();
+        let mut decoder = ResponseDecoder::new(false, LIMITS);
+        let progress = decoder.ingest(wire).expect("response must decode");
+        let response = progress.response.expect("response must complete");
+        assert_eq!(response.body(), b"ok");
+        assert_eq!(progress.consumed, expected);
+        assert_eq!(&wire[progress.consumed..], b"junk");
+        assert!(progress.permits_reuse);
+    }
+
+    #[test]
+    fn decoder_persistence_requires_unambiguous_http_connection_policy() {
+        for (wire, expected) in [
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                true,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+                false,
+            ),
+            (
+                b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                false,
+            ),
+            (
+                b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n"
+                    .as_slice(),
+                true,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: upgrade\r\n\r\n".as_slice(),
+                false,
+            ),
+        ] {
+            let mut decoder = ResponseDecoder::new(false, LIMITS);
+            let progress = decoder.ingest(wire).expect("policy response must decode");
+            assert!(progress.response.is_some());
+            assert_eq!(progress.permits_reuse, expected);
+        }
+    }
+
+    #[test]
+    fn native_http_reuses_one_clean_connection_for_sequential_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reuse fixture must bind");
+        let address = listener.local_addr().expect("reuse fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("reuse fixture must accept once");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("reuse fixture read timeout");
+            for body in [b"one".as_slice(), b"two".as_slice()] {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).expect("reused request must read");
+                    assert_ne!(read, 0, "client closed the reusable connection early");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                stream
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len())
+                            .as_bytes(),
+                    )
+                    .expect("reused response head must write");
+                stream
+                    .write_all(body)
+                    .expect("reused response body must write");
+            }
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("reuse Engine must construct");
+        for expected in [b"one".as_slice(), b"two".as_slice()] {
+            let response = engine
+                .client()
+                .execute(
+                    Request::get(format!("http://{address}/reuse"))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("reuse request must build"),
+                )
+                .expect("reuse request must complete");
+            assert_eq!(response.body(), expected);
+        }
+        engine.shutdown().expect("reuse Engine must stop");
+        server.join().expect("reuse fixture must join");
+    }
+
+    #[test]
+    fn response_connection_close_forces_the_next_request_onto_a_new_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("close fixture must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("close fixture must become nonblocking");
+        let address = listener.local_addr().expect("close fixture address");
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break accepted,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "next socket was not opened");
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("close fixture accept failed: {error}"),
+                    }
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).expect("close request must read");
+                    assert_ne!(read, 0, "client closed before the close-policy request");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let connection = if index == 0 {
+                    "Connection: close\r\n"
+                } else {
+                    ""
+                };
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n{connection}\r\n{}",
+                            index + 1
+                        )
+                        .as_bytes(),
+                    )
+                    .expect("close-policy response must write");
+            }
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("close-policy Engine must construct");
+        for expected in [b"1".as_slice(), b"2".as_slice()] {
+            let response = engine
+                .client()
+                .execute(
+                    Request::get(format!("http://{address}/close"))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("close-policy request must build"),
+                )
+                .expect("close-policy request must complete");
+            assert_eq!(response.body(), expected);
+        }
+        engine.shutdown().expect("close-policy Engine must stop");
+        server.join().expect("close fixture must join");
+    }
+
+    #[test]
+    fn idle_peer_close_is_evicted_before_the_next_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("idle-close fixture must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("idle-close fixture must become nonblocking");
+        let address = listener.local_addr().expect("idle-close fixture address");
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break accepted,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "replacement socket was not opened"
+                            );
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("idle-close fixture accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_nonblocking(false)
+                    .expect("idle-close peer must become blocking");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut buffer)
+                        .expect("idle-close request must read");
+                    assert_ne!(read, 0, "client closed before idle-close request");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                stream
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{}", index + 1)
+                            .as_bytes(),
+                    )
+                    .expect("idle-close response must write");
+                stream.flush().expect("idle-close response must flush");
+                if index == 0 {
+                    drop(stream);
+                    closed_tx.send(()).expect("peer close barrier must signal");
+                }
+            }
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("idle-close Engine must construct");
+        let first = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/idle-close"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("first idle-close request must build"),
+            )
+            .expect("first idle-close request must complete");
+        assert_eq!(first.body(), b"1");
+        closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server must close the idle peer");
+        thread::sleep(NATIVE_SAFETY_POLL * 3);
+        let second = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/idle-close"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("second idle-close request must build"),
+            )
+            .expect("second idle-close request must use a replacement socket");
+        assert_eq!(second.body(), b"2");
+        engine.shutdown().expect("idle-close Engine must stop");
+        server.join().expect("idle-close fixture must join");
+    }
+
+    #[test]
+    fn cancelling_a_reused_request_closes_it_before_the_next_lease() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reuse-cancel fixture must bind");
+        let address = listener.local_addr().expect("reuse-cancel fixture address");
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let read_head = |stream: &mut std::net::TcpStream| {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 256];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut buffer)
+                        .expect("reuse-cancel request must read");
+                    assert_ne!(read, 0, "client closed before the complete request head");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+            };
+
+            let (mut first, _) = listener
+                .accept()
+                .expect("first reusable socket must accept");
+            first
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("first reusable socket timeout");
+            read_head(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none")
+                .expect("first reusable response must write");
+            first.flush().expect("first reusable response must flush");
+
+            read_head(&mut first);
+            second_tx
+                .send(())
+                .expect("second reused request barrier must signal");
+            let mut byte = [0_u8; 1];
+            match first.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
+                other => panic!("cancelled reused socket was not closed: {other:?}"),
+            }
+
+            let (mut replacement, _) = listener
+                .accept()
+                .expect("replacement socket after cancellation must accept");
+            replacement
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("replacement socket timeout");
+            read_head(&mut replacement);
+            replacement
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nthree")
+                .expect("replacement response must write");
+        });
+        let config = EngineConfig::spawned();
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("reuse-cancel Engine must construct");
+        let first = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/one"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("first reusable request must build"),
+            )
+            .expect("first reusable request must complete");
+        assert_eq!(first.body(), b"one");
+        let second = engine
+            .client()
+            .submit(
+                Request::get(format!("http://{address}/two"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("second reusable request must build"),
+            )
+            .expect("second reusable request must submit");
+        second_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server must observe the reused request");
+        second
+            .handle()
+            .cancel()
+            .expect("reused request must cancel");
+        assert!(matches!(second.wait(), Completion::Cancelled));
+        let third = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/three"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("replacement request must build"),
+            )
+            .expect("replacement request must complete");
+        assert_eq!(third.body(), b"three");
+        engine.shutdown().expect("reuse-cancel Engine must stop");
+        server.join().expect("reuse-cancel fixture must join");
     }
 
     #[test]

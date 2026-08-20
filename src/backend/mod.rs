@@ -58,6 +58,10 @@ pub(crate) trait Backend {
     fn poll_mode(&self) -> PollMode {
         PollMode::CommandDriven
     }
+
+    fn wants_poll_without_requests(&self) -> bool {
+        false
+    }
 }
 
 #[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]

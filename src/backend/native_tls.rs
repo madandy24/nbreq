@@ -205,6 +205,25 @@ impl NativeTls {
         self.connection.is_handshaking()
     }
 
+    pub(super) fn encrypt_request(&mut self, request: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.connection.is_handshaking() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS tried to reuse a connection before its handshake completed",
+            ));
+        }
+        self.connection
+            .writer()
+            .write_all(request)
+            .map_err(|error| {
+                Error::transport(
+                    TransportStage::Send,
+                    format!("native TLS request encryption failed: {error}"),
+                )
+            })?;
+        self.take_outbound()
+    }
+
     fn take_outbound(&mut self) -> Result<Vec<u8>, Error> {
         let mut output = BoundedWriter::new(TLS_FLIGHT_LIMIT);
         while self.connection.wants_write() {

@@ -278,6 +278,34 @@ impl NativeReactor {
         Ok(())
     }
 
+    pub(crate) fn prepare_reuse(
+        &mut self,
+        id: SlotId,
+        deadline: Option<Instant>,
+        outbound_limit: usize,
+        receive_limit: usize,
+    ) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native reuse targeted a stale or closed slot")
+        })?;
+        if connection.state != ConnectionState::Connected
+            || connection.peer_read_closed
+            || !connection.outbound.is_empty()
+        {
+            return Err(NativeFailure::internal(
+                "native reuse targeted a connection that was not clean and idle",
+            ));
+        }
+        connection.deadline = deadline;
+        connection.outbound_limit = outbound_limit;
+        connection.receive_limit = receive_limit;
+        connection.received = 0;
+        if let Some(when) = deadline {
+            self.deadlines.push(Reverse(DeadlineEntry { when, id }));
+        }
+        self.reregister(id)
+    }
+
     pub(crate) fn poll(&mut self, deadline: Instant) -> Result<Vec<NativeEvent>, NativeFailure> {
         let wait_until = self
             .nearest_deadline()
