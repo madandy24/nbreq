@@ -1220,9 +1220,9 @@ impl NativeHttpBackend {
         let mut completions = Vec::new();
         let mut index = 0;
         while index < self.waiting.len() {
-            if !self.waiting[index]
+            if self.waiting[index]
                 .next_deadline()
-                .is_some_and(|deadline| deadline <= now)
+                .is_none_or(|deadline| deadline > now)
             {
                 index += 1;
                 continue;
