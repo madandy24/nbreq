@@ -82,9 +82,11 @@ parses the packet; NBReq owns retry clocks, bounds, commands, cancellation, and 
 
 Focused tests prove direct resolver wake/result/join, cancellation without late delivery, a public
 request cancelled while the fixture holds its DNS reply, bounded CNAME following, serial A-to-AAAA
-fallback, rejection of wrong questions, and explicit failure of truncated UDP replies pending TCP
-fallback. An end-to-end hostname request connects to the returned IPv4 address while retaining the
-original hostname and port in the HTTP Host field.
+fallback, and rejection of wrong questions. A truncated UDP response moves the same query onto a
+nonblocking, poll-owned DNS-over-TCP connection with bounded length framing. Fragmented TCP length,
+message delivery, and cancel-to-peer-close under 500 ms are proven. An end-to-end hostname request
+connects to the returned IPv4 address while retaining the original hostname and port in the HTTP
+Host field.
 
 Rustls is now driven over that same real socket path. The TLS state is sans-I/O and remains on the
 native backend owner; it emits bounded encrypted flights and accepts bounded encrypted reactor
@@ -98,7 +100,7 @@ the peer has observed ClientHello. The bypass skips certificate-chain and hostna
 rustls still cryptographically verifies the server's TLS 1.2/1.3 handshake signature. A separate
 sans-I/O test proves request encryption and response decryption, and the platform verifier
 configuration builds with an explicit Ring provider rather than process-global provider state. The
-complete Windows native suite passes 86 unit, 4 public-contract, and 2 doctests at this point, with
+complete Windows native suite passes 88 unit, 4 public-contract, and 2 doctests at this point, with
 strict clippy and formatting. This is progress evidence, not WP8 acceptance.
 
 Supported-platform configuration discovery is also wired behind private test support. Windows reads
@@ -114,11 +116,11 @@ kernel-reachable but silent servers remains explicit work.
 ## Deliberate remainder
 
 - Bounded positive/negative caching, TTL clamps, search-suffix behavior, multi-server failover,
-  TCP fallback for truncated DNS replies, and Happy Eyeballs remain after basic system discovery.
+  and Happy Eyeballs remain after basic system discovery and TCP truncation fallback.
   Discovery of a kernel-reachable ranked server is not yet a production DNS claim.
 - The current slice uses serial A then AAAA lookup and bounded CNAME following. Happy Eyeballs,
-  randomized IDs beyond the random sequence seed, DNS-over-TCP fallback, richer server rotation,
-  and response-code fixtures remain before the resolver can be called consumer-ready.
+  randomized IDs beyond the random sequence seed, richer server rotation, and response-code
+  fixtures remain before the resolver can be called consumer-ready.
 - Platform verification may perform operating-system certificate work synchronously inside the TLS
   state machine. WP8 must measure cancellation/shutdown behavior on supported Windows and Linux
   targets and must not claim prompt cancellation around an unbounded verifier call without proof.

@@ -6,7 +6,7 @@
 //! retry clock, command/result queues, cancellation, wakeup, and joined shutdown.
 
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, MessageType, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
-use mio::net::UdpSocket;
+use mio::net::{TcpStream, UdpSocket};
 use mio::{Events, Interest, Poll, Token, Waker};
 
 use super::native::NativeWaker;
@@ -23,6 +23,7 @@ use crate::{Error, ErrorKind};
 
 const WAKE_TOKEN: Token = Token(0);
 const SOCKET_TOKEN: Token = Token(1);
+const FIRST_TCP_TOKEN: usize = 2;
 const DNS_PACKET_LIMIT: usize = 4096;
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_ATTEMPTS: u8 = 3;
@@ -104,6 +105,29 @@ struct PendingQuery {
     wire: Vec<u8>,
     attempts_sent: u8,
     next_attempt: Instant,
+    transport: QueryTransport,
+}
+
+enum QueryTransport {
+    Udp,
+    Tcp(TcpFallback),
+}
+
+struct TcpFallback {
+    stream: TcpStream,
+    token: Token,
+    outbound: Vec<u8>,
+    written: usize,
+    inbound: Vec<u8>,
+    expected: Option<usize>,
+}
+
+struct ResolverState {
+    pending: HashMap<u16, PendingQuery>,
+    by_key: HashMap<ResolveKey, u16>,
+    tcp_by_token: HashMap<Token, u16>,
+    next_id: u16,
+    next_tcp_token: usize,
 }
 
 pub(super) struct NativeResolver {
@@ -248,23 +272,35 @@ fn resolver_main(
     results: Sender<ResolveResult>,
     result_waker: NativeWaker,
     config: ResolverConfig,
-    mut next_id: u16,
+    next_id: u16,
 ) {
     let mut events = Events::with_capacity(16);
-    let mut pending = HashMap::<u16, PendingQuery>::new();
-    let mut by_key = HashMap::<ResolveKey, u16>::new();
+    let mut state = ResolverState {
+        pending: HashMap::new(),
+        by_key: HashMap::new(),
+        tcp_by_token: HashMap::new(),
+        next_id,
+        next_tcp_token: FIRST_TCP_TOKEN,
+    };
     loop {
         let mut stop = false;
         loop {
             match commands.try_recv() {
                 Ok(Command::Resolve { key, host }) => {
-                    if let Some(previous) = by_key.remove(&key) {
-                        pending.remove(&previous);
+                    if let Some(previous) = state.by_key.remove(&key) {
+                        remove_query(previous, &mut state, poll);
                     }
-                    match prepare_query(key, &host, RecordType::A, 0, &pending, &mut next_id) {
+                    match prepare_query(
+                        key,
+                        &host,
+                        RecordType::A,
+                        0,
+                        &state.pending,
+                        &mut state.next_id,
+                    ) {
                         Ok((id, query)) => {
-                            by_key.insert(key, id);
-                            pending.insert(id, query);
+                            state.by_key.insert(key, id);
+                            state.pending.insert(id, query);
                         }
                         Err(failure) => send_result(
                             &results,
@@ -277,8 +313,8 @@ fn resolver_main(
                     }
                 }
                 Ok(Command::Cancel(key)) => {
-                    if let Some(id) = by_key.remove(&key) {
-                        pending.remove(&id);
+                    if let Some(id) = state.by_key.remove(&key) {
+                        remove_query(id, &mut state, poll);
                     }
                 }
                 Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
@@ -292,22 +328,16 @@ fn resolver_main(
             return;
         }
 
-        transmit_due(
-            socket,
-            &mut pending,
-            &mut by_key,
-            &results,
-            &result_waker,
-            &config,
-        );
-        let timeout = pending
+        transmit_due(socket, &mut state, &results, &result_waker, &config, poll);
+        let timeout = state
+            .pending
             .values()
             .map(|query| query.next_attempt.saturating_duration_since(Instant::now()))
             .min();
         if poll.poll(&mut events, timeout).is_err() {
             fail_all(
-                &mut pending,
-                &mut by_key,
+                &mut state.pending,
+                &mut state.by_key,
                 &results,
                 &result_waker,
                 "native resolver poll failed",
@@ -318,13 +348,22 @@ fn resolver_main(
             .iter()
             .any(|event| event.token() == SOCKET_TOKEN && event.is_readable());
         if socket_ready {
-            receive_packets(
-                socket,
-                &mut pending,
-                &mut by_key,
+            receive_packets(socket, &mut state, &results, &result_waker, poll, &config);
+        }
+        let tcp_events = events
+            .iter()
+            .filter(|event| event.token().0 >= FIRST_TCP_TOKEN)
+            .map(|event| (event.token(), event.is_readable(), event.is_writable()))
+            .collect::<Vec<_>>();
+        for (token, readable, writable) in tcp_events {
+            receive_tcp(
+                token,
+                readable,
+                writable,
+                poll,
+                &mut state,
                 &results,
                 &result_waker,
-                &mut next_id,
             );
         }
     }
@@ -372,6 +411,7 @@ fn prepare_name_query(
             wire,
             attempts_sent: 0,
             next_attempt: Instant::now(),
+            transport: QueryTransport::Udp,
         },
     ))
 }
@@ -389,24 +429,45 @@ fn allocate_id(pending: &HashMap<u16, PendingQuery>, next_id: &mut u16) -> Optio
 
 fn transmit_due(
     socket: &mut UdpSocket,
-    pending: &mut HashMap<u16, PendingQuery>,
-    by_key: &mut HashMap<ResolveKey, u16>,
+    state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
     config: &ResolverConfig,
+    poll: &Poll,
 ) {
     let now = Instant::now();
-    let due = pending
+    let due = state
+        .pending
         .iter()
         .filter_map(|(id, query)| (query.next_attempt <= now).then_some(*id))
         .collect::<Vec<_>>();
     for id in due {
-        let exhausted = pending
+        let tcp_expired = state
+            .pending
             .get(&id)
-            .is_some_and(|query| query.attempts_sent >= config.attempts);
+            .is_some_and(|query| matches!(query.transport, QueryTransport::Tcp(_)));
+        if tcp_expired {
+            if let Some(query) = remove_query(id, state, poll) {
+                state.by_key.remove(&query.key);
+                send_result(
+                    results,
+                    result_waker,
+                    ResolveResult {
+                        key: query.key,
+                        result: Err(ResolveFailure::new(
+                            "the DNS-over-TCP fallback did not complete before its deadline",
+                        )),
+                    },
+                );
+            }
+            continue;
+        }
+        let exhausted = state.pending.get(&id).is_some_and(|query| {
+            matches!(query.transport, QueryTransport::Udp) && query.attempts_sent >= config.attempts
+        });
         if exhausted {
-            if let Some(query) = pending.remove(&id) {
-                by_key.remove(&query.key);
+            if let Some(query) = state.pending.remove(&id) {
+                state.by_key.remove(&query.key);
                 send_result(
                     results,
                     result_waker,
@@ -420,9 +481,12 @@ fn transmit_due(
             }
             continue;
         }
-        let Some(query) = pending.get_mut(&id) else {
+        let Some(query) = state.pending.get_mut(&id) else {
             continue;
         };
+        if !matches!(query.transport, QueryTransport::Udp) {
+            continue;
+        }
         match socket.send(&query.wire) {
             Ok(written) if written == query.wire.len() => {
                 query.attempts_sent += 1;
@@ -445,11 +509,11 @@ fn transmit_due(
 
 fn receive_packets(
     socket: &mut UdpSocket,
-    pending: &mut HashMap<u16, PendingQuery>,
-    by_key: &mut HashMap<ResolveKey, u16>,
+    state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
-    next_id: &mut u16,
+    poll: &Poll,
+    config: &ResolverConfig,
 ) {
     let mut buffer = [0_u8; DNS_PACKET_LIMIT];
     loop {
@@ -462,125 +526,374 @@ fn receive_packets(
             continue;
         }
         let id = u16::from_be_bytes([buffer[0], buffer[1]]);
-        let Some(query) = pending.get(&id) else {
+        let Some(query) = state.pending.get(&id) else {
             continue;
         };
         let result = parse_answer(&buffer[..length], id, &query.host, query.record_type);
         let Some(result) = result else {
             continue;
         };
-        let Some(query) = pending.remove(&id) else {
+        let Some(mut query) = state.pending.remove(&id) else {
             continue;
         };
-        match result {
-            Ok(ParsedAnswer::Answer(answer)) => {
-                by_key.remove(&query.key);
-                send_result(
-                    results,
-                    result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Ok(answer),
-                    },
-                );
-            }
-            Ok(ParsedAnswer::Canonical(canonical)) if query.cname_hops < MAX_CNAME_HOPS => {
-                match prepare_name_query(
-                    query.key,
-                    canonical,
-                    query.record_type,
-                    query.cname_hops + 1,
-                    pending,
-                    next_id,
-                ) {
-                    Ok((next, replacement)) => {
-                        by_key.insert(query.key, next);
-                        pending.insert(next, replacement);
-                    }
-                    Err(failure) => {
-                        by_key.remove(&query.key);
-                        send_result(
-                            results,
-                            result_waker,
-                            ResolveResult {
-                                key: query.key,
-                                result: Err(failure),
-                            },
-                        );
-                    }
+        if matches!(result, Ok(ParsedAnswer::Truncated)) {
+            match begin_tcp_fallback(
+                id,
+                &mut query,
+                poll,
+                config.nameservers[0],
+                config.attempt_timeout,
+                &mut state.tcp_by_token,
+                &mut state.next_tcp_token,
+            ) {
+                Ok(()) => {
+                    state.pending.insert(id, query);
+                }
+                Err(failure) => {
+                    state.by_key.remove(&query.key);
+                    send_result(
+                        results,
+                        result_waker,
+                        ResolveResult {
+                            key: query.key,
+                            result: Err(failure),
+                        },
+                    );
                 }
             }
-            Ok(ParsedAnswer::Canonical(_)) => {
-                by_key.remove(&query.key);
-                send_result(
-                    results,
-                    result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Err(ResolveFailure::new(
-                            "the DNS CNAME chain exceeds the private hop limit",
-                        )),
-                    },
-                );
-            }
-            Ok(ParsedAnswer::NoRecords) if query.record_type == RecordType::A => {
-                match prepare_name_query(
-                    query.key,
-                    query.host,
-                    RecordType::AAAA,
-                    query.cname_hops,
-                    pending,
-                    next_id,
-                ) {
-                    Ok((next, replacement)) => {
-                        by_key.insert(query.key, next);
-                        pending.insert(next, replacement);
-                    }
-                    Err(failure) => {
-                        by_key.remove(&query.key);
-                        send_result(
-                            results,
-                            result_waker,
-                            ResolveResult {
-                                key: query.key,
-                                result: Err(failure),
-                            },
-                        );
-                    }
+            continue;
+        }
+        finish_answer(query, result, state, results, result_waker);
+    }
+}
+
+fn finish_answer(
+    query: PendingQuery,
+    result: Result<ParsedAnswer, ResolveFailure>,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    match result {
+        Ok(ParsedAnswer::Answer(answer)) => {
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Ok(answer),
+                },
+            );
+        }
+        Ok(ParsedAnswer::Canonical(canonical)) if query.cname_hops < MAX_CNAME_HOPS => {
+            match prepare_name_query(
+                query.key,
+                canonical,
+                query.record_type,
+                query.cname_hops + 1,
+                &state.pending,
+                &mut state.next_id,
+            ) {
+                Ok((next, replacement)) => {
+                    state.by_key.insert(query.key, next);
+                    state.pending.insert(next, replacement);
+                }
+                Err(failure) => {
+                    state.by_key.remove(&query.key);
+                    send_result(
+                        results,
+                        result_waker,
+                        ResolveResult {
+                            key: query.key,
+                            result: Err(failure),
+                        },
+                    );
                 }
             }
-            Ok(ParsedAnswer::NoRecords) => {
-                by_key.remove(&query.key);
-                send_result(
-                    results,
-                    result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Err(ResolveFailure::new(
-                            "the DNS response contained no usable A or AAAA records",
-                        )),
-                    },
-                );
+        }
+        Ok(ParsedAnswer::Canonical(_)) => {
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(ResolveFailure::new(
+                        "the DNS CNAME chain exceeds the private hop limit",
+                    )),
+                },
+            );
+        }
+        Ok(ParsedAnswer::NoRecords) if query.record_type == RecordType::A => {
+            match prepare_name_query(
+                query.key,
+                query.host,
+                RecordType::AAAA,
+                query.cname_hops,
+                &state.pending,
+                &mut state.next_id,
+            ) {
+                Ok((next, replacement)) => {
+                    state.by_key.insert(query.key, next);
+                    state.pending.insert(next, replacement);
+                }
+                Err(failure) => {
+                    state.by_key.remove(&query.key);
+                    send_result(
+                        results,
+                        result_waker,
+                        ResolveResult {
+                            key: query.key,
+                            result: Err(failure),
+                        },
+                    );
+                }
             }
-            Err(failure) => {
-                by_key.remove(&query.key);
-                send_result(
-                    results,
-                    result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Err(failure),
-                    },
-                );
+        }
+        Ok(ParsedAnswer::NoRecords) => {
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(ResolveFailure::new(
+                        "the DNS response contained no usable A or AAAA records",
+                    )),
+                },
+            );
+        }
+        Err(failure) => {
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(failure),
+                },
+            );
+        }
+        Ok(ParsedAnswer::Truncated) => {
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(ResolveFailure::new(
+                        "the DNS-over-TCP response was unexpectedly truncated",
+                    )),
+                },
+            );
+        }
+    }
+}
+
+fn begin_tcp_fallback(
+    id: u16,
+    query: &mut PendingQuery,
+    poll: &Poll,
+    nameserver: SocketAddr,
+    timeout: Duration,
+    tcp_by_token: &mut HashMap<Token, u16>,
+    next_tcp_token: &mut usize,
+) -> Result<(), ResolveFailure> {
+    let length = u16::try_from(query.wire.len())
+        .map_err(|_| ResolveFailure::new("the DNS query is too large for TCP framing"))?;
+    let token = Token(*next_tcp_token);
+    *next_tcp_token = next_tcp_token
+        .checked_add(1)
+        .ok_or_else(|| ResolveFailure::new("the native resolver TCP token space is exhausted"))?;
+    let mut stream = TcpStream::connect(nameserver)
+        .map_err(|error| ResolveFailure::new(format!("DNS-over-TCP connect failed: {error}")))?;
+    poll.registry()
+        .register(
+            &mut stream,
+            token,
+            Interest::READABLE.add(Interest::WRITABLE),
+        )
+        .map_err(|error| {
+            ResolveFailure::new(format!("DNS-over-TCP registration failed: {error}"))
+        })?;
+    let mut outbound = Vec::with_capacity(query.wire.len() + 2);
+    outbound.extend_from_slice(&length.to_be_bytes());
+    outbound.extend_from_slice(&query.wire);
+    query.next_attempt = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    query.transport = QueryTransport::Tcp(TcpFallback {
+        stream,
+        token,
+        outbound,
+        written: 0,
+        inbound: Vec::new(),
+        expected: None,
+    });
+    tcp_by_token.insert(token, id);
+    Ok(())
+}
+
+fn remove_query(id: u16, state: &mut ResolverState, poll: &Poll) -> Option<PendingQuery> {
+    let mut query = state.pending.remove(&id)?;
+    if let QueryTransport::Tcp(tcp) = &mut query.transport {
+        state.tcp_by_token.remove(&tcp.token);
+        let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+    }
+    Some(query)
+}
+
+enum TcpDrive {
+    Pending,
+    Message(Vec<u8>),
+}
+
+fn receive_tcp(
+    token: Token,
+    readable: bool,
+    writable: bool,
+    poll: &Poll,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    let Some(id) = state.tcp_by_token.get(&token).copied() else {
+        return;
+    };
+    let Some(mut query) = state.pending.remove(&id) else {
+        state.tcp_by_token.remove(&token);
+        return;
+    };
+    let drive = match &mut query.transport {
+        QueryTransport::Tcp(tcp) => drive_tcp(tcp, readable, writable, poll),
+        QueryTransport::Udp => {
+            state.tcp_by_token.remove(&token);
+            return;
+        }
+    };
+    match drive {
+        Ok(TcpDrive::Pending) => {
+            state.pending.insert(id, query);
+        }
+        Ok(TcpDrive::Message(message)) => {
+            if let QueryTransport::Tcp(tcp) = &mut query.transport {
+                state.tcp_by_token.remove(&tcp.token);
+                let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+            }
+            let parsed =
+                parse_answer(&message, id, &query.host, query.record_type).unwrap_or_else(|| {
+                    Err(ResolveFailure::new(
+                        "the DNS-over-TCP response did not match its query",
+                    ))
+                });
+            finish_answer(query, parsed, state, results, result_waker);
+        }
+        Err(failure) => {
+            if let QueryTransport::Tcp(tcp) = &mut query.transport {
+                state.tcp_by_token.remove(&tcp.token);
+                let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+            }
+            state.by_key.remove(&query.key);
+            send_result(
+                results,
+                result_waker,
+                ResolveResult {
+                    key: query.key,
+                    result: Err(failure),
+                },
+            );
+        }
+    }
+}
+
+fn drive_tcp(
+    tcp: &mut TcpFallback,
+    readable: bool,
+    writable: bool,
+    poll: &Poll,
+) -> Result<TcpDrive, ResolveFailure> {
+    if writable && tcp.written < tcp.outbound.len() {
+        if let Some(error) = tcp.stream.take_error().map_err(|error| {
+            ResolveFailure::new(format!("DNS-over-TCP connect status failed: {error}"))
+        })? {
+            return Err(ResolveFailure::new(format!(
+                "DNS-over-TCP connect failed: {error}"
+            )));
+        }
+        while tcp.written < tcp.outbound.len() {
+            match tcp.stream.write(&tcp.outbound[tcp.written..]) {
+                Ok(0) => {
+                    return Err(ResolveFailure::new(
+                        "DNS-over-TCP closed while sending the query",
+                    ));
+                }
+                Ok(written) => tcp.written += written,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    return Err(ResolveFailure::new(format!(
+                        "DNS-over-TCP query send failed: {error}"
+                    )));
+                }
+            }
+        }
+        if tcp.written == tcp.outbound.len() {
+            poll.registry()
+                .reregister(&mut tcp.stream, tcp.token, Interest::READABLE)
+                .map_err(|error| {
+                    ResolveFailure::new(format!("DNS-over-TCP re-registration failed: {error}"))
+                })?;
+        }
+    }
+    if readable {
+        let mut buffer = [0_u8; 1024];
+        loop {
+            match tcp.stream.read(&mut buffer) {
+                Ok(0) => {
+                    return Err(ResolveFailure::new(
+                        "DNS-over-TCP closed before a complete response",
+                    ));
+                }
+                Ok(read) => {
+                    if tcp.inbound.len().saturating_add(read) > DNS_PACKET_LIMIT + 2 {
+                        return Err(ResolveFailure::new(
+                            "DNS-over-TCP response exceeds the private packet limit",
+                        ));
+                    }
+                    tcp.inbound.extend_from_slice(&buffer[..read]);
+                    if tcp.expected.is_none() && tcp.inbound.len() >= 2 {
+                        let expected =
+                            usize::from(u16::from_be_bytes([tcp.inbound[0], tcp.inbound[1]]));
+                        if expected == 0 || expected > DNS_PACKET_LIMIT {
+                            return Err(ResolveFailure::new(
+                                "DNS-over-TCP response length is invalid",
+                            ));
+                        }
+                        tcp.expected = Some(expected);
+                    }
+                    if let Some(expected) = tcp.expected {
+                        if tcp.inbound.len() >= expected + 2 {
+                            return Ok(TcpDrive::Message(tcp.inbound[2..expected + 2].to_vec()));
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    return Err(ResolveFailure::new(format!(
+                        "DNS-over-TCP response read failed: {error}"
+                    )));
+                }
             }
         }
     }
+    Ok(TcpDrive::Pending)
 }
 
 enum ParsedAnswer {
     Answer(ResolveAnswer),
     Canonical(Name),
     NoRecords,
+    Truncated,
 }
 
 fn parse_answer(
@@ -607,9 +920,7 @@ fn parse_answer(
         return None;
     }
     if message.truncated() {
-        return Some(Err(ResolveFailure::new(
-            "the DNS response was truncated and TCP fallback is not implemented yet",
-        )));
+        return Some(Ok(ParsedAnswer::Truncated));
     }
     if message.response_code() != ResponseCode::NoError {
         return Some(Err(ResolveFailure::new(format!(
@@ -889,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_truncation_and_ignores_wrong_question() {
+    fn parser_marks_truncation_and_ignores_wrong_question() {
         let name = fqdn("expected.test");
         let mut truncated = Message::new();
         truncated
@@ -900,7 +1211,7 @@ mod tests {
         let wire = truncated.to_vec().expect("truncated response must encode");
         assert!(matches!(
             parse_answer(&wire, 51, &name, RecordType::A),
-            Some(Err(_))
+            Some(Ok(ParsedAnswer::Truncated))
         ));
 
         let mut wrong = Message::new();
@@ -910,6 +1221,184 @@ mod tests {
             .add_query(Query::query(fqdn("other.test"), RecordType::A));
         let wire = wrong.to_vec().expect("wrong response must encode");
         assert!(parse_answer(&wire, 52, &name, RecordType::A).is_none());
+    }
+
+    fn accept_before(listener: &TcpListener, deadline: Instant) -> std::net::TcpStream {
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("accepted DNS TCP fixture must be blocking");
+                    return stream;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "DNS TCP fallback did not connect"
+                    );
+                    thread::yield_now();
+                }
+                Err(error) => panic!("DNS TCP fixture accept failed: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_udp_response_falls_back_to_fragmented_tcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("DNS TCP fixture must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("DNS TCP listener must be nonblocking");
+        let address = listener.local_addr().expect("DNS TCP fixture address");
+        let udp = StdUdpSocket::bind(address).expect("DNS UDP fixture must share the TCP port");
+        udp.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("DNS UDP fixture timeout");
+        let joined = thread::spawn(move || {
+            let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+            let (length, peer) = udp
+                .recv_from(&mut buffer)
+                .expect("initial DNS UDP query must arrive");
+            let request = Message::from_vec(&buffer[..length]).expect("UDP query must parse");
+            let query = request.query().expect("UDP query must exist").clone();
+            let mut truncated = Message::new();
+            truncated
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .set_truncated(true)
+                .add_query(query.clone());
+            udp.send_to(
+                &truncated.to_vec().expect("truncated reply must encode"),
+                peer,
+            )
+            .expect("truncated reply must send");
+
+            let mut stream = accept_before(&listener, Instant::now() + Duration::from_secs(2));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("DNS TCP read timeout");
+            let mut length = [0_u8; 2];
+            stream
+                .read_exact(&mut length)
+                .expect("DNS TCP query length must arrive");
+            let mut wire = vec![0_u8; usize::from(u16::from_be_bytes(length))];
+            stream
+                .read_exact(&mut wire)
+                .expect("DNS TCP query must arrive");
+            let tcp_request = Message::from_vec(&wire).expect("DNS TCP query must parse");
+            assert_eq!(tcp_request.id(), request.id());
+            assert_eq!(tcp_request.query(), Some(&query));
+
+            let mut response = Message::new();
+            response
+                .set_id(tcp_request.id())
+                .set_message_type(MessageType::Response)
+                .add_query(query.clone())
+                .add_answer(Record::from_rdata(
+                    query.name().clone(),
+                    45,
+                    RData::A(A(Ipv4Addr::new(127, 0, 0, 21))),
+                ));
+            let wire = response.to_vec().expect("DNS TCP response must encode");
+            let frame_length = u16::try_from(wire.len())
+                .expect("DNS TCP fixture response length")
+                .to_be_bytes();
+            stream
+                .write_all(&frame_length[..1])
+                .expect("first length fragment must send");
+            thread::yield_now();
+            stream
+                .write_all(&[&frame_length[1..], &wire[..1]].concat())
+                .expect("second DNS TCP fragment must send");
+            thread::yield_now();
+            stream
+                .write_all(&wire[1..])
+                .expect("final DNS TCP fragment must send");
+        });
+
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver = NativeResolver::new(ResolverConfig::for_test(address), owner.waker())
+            .expect("TCP-fallback resolver must construct");
+        resolver
+            .resolve(ResolveKey(70), "tcp-fallback.test".to_owned())
+            .expect("TCP-fallback resolution must submit");
+        let answer = wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("TCP fallback must resolve");
+        assert_eq!(
+            answer.addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 21))]
+        );
+        resolver.shutdown().expect("TCP resolver must join");
+        joined.join().expect("DNS TCP fixture must join");
+    }
+
+    #[test]
+    fn cancellation_closes_an_active_dns_tcp_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("DNS TCP barrier must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("DNS TCP barrier must be nonblocking");
+        let address = listener.local_addr().expect("DNS TCP barrier address");
+        let udp = StdUdpSocket::bind(address).expect("DNS UDP barrier must share the TCP port");
+        udp.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("DNS UDP barrier timeout");
+        let (accepted_tx, accepted_rx) = test_channel::channel();
+        let joined = thread::spawn(move || {
+            let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+            let (length, peer) = udp
+                .recv_from(&mut buffer)
+                .expect("DNS UDP barrier query must arrive");
+            let request = Message::from_vec(&buffer[..length]).expect("barrier query must parse");
+            let mut truncated = Message::new();
+            truncated
+                .set_id(request.id())
+                .set_message_type(MessageType::Response)
+                .set_truncated(true)
+                .add_query(request.query().expect("barrier query").clone());
+            udp.send_to(
+                &truncated.to_vec().expect("barrier response must encode"),
+                peer,
+            )
+            .expect("barrier response must send");
+            let mut stream = accept_before(&listener, Instant::now() + Duration::from_secs(2));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("DNS TCP barrier read timeout");
+            accepted_tx.send(()).expect("accept signal must send");
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        panic!("cancelled DNS TCP socket remained open")
+                    }
+                    Err(error) => panic!("DNS TCP barrier read failed: {error}"),
+                }
+            }
+        });
+
+        let owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver = NativeResolver::new(ResolverConfig::for_test(address), owner.waker())
+            .expect("TCP barrier resolver must construct");
+        resolver
+            .resolve(ResolveKey(71), "tcp-cancel.test".to_owned())
+            .expect("TCP barrier resolution must submit");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver must enter DNS TCP fallback");
+        let started = Instant::now();
+        resolver
+            .cancel(ResolveKey(71))
+            .expect("DNS TCP cancellation must wake");
+        resolver.shutdown().expect("DNS TCP resolver must join");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        joined.join().expect("DNS TCP barrier must observe close");
     }
 
     fn wait_for_resolution(owner: &mut NativeReactor, resolver: &NativeResolver) -> ResolveResult {
