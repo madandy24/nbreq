@@ -45,8 +45,17 @@ impl ScriptedServer {
                         stream
                             .set_nonblocking(false)
                             .expect("accepted lab stream must become blocking");
+                        // The upload-reset case deliberately allocates and serializes a 64 MiB
+                        // body. A small CI host can spend more than two seconds there under
+                        // repeated stress, after the server has accepted but before request bytes
+                        // arrive. Do not let the fixture manufacture a connect-stage reset before
+                        // it has observed the head/body progress this case claims to test.
+                        let read_timeout = match script {
+                            Script::ResetDuringUpload => Duration::from_secs(10),
+                            _ => Duration::from_secs(2),
+                        };
                         stream
-                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .set_read_timeout(Some(read_timeout))
                             .expect("lab read timeout must configure");
                         stream
                             .set_write_timeout(Some(Duration::from_secs(2)))
