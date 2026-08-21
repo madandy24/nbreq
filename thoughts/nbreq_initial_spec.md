@@ -562,6 +562,63 @@ Defaults and hard maxima must remain deliberate for:
 
 Streaming response support is desirable in the initial public design even if implemented after buffered bodies. It must include backpressure: the network engine may pause reading a transfer rather than buffering without limit.
 
+The native streaming family is separate from the buffered `Request` / `Response` / `Completion`
+family:
+
+- `StreamRequest` is a complete request builder. `.body(Vec<u8>)` selects a buffered,
+  replayable upload; `.body_stream(UploadBody)` consumes a unique, non-replayable producer body.
+  Calling both is rejected by `build()` rather than silently changing modes. `StreamRequest::from`
+  `Request` is convenience sugar, not the primary construction path.
+- `UploadBody::fixed(length, queue_capacity)` and `UploadBody::chunked(queue_capacity)` return a
+  unique `(UploadBody, UploadSender)` pair. Neither end is `Clone`; the caller retains the
+  `Send` producer and the Engine receives the body exactly once. Fixed bodies generate and enforce
+  `Content-Length`; chunked bodies generate HTTP/1.1 chunk framing. Caller-supplied
+  `Content-Length` or `Transfer-Encoding`, request trailers, automatic `Expect: 100-continue`, and
+  streaming uploads on GET or HEAD are rejected. `UploadSender::finish(self)` is explicit and
+  consuming. Dropping it first fails the send unless a final HTTP response already won.
+- `Client::submit_stream(StreamRequest)` returns one unique `ResponseReader`; there is no
+  `PendingRequest`, streaming `Completion`, callback path, or second body waiter. Its cloneable
+  `RequestHandle` is cancellation-only. Every `StreamRequest` has a streaming response, including
+  one with a buffered upload. `ResponseReader::collect(self)` is spawned-mode consumer sugar that
+  returns an ordinary `Response`; it fails closed after any response-body byte was consumed and
+  never invents a `Completion`.
+- The first public head is the final `ResponseHead`; informational responses stay internal. HEAD,
+  204, 205, 304, and an explicit zero-length body are already at EOF when that head becomes public.
+  More generally, once the final body byte is delivered, dropping the reader does not cancel merely
+  because the caller did not perform one extra read. Dropping before EOF cancels and destroys the
+  connection. Trailers remain validated framing rather than ordinary response headers.
+- Streaming uploads are never replayable. Every redirect response, including 303, is returned
+  unfollowed. A buffered upload with a streaming response retains the ordinary buffered redirect
+  policy, including replayable 307/308 handling.
+
+`UploadSender::try_push(Vec<u8>)` is nonblocking and all-or-nothing: a full queue or a chunk larger
+than that transfer's queue returns the unchanged `Vec`. Blocking `push` is spawned-mode only and may
+feed a larger buffer progressively; interruption returns its unsent suffix because accepted bytes
+cannot be reclaimed. It wakes for capacity, early final response, cancellation, failure, and Engine
+stop. Early 4xx/5xx remains a completed HTTP exchange through `ResponseReader`; the sender merely
+closes and queued upload chunks are discarded.
+
+Manual-mode producer and consumer methods never block and never drive the Engine. They expose
+`try_push`, `try_head`, and `try_read`; progress comes only from the owner's `drive` calls. Blocking
+`push`, `wait_head`, `read`, and `collect` fail with `WrongMode` in manual mode. The initial handles
+are unique and `Send`, not `Clone` or `Sync`; multi-producer and callback adapters may be built later
+without changing the reactor ownership model.
+
+Streaming has two independent resource controls. Each transfer has a small bounded flow-control
+window; a full response window pauses that connection before another socket or `read_tls` operation
+without stalling the Engine. TLS may consume at most one documented record beyond the nominal
+window. An Engine-wide queued-byte budget covers the reserved/occupied windows of all accepted
+upload bodies and unread response bodies. Pre-submission upload bytes are caller-owned; acceptance
+binds the channel to this Engine budget and may reject it. Separately, the existing request and
+response body limits remain the Engine-owned total-byte ceilings, defaulting to 16 MiB. A
+`StreamRequest` may select a smaller clamp but a cloneable Client cannot raise the Engine ceiling;
+large or long-lived streams require explicit Engine configuration.
+
+Application backpressure does not count as response inactivity because the network is deliberately
+waiting for the consumer. Total time still runs from acceptance. An empty unfinished upload queue
+does count as inactivity because its producer has stalled. No user producer, consumer, reader,
+writer, or callback code executes on the reactor.
+
 File upload/download convenience can be built over streaming and is not required for the first GDS replacement.
 
 ## 19. Error model
@@ -789,6 +846,14 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 17. **Cancellation latency gate — provisional Windows value recorded:** The exact dynamic Windows package must release controlled slow-header and stalled-body sockets in less than 100 ms after cancellation; current 10-trial maxima are below 4 ms. The same 100 ms target is provisional for connect and for Windows 10, Wine, and Linux until named-stage measurements run there. Never leave “prompt” as the only acceptance language or silently weaken the gate when another platform is measured.
 
 18. **Engine thread traits — accepted in principle:** Ordinary Engine targets `Send` but does not initially promise `Sync`; Client and RequestHandle target `Send + Sync`; PendingRequest and DetachedCallbacks target at least `Send`. Spawned curl satisfies this without moving `Multi`; manual curl may remain unsupported/thread-bound until audited. User-created shared wrappers are allowed but outside NBReq's ownership contract.
+
+19. **Native streaming ownership — accepted:** Keep buffered `Request` / `Response` / `Completion`
+    untouched. `StreamRequest` uses a buffered replayable `.body` or consumes one unique
+    `.body_stream(UploadBody)` and always returns one unique `ResponseReader`. The caller creates the
+    fixed-length or chunked upload pair before submission. The reader is the only streaming terminal
+    path; `collect()` is bounded consumer-side sugar, not another waiter. Manual mode never blocks or
+    drives implicitly, streaming uploads never redirect, and per-transfer windows plus an Engine-wide
+    queued-byte budget enforce backpressure beneath the Engine's total body ceilings.
 
 ## 27. Deferred policy and proof decisions
 

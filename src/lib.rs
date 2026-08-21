@@ -12,6 +12,7 @@ mod dispatch;
 mod engine;
 mod reactor;
 mod registry;
+mod stream;
 mod types;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -25,6 +26,10 @@ mod lifecycle_tests;
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};
 pub use engine::{Engine, EngineBuilder};
+pub use stream::{
+    StreamRequest, StreamRequestBuilder, TryPushError, TryPushErrorKind, UploadBody,
+    UploadFinishError, UploadFinishErrorKind, UploadSender,
+};
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,
     Header, LimitKind, Method, Request, RequestBuilder, RequestId, RequestOptions, Response,

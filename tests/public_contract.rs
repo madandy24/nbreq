@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use nbreq::{
     Client, DetachedCallbacks, Engine, EngineConfig, ErrorKind, PendingRequest, RequestHandle,
+    StreamRequest, UploadBody, UploadSender,
 };
 
 fn assert_send<T: Send>() {}
@@ -14,6 +15,9 @@ fn public_thread_traits_match_the_contract() {
     assert_send_sync::<RequestHandle>();
     assert_send::<PendingRequest>();
     assert_send::<DetachedCallbacks>();
+    assert_send::<StreamRequest>();
+    assert_send::<UploadBody>();
+    assert_send::<UploadSender>();
 }
 
 #[test]

@@ -176,6 +176,30 @@ readiness pass can still drain multiple response chunks into an owned event batc
 requires a public producer/consumer and replayability contract; that contract must be reviewed
 before implementation rather than inferred from the internal TLS cursor.
 
+## WP9.4b public contract and ownership primitives — Windows slice
+
+The reviewed streaming contract is now frozen in the product specification and delivery plan.
+Buffered `Request` / `Response` / `Completion` remain untouched. `StreamRequest` is a complete
+builder with replayable `.body(Vec)` and unique `.body_stream(UploadBody)` modes; selecting both is
+a build error, while `From<Request>` remains convenience sugar. Every future stream submission has
+one `ResponseReader` terminal consumer and no `PendingRequest`, streaming `Completion`, callback, or
+second body waiter.
+
+The first implementation slice adds the unique fixed-length and chunked upload pairs without
+claiming transport submission. `UploadBody` is consumed by one StreamRequest while its caller keeps
+one `UploadSender`; both are `Send`, deliberately `!Sync`, and not `Clone`. The initial
+`try_push(Vec)` is all-or-nothing and returns the unchanged buffer for a full queue, an impossible
+oversize chunk, a fixed-length overflow, or a closed body. Fixed finish enforces the exact declared
+length, chunked finish is explicit, finish consumes the producer, drop-before-finish poisons later
+construction, and body drop closes the sender. Request construction rejects mixed body modes,
+GET/HEAD stream uploads, caller framing headers, `Expect`, zero queue capacity, abandoned senders,
+and length-mismatched finish.
+
+The public submission/reader path, blocking producer, Engine aggregate byte budget, total-limit
+binding, cleartext/TLS wire pump, response backpressure, early response, cancellation, manual mode,
+and curl `Unsupported` result remain the next slices. Pre-submission queue bytes are caller-owned;
+Engine accounting begins only when submission accepts and binds the channel.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
