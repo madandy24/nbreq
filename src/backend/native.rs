@@ -97,6 +97,7 @@ struct Connection {
     outbound_limit: usize,
     received: usize,
     receive_limit: usize,
+    read_allowance: Option<usize>,
     deadline: Option<Instant>,
 }
 
@@ -233,6 +234,7 @@ impl NativeReactor {
             outbound_limit,
             received: 0,
             receive_limit,
+            read_allowance: None,
             deadline,
         });
         if let Some(when) = deadline {
@@ -266,6 +268,18 @@ impl NativeReactor {
         Ok(connection
             .outbound_limit
             .saturating_sub(connection.outbound.len()))
+    }
+
+    pub(crate) fn set_read_allowance(
+        &mut self,
+        id: SlotId,
+        allowance: Option<usize>,
+    ) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native read allowance targeted a stale or closed slot")
+        })?;
+        connection.read_allowance = allowance;
+        self.reregister(id)
     }
 
     pub(crate) fn cancel(&mut self, id: SlotId) -> bool {
@@ -309,6 +323,7 @@ impl NativeReactor {
         connection.outbound_limit = outbound_limit;
         connection.receive_limit = receive_limit;
         connection.received = 0;
+        connection.read_allowance = None;
         if let Some(when) = deadline {
             self.deadlines.push(Reverse(DeadlineEntry { when, id }));
         }
@@ -538,9 +553,17 @@ impl NativeReactor {
     fn read_ready(&mut self, id: SlotId, output: &mut Vec<NativeEvent>) {
         let mut buffer = vec![0_u8; READ_CHUNK];
         loop {
+            let allowed = self
+                .connection_mut(id)
+                .and_then(|connection| connection.read_allowance)
+                .unwrap_or(READ_CHUNK)
+                .min(READ_CHUNK);
+            if allowed == 0 {
+                return;
+            }
             let read_result = match self.connection_mut(id) {
                 Some(connection) if connection.state == ConnectionState::Connected => {
-                    connection.stream.read(&mut buffer)
+                    connection.stream.read(&mut buffer[..allowed])
                 }
                 _ => return,
             };
@@ -554,6 +577,9 @@ impl NativeReactor {
                 }
                 Ok(read) => {
                     let over_limit = self.connection_mut(id).is_none_or(|connection| {
+                        if let Some(allowance) = &mut connection.read_allowance {
+                            *allowance = allowance.saturating_sub(read);
+                        }
                         connection.received = connection.received.saturating_add(read);
                         connection.received > connection.receive_limit
                     });
@@ -621,11 +647,14 @@ impl NativeReactor {
         let interest = if connection.state == ConnectionState::Connecting {
             Some(Interest::READABLE.add(Interest::WRITABLE))
         } else {
-            match (connection.peer_read_closed, connection.outbound.is_empty()) {
-                (false, false) => Some(Interest::READABLE.add(Interest::WRITABLE)),
-                (false, true) => Some(Interest::READABLE),
-                (true, false) => Some(Interest::WRITABLE),
-                (true, true) => None,
+            let readable =
+                !connection.peer_read_closed && !matches!(connection.read_allowance, Some(0));
+            let writable = !connection.outbound.is_empty();
+            match (readable, writable) {
+                (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
+                (true, false) => Some(Interest::READABLE),
+                (false, true) => Some(Interest::WRITABLE),
+                (false, false) => None,
             }
         };
         match (connection.registered, interest) {
@@ -1159,6 +1188,93 @@ mod tests {
         assert_eq!(reactor.active_count(), 1);
         assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
+        server.join().expect("server must join");
+    }
+
+    #[test]
+    fn per_slot_read_allowance_caps_the_whole_batch_and_reopens_cleanly() {
+        let (listener, address) = listener();
+        let (close_tx, close_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server must accept");
+            stream.write_all(b"abcdefghij").expect("server must write");
+            close_rx.recv().expect("client must release server");
+        });
+
+        let mut reactor = NativeReactor::new(8).expect("reactor must construct");
+        let id = reactor
+            .connect(address, None, TEST_LIMIT, TEST_LIMIT)
+            .expect("connect must start");
+        reactor
+            .set_read_allowance(id, Some(3))
+            .expect("initial read allowance must arm");
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, NativeEvent::Data(event_id, _) if *event_id == id))
+        });
+        let first = events
+            .iter()
+            .filter_map(|event| match event {
+                NativeEvent::Data(event_id, bytes) if *event_id == id => Some(bytes.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(first, b"abc", "one readiness batch exceeded its allowance");
+
+        let paused = reactor
+            .poll(Instant::now() + Duration::from_millis(50))
+            .expect("paused poll must succeed");
+        assert!(
+            paused
+                .iter()
+                .all(|event| !matches!(event, NativeEvent::Data(event_id, _) if *event_id == id)),
+            "zero allowance must remove readable progress"
+        );
+
+        reactor
+            .set_read_allowance(id, Some(2))
+            .expect("second read allowance must arm");
+        let second = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.iter().any(
+                |event| matches!(event, NativeEvent::Data(event_id, bytes) if *event_id == id && bytes.len() == 2),
+            )
+        });
+        assert!(second.iter().any(
+            |event| matches!(event, NativeEvent::Data(event_id, bytes) if *event_id == id && bytes == b"de")
+        ));
+
+        reactor
+            .set_read_allowance(id, Some(5))
+            .expect("final read allowance must arm");
+        let final_events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.iter().any(
+                |event| matches!(event, NativeEvent::Data(event_id, bytes) if *event_id == id && bytes.len() == 5),
+            )
+        });
+        assert!(final_events.iter().any(
+            |event| matches!(event, NativeEvent::Data(event_id, bytes) if *event_id == id && bytes == b"fghij")
+        ));
+        reactor
+            .prepare_reuse(id, None, TEST_LIMIT, TEST_LIMIT)
+            .expect("reuse preparation must clear transfer-local allowance");
+        assert_eq!(
+            reactor
+                .connection_mut(id)
+                .expect("connection must remain live")
+                .read_allowance,
+            None
+        );
+        reactor
+            .set_read_allowance(id, Some(1))
+            .expect("EOF observation allowance must arm");
+        close_tx.send(()).expect("server must close");
+        let _closed = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::PeerClosed(id))
+        });
+        assert!(reactor.cancel(id));
         server.join().expect("server must join");
     }
 

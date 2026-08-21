@@ -306,6 +306,31 @@ formatting pass. Next is socket-owner integration: per-slot read allowance must 
 readiness batch from outrunning the reader window, while TLS may retain only its documented one-record
 allowance. Native must remain capability-off until that path and cancellation are end-to-end proven.
 
+## WP9.4g per-slot socket read allowance — Windows slice
+
+`NativeReactor` now owns an optional read allowance on every live connection. `None` preserves the
+existing buffered/unbounded-within-wire-limit behaviour. `Some(n)` caps the sum of all socket reads
+performed for that slot in one or more readiness passes until the owner explicitly replenishes it;
+each successful read decrements the allowance. At zero the reactor removes readable interest rather
+than repeatedly waking and spinning on a full consumer queue. Writable progress and deadlines remain
+independent.
+
+A deterministic socket fixture has the peer write ten already-available bytes. The owner admits
+exactly 3, observes no further Data while paused, then reopens exactly 2 and 5 bytes. This proves the
+cap applies to the complete readiness batch rather than merely each 16 KiB syscall buffer. Reuse
+preparation clears transfer-local allowance so a stale paused stream cannot contaminate a later
+buffered lease. An explicit one-byte reopening observes peer FIN after all data was consumed.
+
+That EOF reopening is a required owner rule: zero allowance intentionally suppresses FIN because
+FIN is delivered as readability. A backpressured close-delimited response remains paused until the
+reader creates capacity; fixed/chunked completion is framing-driven and needs no sentinel FIN. The
+future stream owner must also reopen for EOF when close-delimited framing is active. TLS record
+allowance and retained plaintext remain the next layer and are not claimed by this slice.
+
+The Windows gate passes 150 native/test-support unit tests, 4 adversarial tests, 4 public-contract
+tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy, and formatting pass.
+Native stream capability remains off.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
