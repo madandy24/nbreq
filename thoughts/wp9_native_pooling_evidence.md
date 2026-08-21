@@ -499,7 +499,6 @@ The Windows gate at this slice passes 175 native unit tests, 4 adversarial HTTP 
 contract tests, and 6 doctests. The default build passes 65 unit, 5 contract, and 6 doctests. Strict
 all-target/all-feature clippy, formatting, all-feature documentation, request terminal/callback
 retention, stream reservation release, one-socket reuse, and capacity-wait high-water tests pass.
-Exact-source Ubuntu repetition remains required before this metrics slice is accepted there.
 
 The first exact Ubuntu archive, commit `1daedb4` with SHA-256
 `30DFF252528DE7A1D00862CEF78E016326F951B319F94EC99E5C87784863B09C`, exposed a real ordering race:
@@ -510,6 +509,19 @@ the shared response terminal commit, after winning arbitration and before publis
 terminal state. Immediate buffered reuse and streamed 204/malformed-result assertions now guard
 both paths. The first Ubuntu run stopped at that failed native unit test; no later gate from that
 archive is claimed.
+
+The corrected exact source is commit `c7467d5`, packaged as a 438,115-byte archive with SHA-256
+`B89DB4BF241242A4048FDA9782BBA9A492F8CBA4532039E55281E082CEACDBFE`. The copied hash matches on
+Ubuntu 20.04.6 and a fresh extraction runs with Rust/Cargo 1.85.0. The complete gate passes 175
+native unit tests, 4 adversarial HTTP tests, 5 public contract tests, and 6 doctests; the default
+suite passes 65 unit, 5 contract, and 6 doctests. Warning-denied native/test-support clippy,
+formatting, offline all-feature compilation, and offline all-feature documentation pass.
+
+Twenty-five consecutive triples of the immediate buffered-reuse completion, streamed no-body plus
+malformed terminal, and callback-retained metrics tests pass. A separate process-name check after
+the loop reports no surviving NBReq test executable. WP9.5 metrics is accepted on Windows and
+Ubuntu; this does not close the remaining fuzz, pressure/interruption, verifier head-of-line, or
+benchmark work and does not select native through ordinary `Engine::new`.
 
 ## Accepted boundary and later work
 
