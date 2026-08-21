@@ -819,6 +819,8 @@ pub enum LimitKind {
     ResponseHeaderBytes,
     /// Response header field count.
     ResponseHeaderCount,
+    /// Queued upload and unread response bytes reserved for streaming flow control.
+    StreamingQueueBytes,
 }
 
 /// A backend-neutral NBReq error.

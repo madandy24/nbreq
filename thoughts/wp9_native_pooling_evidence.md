@@ -200,6 +200,37 @@ binding, cleartext/TLS wire pump, response backpressure, early response, cancell
 and curl `Unsupported` result remain the next slices. Pre-submission queue bytes are caller-owned;
 Engine accounting begins only when submission accepts and binds the channel.
 
+## WP9.4c response-reader and Engine-facing channel halves — Windows slice
+
+The unique public `ResponseReader`, immutable `ResponseHead`, `StreamRead`, and `StreamError` state
+machine now exist without adding `submit_stream`. The reader caches only the final head, drains one
+bounded queue, owns the sole terminal observation path, and exposes a cloneable cancellation-only
+RequestHandle. Spawned `wait_head`, `read`, and untouched-reader `collect` block only on the response
+condition variable. Manual mode returns `WrongMode` for those calls while `try_head` and `try_read`
+remain passive and never drive. `collect` returns an ordinary `Response`, but fails after any body
+byte was already delivered.
+
+No-body final heads establish EOF immediately. The final byte of an ordinary body also establishes
+EOF without requiring a sentinel read, so reader drop is harmless in both cases. Drop before known
+EOF clears unread data, wakes the transport, and cancels through RequestHandle. A full queue rejects
+the complete owned response chunk; reader progress releases capacity and wakes the transport.
+Failures and cancellation discard queued and reader-local remainder before surfacing terminal state.
+An isolated regression closes a race where a transport failure could zero shared byte accounting
+while the reader retained part of a popped chunk, which would otherwise underflow on its next read.
+
+The upload pair now has the corresponding crate-internal owner API: acceptance-time `bind` clamps
+the requested window and total bytes, rechecks sender abandonment as a Send-stage failure, installs
+the Engine waker without a lost-wake gap, and rejects double binding. Native HTTP will consume only
+`try_pop` states (`Chunk`, `Pending`, `Finished`, `Failed`) and `close`, never the mutex. Total-limit
+refusal and Engine closure continue returning caller-owned upload chunks. A second `.body_stream`
+now has its own construction diagnostic.
+
+The full Windows native/test-support gate passes 140 unit, 4 adversarial, 4 public-contract, and 6
+doctests; the 57-test default unit suite, warning-denied all-feature clippy, all-feature compilation,
+and formatting also pass. This is still deliberately not a submission or wire-streaming claim.
+Next, registry acceptance and native decoding must own ResponseSink directly; adapting the existing
+buffered Completion would violate the frozen memory and terminal model.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

@@ -27,8 +27,9 @@ pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};
 pub use engine::{Engine, EngineBuilder};
 pub use stream::{
-    StreamRequest, StreamRequestBuilder, TryPushError, TryPushErrorKind, UploadBody,
-    UploadFinishError, UploadFinishErrorKind, UploadSender,
+    ResponseHead, ResponseReader, StreamError, StreamRead, StreamRequest, StreamRequestBuilder,
+    TryPushError, TryPushErrorKind, UploadBody, UploadFinishError, UploadFinishErrorKind,
+    UploadSender,
 };
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,

@@ -7,8 +7,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::{
-    Error, ErrorKind, Header, Method, Request, RequestBuilder, RequestOptions, TlsVerification,
+    Error, ErrorKind, Header, LimitKind, Method, Request, RequestBuilder, RequestHandle,
+    RequestOptions, Response, RunMode, TlsVerification,
 };
+
+type StreamWaker = Arc<dyn Fn() + Send + Sync + 'static>;
 
 /// The Engine-owned receiving half of one streamed request body.
 ///
@@ -55,8 +58,10 @@ impl UploadBody {
                 accepted_bytes: 0,
                 producer: ProducerState::Open,
                 receiver_alive: true,
+                total_limit: None,
             }),
             changed: Condvar::new(),
+            engine_waker: Mutex::new(None),
             framing,
             queue_capacity,
         });
@@ -102,6 +107,103 @@ impl UploadBody {
             )),
         }
     }
+
+    #[allow(dead_code)] // The native submission seam binds this in the next slice.
+    pub(crate) fn bind(
+        &self,
+        max_queue_capacity: usize,
+        total_limit: usize,
+        engine_waker: StreamWaker,
+    ) -> Result<(), Error> {
+        if self.shared.queue_capacity > max_queue_capacity {
+            return Err(Error::limit(
+                LimitKind::StreamingQueueBytes,
+                format!(
+                    "streamed upload queue exceeds the configured {max_queue_capacity} byte per-transfer limit"
+                ),
+            ));
+        }
+        let total_limit = u64::try_from(total_limit).unwrap_or(u64::MAX);
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.total_limit.is_some() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "a streamed upload body was bound to an Engine more than once",
+            ));
+        }
+        if !state.receiver_alive {
+            return Err(Error::transport(
+                crate::TransportStage::Send,
+                "the streamed upload body closed before submission",
+            ));
+        }
+        match state.producer {
+            ProducerState::Open | ProducerState::Finished => {}
+            ProducerState::Abandoned => {
+                return Err(Error::transport(
+                    crate::TransportStage::Send,
+                    "the streamed upload sender was dropped before submission",
+                ));
+            }
+            ProducerState::LengthMismatch => {
+                return Err(Error::transport(
+                    crate::TransportStage::Send,
+                    "the fixed-length streamed upload finished at the wrong length",
+                ));
+            }
+        }
+        if state.accepted_bytes > total_limit
+            || matches!(self.shared.framing, UploadFraming::Fixed(length) if length > total_limit)
+        {
+            return Err(Error::limit(
+                LimitKind::RequestBodyBytes,
+                format!("streamed request body exceeds the configured {total_limit} byte limit"),
+            ));
+        }
+        state.total_limit = Some(total_limit);
+        *lock_unpoisoned(&self.shared.engine_waker) = Some(engine_waker);
+        drop(state);
+        Ok(())
+    }
+
+    #[allow(dead_code)] // The native HTTP owner consumes this in the next slice.
+    pub(crate) fn try_pop(&mut self) -> UploadPoll {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if !state.receiver_alive {
+            return UploadPoll::Failed(Error::transport(
+                crate::TransportStage::Send,
+                "the streamed upload body is closed",
+            ));
+        }
+        if let Some(chunk) = state.queue.pop_front() {
+            state.queued_bytes -= chunk.len();
+            drop(state);
+            self.shared.changed.notify_all();
+            return UploadPoll::Chunk(chunk);
+        }
+        match state.producer {
+            ProducerState::Open => UploadPoll::Pending,
+            ProducerState::Finished => UploadPoll::Finished,
+            ProducerState::Abandoned => UploadPoll::Failed(Error::transport(
+                crate::TransportStage::Send,
+                "the streamed upload sender was dropped before finish",
+            )),
+            ProducerState::LengthMismatch => UploadPoll::Failed(Error::transport(
+                crate::TransportStage::Send,
+                "the fixed-length streamed upload finished at the wrong length",
+            )),
+        }
+    }
+
+    #[allow(dead_code)] // Early response, cancellation, and shutdown call this after submission.
+    pub(crate) fn close(&mut self) {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        state.receiver_alive = false;
+        state.queue.clear();
+        state.queued_bytes = 0;
+        drop(state);
+        self.shared.changed.notify_all();
+    }
 }
 
 impl fmt::Debug for UploadBody {
@@ -118,6 +220,8 @@ impl Drop for UploadBody {
     fn drop(&mut self) {
         let mut state = lock_unpoisoned(&self.shared.state);
         state.receiver_alive = false;
+        state.queue.clear();
+        state.queued_bytes = 0;
         drop(state);
         self.shared.changed.notify_all();
     }
@@ -166,6 +270,15 @@ impl UploadSender {
         let Some(next_accepted) = state.accepted_bytes.checked_add(chunk_len) else {
             return Err(TryPushError::new(TryPushErrorKind::LengthExceeded, chunk));
         };
+        if state
+            .total_limit
+            .is_some_and(|total_limit| next_accepted > total_limit)
+        {
+            return Err(TryPushError::new(
+                TryPushErrorKind::TotalLimitExceeded,
+                chunk,
+            ));
+        }
         if matches!(self.shared.framing, UploadFraming::Fixed(length) if next_accepted > length) {
             return Err(TryPushError::new(TryPushErrorKind::LengthExceeded, chunk));
         }
@@ -180,6 +293,9 @@ impl UploadSender {
         }
         drop(state);
         self.shared.changed.notify_all();
+        if let Some(waker) = lock_unpoisoned(&self.shared.engine_waker).clone() {
+            waker();
+        }
         Ok(())
     }
 
@@ -271,6 +387,8 @@ pub enum TryPushErrorKind {
     ChunkTooLarge,
     /// Accepting the chunk would exceed a fixed body's declared length.
     LengthExceeded,
+    /// Accepting the chunk would exceed the Engine-owned total request-body ceiling.
+    TotalLimitExceeded,
     /// The receiving body or request is no longer accepting upload data.
     Closed,
 }
@@ -307,6 +425,9 @@ impl fmt::Display for TryPushError {
             TryPushErrorKind::ChunkTooLarge => "the chunk is larger than the streamed upload queue",
             TryPushErrorKind::LengthExceeded => {
                 "the chunk would exceed the fixed streamed upload length"
+            }
+            TryPushErrorKind::TotalLimitExceeded => {
+                "the chunk would exceed the streamed request body limit"
             }
             TryPushErrorKind::Closed => "the streamed upload is closed",
         };
@@ -377,6 +498,525 @@ impl fmt::Display for UploadFinishError {
 }
 
 impl StdError for UploadFinishError {}
+
+/// The final HTTP status and headers for a streamed response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResponseHead {
+    status: u16,
+    headers: Vec<Header>,
+}
+
+impl ResponseHead {
+    #[allow(dead_code)] // Constructed by native HTTP beginning with the submission slice.
+    pub(crate) fn new(status: u16, headers: Vec<Header>) -> Self {
+        Self { status, headers }
+    }
+
+    /// Returns the final HTTP status code.
+    #[must_use]
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Returns the final response headers.
+    ///
+    /// Informational heads and validated HTTP/1.1 trailers do not appear here.
+    #[must_use]
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
+}
+
+/// The result of one nonblocking [`ResponseReader::try_read`] call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StreamRead {
+    /// No response-body bytes or terminal state are currently available.
+    Pending,
+    /// The supplied destination received this many bytes.
+    Data(usize),
+    /// The complete response body has been consumed successfully.
+    Eof,
+}
+
+/// A terminal request failure, cancellation, or invalid local streaming operation.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum StreamError {
+    /// The accepted streaming request failed.
+    Failed(Error),
+    /// Explicit cancellation won the request's terminal race.
+    Cancelled,
+    /// The requested reader operation is invalid in its current mode or state.
+    Operation(Error),
+}
+
+impl StreamError {
+    fn operation(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self::Operation(Error::new(kind, message))
+    }
+
+    /// Returns the underlying NBReq error for failures and invalid operations.
+    #[must_use]
+    pub fn error(&self) -> Option<&Error> {
+        match self {
+            Self::Failed(error) | Self::Operation(error) => Some(error),
+            Self::Cancelled => None,
+        }
+    }
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(error) => write!(formatter, "streaming request failed: {error}"),
+            Self::Cancelled => formatter.write_str("streaming request was cancelled"),
+            Self::Operation(error) => write!(formatter, "streaming operation failed: {error}"),
+        }
+    }
+}
+
+impl StdError for StreamError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.error().map(|error| error as &dyn StdError)
+    }
+}
+
+/// The unique body and terminal consumer for one accepted streaming request.
+///
+/// The reader is `Send`, deliberately not `Clone` or `Sync`, and owns no hidden Engine. Its
+/// cloneable [`RequestHandle`] is cancellation-only. Dropping before known EOF requests
+/// cancellation; dropping after the final byte or a no-body final head is harmless.
+///
+/// ```compile_fail
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<nbreq::ResponseReader>();
+/// ```
+pub struct ResponseReader {
+    handle: RequestHandle,
+    shared: Arc<ResponseShared>,
+    run_mode: RunMode,
+    head: Option<ResponseHead>,
+    current: Option<(Vec<u8>, usize)>,
+    body_started: bool,
+    eof_reached: bool,
+    seen_generation: u64,
+    not_sync: PhantomData<Cell<()>>,
+}
+
+impl ResponseReader {
+    /// Returns an independent cancellation-only handle for this request.
+    #[must_use]
+    pub fn handle(&self) -> RequestHandle {
+        self.handle.clone()
+    }
+
+    /// Returns the final response head when available without blocking.
+    pub fn try_head(&mut self) -> Result<Option<&ResponseHead>, StreamError> {
+        if self.head.is_none() {
+            let state = lock_unpoisoned(&self.shared.state);
+            self.seen_generation = state.generation;
+            if let Some(head) = &state.head {
+                self.head = Some(head.clone());
+                if state.no_body && state.terminal == Some(StreamTerminal::Complete) {
+                    self.eof_reached = true;
+                }
+            } else if let Some(terminal) = &state.terminal {
+                return Err(terminal_error_without_head(terminal));
+            }
+        }
+        Ok(self.head.as_ref())
+    }
+
+    /// Waits for and returns the final response head on a spawned Engine.
+    ///
+    /// Manual Engines return `WrongMode`; this method never drives an Engine internally.
+    pub fn wait_head(&mut self) -> Result<&ResponseHead, StreamError> {
+        self.require_spawned("wait_head")?;
+        while self.head.is_none() {
+            if self.try_head()?.is_some() {
+                break;
+            }
+            self.wait_for_change();
+        }
+        self.head.as_ref().ok_or_else(|| {
+            StreamError::operation(
+                ErrorKind::Internal,
+                "response head wait completed without a head",
+            )
+        })
+    }
+
+    /// Attempts to read available response-body bytes without blocking.
+    pub fn try_read(&mut self, destination: &mut [u8]) -> Result<StreamRead, StreamError> {
+        if self.try_head()?.is_none() {
+            return Ok(StreamRead::Pending);
+        }
+        if self.eof_reached {
+            return Ok(StreamRead::Eof);
+        }
+        if destination.is_empty() {
+            return Ok(StreamRead::Data(0));
+        }
+
+        let mut state = lock_unpoisoned(&self.shared.state);
+        self.seen_generation = state.generation;
+        match &state.terminal {
+            Some(StreamTerminal::Failed(error)) => {
+                self.current = None;
+                return Err(StreamError::Failed(error.clone()));
+            }
+            Some(StreamTerminal::Cancelled) => {
+                self.current = None;
+                return Err(StreamError::Cancelled);
+            }
+            Some(StreamTerminal::Complete) | None => {}
+        }
+        if self.current.is_none() {
+            if let Some(chunk) = state.queue.pop_front() {
+                self.current = Some((chunk, 0));
+            } else if state.terminal == Some(StreamTerminal::Complete) {
+                self.eof_reached = true;
+                return Ok(StreamRead::Eof);
+            } else {
+                return Ok(StreamRead::Pending);
+            }
+        }
+
+        let (chunk, offset) = self.current.as_mut().ok_or_else(|| {
+            StreamError::operation(
+                ErrorKind::Internal,
+                "response queue yielded no readable chunk",
+            )
+        })?;
+        let count = destination.len().min(chunk.len() - *offset);
+        destination[..count].copy_from_slice(&chunk[*offset..*offset + count]);
+        *offset += count;
+        self.body_started |= count != 0;
+
+        state.queued_bytes -= count;
+        state.generation = state.generation.wrapping_add(1);
+        self.seen_generation = state.generation;
+        let chunk_done = *offset == chunk.len();
+        if chunk_done {
+            self.current = None;
+        }
+        if chunk_done && state.queue.is_empty() && state.terminal == Some(StreamTerminal::Complete)
+        {
+            self.eof_reached = true;
+        }
+        drop(state);
+        self.shared.changed.notify_all();
+        self.shared.wake_transport();
+        Ok(StreamRead::Data(count))
+    }
+
+    /// Reads response-body bytes on a spawned Engine, returning `None` at successful EOF.
+    ///
+    /// Manual Engines return `WrongMode`; this method never drives an Engine internally.
+    pub fn read(&mut self, destination: &mut [u8]) -> Result<Option<usize>, StreamError> {
+        self.require_spawned("read")?;
+        loop {
+            match self.try_read(destination)? {
+                StreamRead::Pending => self.wait_for_change(),
+                StreamRead::Data(count) => return Ok(Some(count)),
+                StreamRead::Eof => return Ok(None),
+            }
+        }
+    }
+
+    /// Consumes an untouched spawned-mode reader and collects its complete bounded response.
+    ///
+    /// This fails closed after any body byte has already been returned. It is consumer-side sugar,
+    /// not a second waiter and not a streaming [`Completion`](crate::Completion).
+    pub fn collect(mut self) -> Result<Response, StreamError> {
+        self.require_spawned("collect")?;
+        if self.body_started {
+            return Err(StreamError::operation(
+                ErrorKind::InvalidRequest,
+                "collect cannot follow a partial streaming body read",
+            ));
+        }
+        let head = self.wait_head()?.clone();
+        let mut body = Vec::new();
+        let mut buffer = vec![0_u8; 16 * 1024];
+        while let Some(count) = self.read(&mut buffer)? {
+            body.extend_from_slice(&buffer[..count]);
+        }
+        Ok(Response::new(head.status, head.headers, body))
+    }
+
+    /// Returns whether successful EOF is already known locally.
+    #[must_use]
+    pub fn is_eof(&self) -> bool {
+        self.eof_reached
+    }
+
+    fn require_spawned(&self, operation: &str) -> Result<(), StreamError> {
+        if self.run_mode == RunMode::Manual {
+            return Err(StreamError::operation(
+                ErrorKind::WrongMode,
+                format!("{operation} is not available for a manual Engine"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn wait_for_change(&mut self) {
+        let state = lock_unpoisoned(&self.shared.state);
+        let state = self
+            .shared
+            .changed
+            .wait_while(state, |state| state.generation == self.seen_generation)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.seen_generation = state.generation;
+    }
+}
+
+impl fmt::Debug for ResponseReader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResponseReader")
+            .field("request_id", &self.handle.id())
+            .field("has_head", &self.head.is_some())
+            .field("body_started", &self.body_started)
+            .field("eof_reached", &self.eof_reached)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ResponseReader {
+    fn drop(&mut self) {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        state.reader_alive = false;
+        state.queue.clear();
+        state.queued_bytes = 0;
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.shared.changed.notify_all();
+        self.shared.wake_transport();
+        if !self.eof_reached {
+            let _cancel_result = self.handle.cancel();
+        }
+    }
+}
+
+fn terminal_error_without_head(terminal: &StreamTerminal) -> StreamError {
+    match terminal {
+        StreamTerminal::Failed(error) => StreamError::Failed(error.clone()),
+        StreamTerminal::Cancelled => StreamError::Cancelled,
+        StreamTerminal::Complete => StreamError::operation(
+            ErrorKind::Internal,
+            "streaming response completed without a final head",
+        ),
+    }
+}
+
+#[allow(dead_code)] // Fed by native HTTP beginning with the submission slice.
+pub(crate) struct ResponseSink {
+    shared: Arc<ResponseShared>,
+    terminal: bool,
+}
+
+#[allow(dead_code)]
+impl ResponseSink {
+    pub(crate) fn publish_head(&mut self, head: ResponseHead, no_body: bool) -> bool {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.head.is_some() || state.terminal.is_some() || !state.reader_alive {
+            return false;
+        }
+        state.head = Some(head);
+        state.no_body = no_body;
+        if no_body {
+            state.terminal = Some(StreamTerminal::Complete);
+            self.terminal = true;
+        }
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.shared.changed.notify_all();
+        true
+    }
+
+    pub(crate) fn try_push(&mut self, chunk: Vec<u8>) -> Result<(), ResponsePushError> {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if !state.reader_alive || state.terminal.is_some() {
+            return Err(ResponsePushError::Closed(chunk));
+        }
+        if state.head.is_none() {
+            return Err(ResponsePushError::Protocol(chunk));
+        }
+        let Some(next_total) = state.received_bytes.checked_add(chunk.len()) else {
+            return Err(ResponsePushError::Limit(chunk));
+        };
+        if next_total > self.shared.total_limit {
+            return Err(ResponsePushError::Limit(chunk));
+        }
+        if chunk.len() > self.shared.queue_capacity - state.queued_bytes {
+            return Err(ResponsePushError::WouldBlock(chunk));
+        }
+        state.received_bytes = next_total;
+        state.queued_bytes += chunk.len();
+        if !chunk.is_empty() {
+            state.queue.push_back(chunk);
+        }
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.shared.changed.notify_all();
+        Ok(())
+    }
+
+    pub(crate) fn complete(&mut self) {
+        self.commit_terminal(StreamTerminal::Complete);
+    }
+
+    pub(crate) fn fail(&mut self, error: Error) {
+        self.commit_terminal(StreamTerminal::Failed(error));
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.commit_terminal(StreamTerminal::Cancelled);
+    }
+
+    pub(crate) fn available_capacity(&self) -> usize {
+        let state = lock_unpoisoned(&self.shared.state);
+        self.shared.queue_capacity - state.queued_bytes
+    }
+
+    pub(crate) fn reader_alive(&self) -> bool {
+        lock_unpoisoned(&self.shared.state).reader_alive
+    }
+
+    fn commit_terminal(&mut self, terminal: StreamTerminal) {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.terminal.is_some() {
+            return;
+        }
+        if !matches!(terminal, StreamTerminal::Complete) {
+            state.queue.clear();
+            state.queued_bytes = 0;
+        }
+        state.terminal = Some(terminal);
+        state.generation = state.generation.wrapping_add(1);
+        self.terminal = true;
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+}
+
+impl Drop for ResponseSink {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.fail(Error::new(
+                ErrorKind::Internal,
+                "streaming response producer ended without a terminal result",
+            ));
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum ResponsePushError {
+    WouldBlock(Vec<u8>),
+    Closed(Vec<u8>),
+    Protocol(Vec<u8>),
+    Limit(Vec<u8>),
+}
+
+#[allow(dead_code)]
+impl ResponsePushError {
+    pub(crate) fn into_chunk(self) -> Vec<u8> {
+        match self {
+            Self::WouldBlock(chunk)
+            | Self::Closed(chunk)
+            | Self::Protocol(chunk)
+            | Self::Limit(chunk) => chunk,
+        }
+    }
+}
+
+struct ResponseShared {
+    state: Mutex<ResponseState>,
+    changed: Condvar,
+    transport_waker: Option<StreamWaker>,
+    queue_capacity: usize,
+    total_limit: usize,
+}
+
+impl ResponseShared {
+    fn wake_transport(&self) {
+        if let Some(waker) = &self.transport_waker {
+            waker();
+        }
+    }
+}
+
+struct ResponseState {
+    head: Option<ResponseHead>,
+    no_body: bool,
+    queue: VecDeque<Vec<u8>>,
+    queued_bytes: usize,
+    received_bytes: usize,
+    terminal: Option<StreamTerminal>,
+    reader_alive: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StreamTerminal {
+    Complete,
+    Failed(Error),
+    Cancelled,
+}
+
+#[allow(dead_code)] // Called by stream acceptance beginning with the next slice.
+pub(crate) fn response_pair(
+    handle: RequestHandle,
+    run_mode: RunMode,
+    queue_capacity: usize,
+    total_limit: usize,
+    transport_waker: Option<StreamWaker>,
+) -> Result<(ResponseReader, ResponseSink), Error> {
+    if queue_capacity == 0 {
+        return Err(Error::limit(
+            LimitKind::StreamingQueueBytes,
+            "a streaming response queue capacity must be greater than zero",
+        ));
+    }
+    let shared = Arc::new(ResponseShared {
+        state: Mutex::new(ResponseState {
+            head: None,
+            no_body: false,
+            queue: VecDeque::new(),
+            queued_bytes: 0,
+            received_bytes: 0,
+            terminal: None,
+            reader_alive: true,
+            generation: 0,
+        }),
+        changed: Condvar::new(),
+        transport_waker,
+        queue_capacity,
+        total_limit,
+    });
+    Ok((
+        ResponseReader {
+            handle,
+            shared: Arc::clone(&shared),
+            run_mode,
+            head: None,
+            current: None,
+            body_started: false,
+            eof_reached: false,
+            seen_generation: 0,
+            not_sync: PhantomData,
+        },
+        ResponseSink {
+            shared,
+            terminal: false,
+        },
+    ))
+}
 
 /// A request whose response body will be consumed through the streaming API.
 ///
@@ -498,7 +1138,7 @@ pub struct StreamRequestBuilder {
     request: RequestBuilder,
     buffered_body_selected: bool,
     stream_body: Option<UploadBody>,
-    body_conflict: bool,
+    body_conflict: Option<BodyConflict>,
 }
 
 impl StreamRequestBuilder {
@@ -507,7 +1147,7 @@ impl StreamRequestBuilder {
             request,
             buffered_body_selected: false,
             stream_body: None,
-            body_conflict: false,
+            body_conflict: None,
         }
     }
 
@@ -524,7 +1164,7 @@ impl StreamRequestBuilder {
     #[must_use]
     pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
         if self.stream_body.is_some() {
-            self.body_conflict = true;
+            self.body_conflict = Some(BodyConflict::MixedModes);
         }
         self.buffered_body_selected = true;
         self.request = self.request.body(body);
@@ -536,8 +1176,10 @@ impl StreamRequestBuilder {
     /// Combining this with [`Self::body`] or another streamed body is rejected by [`Self::build`].
     #[must_use]
     pub fn body_stream(mut self, body: UploadBody) -> Self {
-        if self.buffered_body_selected || self.stream_body.is_some() {
-            self.body_conflict = true;
+        if self.buffered_body_selected {
+            self.body_conflict = Some(BodyConflict::MixedModes);
+        } else if self.stream_body.is_some() {
+            self.body_conflict = Some(BodyConflict::MultipleStreams);
         }
         if self.stream_body.is_none() {
             self.stream_body = Some(body);
@@ -591,11 +1233,16 @@ impl StreamRequestBuilder {
 
     /// Validates the backend-independent streaming request contract.
     pub fn build(self) -> Result<StreamRequest, Error> {
-        if self.body_conflict {
-            return Err(Error::new(
-                ErrorKind::InvalidRequest,
-                "a StreamRequest cannot contain both buffered and streamed upload bodies",
-            ));
+        if let Some(conflict) = self.body_conflict {
+            let message = match conflict {
+                BodyConflict::MixedModes => {
+                    "a StreamRequest cannot contain both buffered and streamed upload bodies"
+                }
+                BodyConflict::MultipleStreams => {
+                    "a StreamRequest cannot contain more than one streamed upload body"
+                }
+            };
+            return Err(Error::new(ErrorKind::InvalidRequest, message));
         }
         let request = self.request.build()?;
         if let Some(body) = &self.stream_body {
@@ -606,6 +1253,12 @@ impl StreamRequestBuilder {
             stream_body: self.stream_body,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BodyConflict {
+    MixedModes,
+    MultipleStreams,
 }
 
 fn validate_stream_body_request(request: &Request, body: &UploadBody) -> Result<(), Error> {
@@ -646,6 +1299,7 @@ enum UploadFraming {
 struct UploadShared {
     state: Mutex<UploadState>,
     changed: Condvar,
+    engine_waker: Mutex<Option<StreamWaker>>,
     framing: UploadFraming,
     queue_capacity: usize,
 }
@@ -656,6 +1310,15 @@ struct UploadState {
     accepted_bytes: u64,
     producer: ProducerState,
     receiver_alive: bool,
+    total_limit: Option<u64>,
+}
+
+#[allow(dead_code)] // Consumed by native HTTP beginning with the next submission slice.
+pub(crate) enum UploadPoll {
+    Chunk(Vec<u8>),
+    Pending,
+    Finished,
+    Failed(Error),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -777,6 +1440,19 @@ mod tests {
             .expect_err("body modes cannot silently replace one another");
         assert_eq!(error.kind(), ErrorKind::InvalidRequest);
 
+        let (first, _first_sender) = UploadBody::chunked(4).expect("first stream pair");
+        let (second, _second_sender) = UploadBody::chunked(4).expect("second stream pair");
+        let error = StreamRequest::post("http://example.test/")
+            .body_stream(first)
+            .body_stream(second)
+            .build()
+            .expect_err("two unique stream bodies cannot share one request");
+        assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+        assert_eq!(
+            error.message(),
+            "a StreamRequest cannot contain more than one streamed upload body"
+        );
+
         for header in ["Content-Length", "Transfer-Encoding", "Expect"] {
             let (body, _sender) = UploadBody::chunked(4).expect("valid chunked pair");
             let error = StreamRequest::post("http://example.test/")
@@ -827,5 +1503,296 @@ mod tests {
             .expect_err("a sender cannot outlive its body");
         assert_eq!(error.kind(), TryPushErrorKind::Closed);
         assert_eq!(error.into_chunk(), b"data");
+    }
+
+    #[test]
+    fn engine_pull_binding_revalidates_limits_and_observes_producer_terminal_state() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_count = Arc::clone(&wakes);
+        let waker: StreamWaker = Arc::new(move || {
+            wake_count.fetch_add(1, Ordering::Relaxed);
+        });
+        let (mut body, mut sender) = UploadBody::fixed(5, 4).expect("valid fixed pair");
+        body.bind(4, 5, waker).expect("body binds once");
+        sender.try_push(b"abc".to_vec()).expect("first chunk fits");
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        match body.try_pop() {
+            UploadPoll::Chunk(chunk) => assert_eq!(chunk, b"abc"),
+            _ => panic!("Engine pull must receive the queued chunk"),
+        }
+        sender
+            .try_push(b"de".to_vec())
+            .expect("remaining bytes fit");
+        sender.finish().expect("exact body finishes");
+        match body.try_pop() {
+            UploadPoll::Chunk(chunk) => assert_eq!(chunk, b"de"),
+            _ => panic!("Engine pull must receive the final chunk"),
+        }
+        assert!(matches!(body.try_pop(), UploadPoll::Finished));
+
+        let (body, mut sender) = UploadBody::chunked(4).expect("valid chunked pair");
+        body.bind(4, 3, Arc::new(|| {}))
+            .expect("queue binds beneath total limit");
+        let error = sender
+            .try_push(b"four".to_vec())
+            .expect_err("bound total ceiling is enforced after acceptance");
+        assert_eq!(error.kind(), TryPushErrorKind::TotalLimitExceeded);
+        assert_eq!(error.into_chunk(), b"four");
+
+        let (body, _sender) = UploadBody::chunked(8).expect("caller-owned queue may be larger");
+        let error = body
+            .bind(4, 16, Arc::new(|| {}))
+            .expect_err("Engine clamps the accepted transfer window");
+        assert_eq!(error.kind(), ErrorKind::Limit);
+        assert_eq!(error.limit_kind(), Some(LimitKind::StreamingQueueBytes));
+    }
+
+    #[test]
+    fn bind_rechecks_sender_abandonment_as_a_send_failure_and_close_wakes_the_sender() {
+        let (body, sender) = UploadBody::chunked(4).expect("valid chunked pair");
+        body.validate_for_build()
+            .expect("producer is alive during construction");
+        drop(sender);
+        let error = body
+            .bind(4, 16, Arc::new(|| {}))
+            .expect_err("submit-time validation must observe later abandonment");
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(crate::TransportStage::Send));
+
+        let (mut body, mut sender) = UploadBody::chunked(4).expect("valid chunked pair");
+        sender
+            .try_push(b"old".to_vec())
+            .expect("queue accepts data");
+        body.close();
+        assert!(matches!(body.try_pop(), UploadPoll::Failed(_)));
+        let error = sender
+            .try_push(b"new".to_vec())
+            .expect_err("closed Engine receiver rejects more data");
+        assert_eq!(error.kind(), TryPushErrorKind::Closed);
+        assert_eq!(error.into_chunk(), b"new");
+    }
+
+    fn synthetic_response_pair(
+        run_mode: RunMode,
+        queue_capacity: usize,
+        total_limit: usize,
+    ) -> (
+        crate::Engine,
+        crate::testing::TestController,
+        RequestHandle,
+        ResponseReader,
+        ResponseSink,
+    ) {
+        let config = match run_mode {
+            RunMode::Spawned => crate::EngineConfig::spawned(),
+            RunMode::Manual => crate::EngineConfig::manual(),
+        };
+        let (engine, controller) =
+            crate::testing::engine(config).expect("held Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get("http://example.test/")
+                    .build()
+                    .expect("synthetic request must build"),
+            )
+            .expect("synthetic request must submit");
+        let handle = pending.handle();
+        drop(pending);
+        let (reader, sink) =
+            response_pair(handle.clone(), run_mode, queue_capacity, total_limit, None)
+                .expect("synthetic response pair must construct");
+        (engine, controller, handle, reader, sink)
+    }
+
+    #[test]
+    fn no_body_head_is_immediate_eof_and_drop_does_not_cancel() {
+        let (engine, controller, handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 16);
+        assert!(sink.publish_head(ResponseHead::new(204, Vec::new()), true));
+        assert_eq!(reader.wait_head().expect("head must publish").status(), 204);
+        assert!(reader.is_eof());
+        assert_eq!(reader.read(&mut [0_u8; 1]).expect("EOF must read"), None);
+        drop(reader);
+        assert_eq!(
+            controller.active_requests(),
+            1,
+            "dropping a known-complete no-body response must not cancel"
+        );
+        assert!(controller.complete(handle.id(), crate::Completion::Cancelled));
+        drop(sink);
+        engine.shutdown().expect("synthetic Engine must stop");
+    }
+
+    #[test]
+    fn collect_returns_an_ordinary_response_but_rejects_prefix_loss() {
+        let (engine, controller, handle, reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 16);
+        assert!(sink.publish_head(
+            ResponseHead::new(201, vec![Header::new("X-Test", b"yes".to_vec())]),
+            false,
+        ));
+        sink.try_push(b"body".to_vec()).expect("body fits");
+        sink.complete();
+        let response = reader.collect().expect("untouched reader collects");
+        assert_eq!(response.status(), 201);
+        assert_eq!(response.body(), b"body");
+        assert_eq!(controller.active_requests(), 1);
+        assert!(controller.complete(handle.id(), crate::Completion::Cancelled));
+        drop(sink);
+        engine.shutdown().expect("synthetic Engine must stop");
+
+        let (engine, controller, _handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 16);
+        assert!(sink.publish_head(ResponseHead::new(200, Vec::new()), false));
+        sink.try_push(b"body".to_vec()).expect("body fits");
+        sink.complete();
+        assert_eq!(
+            reader.try_read(&mut [0_u8; 1]).expect("prefix reads"),
+            StreamRead::Data(1)
+        );
+        let error = reader
+            .collect()
+            .expect_err("collect after a body prefix must fail closed");
+        assert_eq!(
+            error.error().map(Error::kind),
+            Some(ErrorKind::InvalidRequest)
+        );
+        assert_eq!(
+            controller.active_requests(),
+            0,
+            "failed collect drops the incomplete reader and cancels"
+        );
+        sink.cancel();
+        engine.shutdown().expect("synthetic Engine must stop");
+    }
+
+    #[test]
+    fn response_queue_backpressures_and_releases_capacity_as_bytes_are_read() {
+        let (engine, controller, handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 4, 8);
+        assert!(sink.publish_head(ResponseHead::new(200, Vec::new()), false));
+        sink.try_push(b"abcd".to_vec()).expect("window fills");
+        let error = sink
+            .try_push(b"e".to_vec())
+            .expect_err("full response window backpressures");
+        assert!(matches!(error, ResponsePushError::WouldBlock(_)));
+        assert_eq!(error.into_chunk(), b"e");
+
+        let mut prefix = [0_u8; 2];
+        assert_eq!(
+            reader.try_read(&mut prefix).expect("prefix reads"),
+            StreamRead::Data(2)
+        );
+        assert_eq!(&prefix, b"ab");
+        assert_eq!(sink.available_capacity(), 2);
+        sink.try_push(b"ef".to_vec())
+            .expect("reader released space");
+        sink.complete();
+
+        let mut remainder = Vec::new();
+        let mut buffer = [0_u8; 4];
+        loop {
+            match reader.try_read(&mut buffer).expect("remainder reads") {
+                StreamRead::Data(count) => remainder.extend_from_slice(&buffer[..count]),
+                StreamRead::Eof => break,
+                StreamRead::Pending => panic!("completed response cannot become pending"),
+            }
+        }
+        assert_eq!(remainder, b"cdef");
+        drop(reader);
+        assert_eq!(controller.active_requests(), 1);
+        assert!(controller.complete(handle.id(), crate::Completion::Cancelled));
+        drop(sink);
+        engine.shutdown().expect("synthetic Engine must stop");
+    }
+
+    #[test]
+    fn manual_reader_never_blocks_or_drives_and_try_methods_still_progress() {
+        let (engine, controller, handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Manual, 8, 8);
+        let error = reader
+            .wait_head()
+            .expect_err("manual wait_head must fail explicitly");
+        assert_eq!(error.error().map(Error::kind), Some(ErrorKind::WrongMode));
+        assert_eq!(reader.try_head().expect("try_head is nonblocking"), None);
+
+        assert!(sink.publish_head(ResponseHead::new(200, Vec::new()), false));
+        sink.try_push(b"ok".to_vec()).expect("body fits");
+        sink.complete();
+        assert_eq!(
+            reader
+                .try_head()
+                .expect("head query succeeds")
+                .expect("head is available")
+                .status(),
+            200
+        );
+        let error = reader
+            .read(&mut [0_u8; 2])
+            .expect_err("manual blocking read must fail explicitly");
+        assert_eq!(error.error().map(Error::kind), Some(ErrorKind::WrongMode));
+        assert_eq!(
+            reader
+                .try_read(&mut [0_u8; 2])
+                .expect("manual try_read progresses"),
+            StreamRead::Data(2)
+        );
+        assert!(reader.is_eof());
+        drop(reader);
+        assert_eq!(controller.active_requests(), 1);
+        assert!(controller.complete(handle.id(), crate::Completion::Cancelled));
+        drop(sink);
+        engine
+            .shutdown()
+            .expect("manual synthetic Engine must stop");
+    }
+
+    #[test]
+    fn reader_drop_before_eof_cancels_and_terminal_before_head_is_observable() {
+        let (engine, controller, _handle, reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 8);
+        drop(reader);
+        assert_eq!(controller.active_requests(), 0);
+        assert!(!sink.reader_alive());
+        sink.cancel();
+        engine.shutdown().expect("synthetic Engine must stop");
+
+        let (engine, _controller, _handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 8);
+        sink.fail(Error::transport(
+            crate::TransportStage::Receive,
+            "synthetic receive failure",
+        ));
+        let error = reader
+            .try_head()
+            .expect_err("failure before head must reach reader");
+        assert!(matches!(error, StreamError::Failed(_)));
+        drop(reader);
+        engine.shutdown().expect("synthetic Engine must stop");
+    }
+
+    #[test]
+    fn failure_discards_a_reader_local_partial_chunk_without_accounting_underflow() {
+        let (engine, _controller, _handle, mut reader, mut sink) =
+            synthetic_response_pair(RunMode::Spawned, 8, 8);
+        assert!(sink.publish_head(ResponseHead::new(200, Vec::new()), false));
+        sink.try_push(b"abcd".to_vec()).expect("body fits");
+        assert_eq!(
+            reader.try_read(&mut [0_u8; 1]).expect("prefix reads"),
+            StreamRead::Data(1)
+        );
+        sink.fail(Error::transport(
+            crate::TransportStage::Receive,
+            "failure after partial delivery",
+        ));
+        let error = reader
+            .try_read(&mut [0_u8; 3])
+            .expect_err("terminal failure must discard the local remainder");
+        assert!(matches!(error, StreamError::Failed(_)));
+        drop(reader);
+        engine.shutdown().expect("synthetic Engine must stop");
     }
 }
