@@ -523,6 +523,32 @@ the loop reports no surviving NBReq test executable. WP9.5 metrics is accepted o
 Ubuntu; this does not close the remaining fuzz, pressure/interruption, verifier head-of-line, or
 benchmark work and does not select native through ordinary `Engine::new`.
 
+## WP9.5c buffered response parser campaign — Windows slice
+
+The first real coverage-guided target is isolated under `fuzz/`; ordinary NBReq builds retain no
+libFuzzer or nightly dependency. A feature-private byte-slice entry point drives the production
+buffered native response decoder under whole-buffer, byte-at-a-time, and input-selected irregular
+fragmentation. Its oracle requires the terminal response or portable error, reuse decision, and
+exact consumed-byte boundary to agree across all three schedules. Parser limits are derived from a
+bounded six-byte control prefix so mutations cannot request unbounded harness allocations.
+
+Six reviewed, synthetic seeds cover fixed-length plus trailing bytes, chunking and trailers,
+informational/no-body heads, close-delimited EOF, conflicting lengths, and malformed chunks. The
+seed encoding is only a corpus convenience for writing CRLF in reviewable text; arbitrary raw wire
+bytes remain accepted. The same seeds run in the stable Rust unit suite before the separate target
+is built.
+
+On Windows, nightly 1.100.0 and `cargo-fuzz` 0.13.2 build the target with `libfuzzer-sys` 0.4.13.
+The first launch exposed only a laboratory packaging issue: the Visual Studio AddressSanitizer
+runtime existed beside the MSVC tools but was absent from a plain PowerShell process search path.
+Adding that directory to the test session allowed the exact target to run. A 61-second campaign
+completed 449,126 executions at roughly 7,362 executions/second, reached 960 coverage points and
+2,465 features, retained 671 corpus entries (about 86 KiB), and produced no crash artifact.
+
+This accepts the buffered response decoder's first Windows parser/state-machine campaign. It does
+not cover the streaming decoder, DNS wire parser, socket/pool transition graph, sustained pressure,
+or another operating system; those remain WP9.5 work.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

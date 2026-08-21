@@ -50,6 +50,7 @@ curl = { path = "vendor/curl" }
 
 [lints.rust]
 unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [lints.clippy]
 dbg_macro = "deny"

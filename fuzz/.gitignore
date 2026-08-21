@@ -1,0 +1,4 @@
+/target/
+/artifacts/
+/corpus/native_response_decoder/*
+!/corpus/native_response_decoder/*.seed

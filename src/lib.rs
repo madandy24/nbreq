@@ -19,6 +19,10 @@ mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(all(fuzzing, feature = "native"))]
+#[doc(hidden)]
+pub mod fuzzing;
+
 #[cfg(all(test, feature = "curl-pilot"))]
 mod curl_tests;
 #[cfg(test)]

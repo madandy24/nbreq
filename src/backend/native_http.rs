@@ -3918,6 +3918,137 @@ fn native_transport_error(failure: NativeFailure) -> Error {
     }
 }
 
+#[cfg(any(test, fuzzing))]
+#[derive(Debug, Eq, PartialEq)]
+enum FuzzDecodeOutcome {
+    Complete {
+        response: Response,
+        consumed: usize,
+        permits_reuse: bool,
+    },
+    Failed(Error),
+    Eof {
+        response: Option<Response>,
+        permits_reuse: bool,
+    },
+}
+
+#[cfg(any(test, fuzzing))]
+fn fuzz_decode_with<F>(
+    wire: &[u8],
+    response_to_head: bool,
+    limits: HttpLimits,
+    mut next_chunk: F,
+) -> FuzzDecodeOutcome
+where
+    F: FnMut(usize) -> usize,
+{
+    let mut decoder = ResponseDecoder::new(response_to_head, limits);
+    let mut offset = 0;
+    while offset < wire.len() {
+        let remaining = wire.len() - offset;
+        let chunk_len = next_chunk(remaining).clamp(1, remaining);
+        match decoder.ingest(&wire[offset..offset + chunk_len]) {
+            Ok(progress) => {
+                if let Some(response) = progress.response {
+                    return FuzzDecodeOutcome::Complete {
+                        response,
+                        consumed: offset + progress.consumed,
+                        permits_reuse: progress.permits_reuse,
+                    };
+                }
+                offset += progress.consumed;
+            }
+            Err(error) => return FuzzDecodeOutcome::Failed(error),
+        }
+    }
+    let permits_reuse = decoder.permits_reuse;
+    match decoder.eof() {
+        Ok(response) => FuzzDecodeOutcome::Eof {
+            response,
+            permits_reuse,
+        },
+        Err(error) => FuzzDecodeOutcome::Failed(error),
+    }
+}
+
+/// Coverage-guided entry point used by `fuzz/fuzz_targets/native_response_decoder.rs`.
+///
+/// The first six bytes select bounded parser limits and an irregular fragmentation schedule. The
+/// remainder is the HTTP wire image. Comparing three schedules turns arbitrary mutation into a
+/// state-machine oracle instead of merely checking that the parser does not panic.
+#[cfg(any(test, fuzzing))]
+pub(crate) fn fuzz_response_decoder(data: &[u8]) {
+    const CONTROL_BYTES: usize = 6;
+    if data.len() < CONTROL_BYTES {
+        return;
+    }
+    let control = &data[..CONTROL_BYTES];
+    let encoded_wire = &data[CONTROL_BYTES..];
+    let decoded_wire;
+    let wire = if control[0] & 2 != 0 {
+        decoded_wire = decode_fuzz_seed_escapes(encoded_wire);
+        decoded_wire.as_slice()
+    } else {
+        encoded_wire
+    };
+    let response_to_head = control[0] & 1 != 0;
+    let limits = HttpLimits {
+        body_bytes: usize::from(control[1]).saturating_mul(64),
+        header_bytes: usize::from(control[2]).saturating_mul(16).max(1),
+        header_count: usize::from(control[3] % 64).saturating_add(1),
+    };
+
+    let whole = fuzz_decode_with(wire, response_to_head, limits, |remaining| remaining);
+    let bytewise = fuzz_decode_with(wire, response_to_head, limits, |_| 1);
+    assert_eq!(
+        whole, bytewise,
+        "native response decoding changed under bytewise fragmentation"
+    );
+
+    let mut turn = 0_usize;
+    let irregular = fuzz_decode_with(wire, response_to_head, limits, |remaining| {
+        let selector = control[4 + (turn & 1)];
+        turn = turn.wrapping_add(1);
+        usize::from(selector % 64).saturating_add(1).min(remaining)
+    });
+    assert_eq!(
+        whole, irregular,
+        "native response decoding changed under irregular fragmentation"
+    );
+}
+
+#[cfg(any(test, fuzzing))]
+fn decode_fuzz_seed_escapes(bytes: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 1 < bytes.len() {
+            match bytes[index + 1] {
+                b'r' => {
+                    decoded.push(b'\r');
+                    index += 2;
+                    continue;
+                }
+                b'n' => {
+                    decoded.push(b'\n');
+                    index += 2;
+                    continue;
+                }
+                b'\\' => {
+                    decoded.push(b'\\');
+                    index += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    decoded
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -3937,6 +4068,24 @@ mod tests {
         header_bytes: 1024,
         header_count: 16,
     };
+
+    #[test]
+    fn checked_in_fuzz_seeds_satisfy_the_fragmentation_oracle() {
+        for seed in [
+            include_bytes!("../../fuzz/corpus/native_response_decoder/fixed.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_response_decoder/chunked.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_response_decoder/informational.seed")
+                .as_slice(),
+            include_bytes!("../../fuzz/corpus/native_response_decoder/close_delimited.seed")
+                .as_slice(),
+            include_bytes!("../../fuzz/corpus/native_response_decoder/conflicting_length.seed")
+                .as_slice(),
+            include_bytes!("../../fuzz/corpus/native_response_decoder/malformed_chunk.seed")
+                .as_slice(),
+        ] {
+            fuzz_response_decoder(seed);
+        }
+    }
 
     fn synthetic_stream_decoder(
         queue_capacity: usize,
