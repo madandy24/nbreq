@@ -18,7 +18,7 @@ use super::native_tls::{
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
-use crate::stream::{ResponsePushError, ResponseSink};
+use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, UploadPoll};
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
@@ -76,9 +76,18 @@ pub(super) struct SerializedRequest {
     permits_reuse: bool,
 }
 
+#[cfg(test)]
 pub(super) fn serialize_request(
     request: &Request,
     limits: HttpLimits,
+) -> Result<SerializedRequest, Error> {
+    serialize_request_with_upload(request, limits, None)
+}
+
+fn serialize_request_with_upload(
+    request: &Request,
+    limits: HttpLimits,
+    upload: Option<UploadFraming>,
 ) -> Result<SerializedRequest, Error> {
     request.validate()?;
     let target = RequestTarget::parse(request.url())?;
@@ -99,6 +108,12 @@ pub(super) fn serialize_request(
         if header.name().eq_ignore_ascii_case("host") {
             host_count += 1;
         } else if header.name().eq_ignore_ascii_case("content-length") {
+            if upload.is_some() {
+                return Err(Error::new(
+                    ErrorKind::InvalidRequest,
+                    "NBReq generates Content-Length for a streamed upload body",
+                ));
+            }
             let parsed = parse_content_length_value(header.value()).map_err(|_| {
                 Error::new(
                     ErrorKind::InvalidRequest,
@@ -113,6 +128,12 @@ pub(super) fn serialize_request(
             }
             content_length = Some(parsed);
         } else if header.name().eq_ignore_ascii_case("transfer-encoding") {
+            if upload.is_some() {
+                return Err(Error::new(
+                    ErrorKind::InvalidRequest,
+                    "NBReq generates Transfer-Encoding for a streamed upload body",
+                ));
+            }
             return Err(Error::new(
                 ErrorKind::Unsupported,
                 "buffered native requests do not support Transfer-Encoding",
@@ -133,7 +154,7 @@ pub(super) fn serialize_request(
             "request contains more than one Host header",
         ));
     }
-    if content_length.is_some_and(|length| length != request.body().len()) {
+    if upload.is_none() && content_length.is_some_and(|length| length != request.body().len()) {
         return Err(Error::new(
             ErrorKind::InvalidRequest,
             "request Content-Length does not match the buffered body",
@@ -141,8 +162,15 @@ pub(super) fn serialize_request(
     }
 
     let generated_host = host_count == 0;
-    let generated_length = content_length.is_none() && !request.body().is_empty();
-    let generated_count = usize::from(generated_host) + usize::from(generated_length);
+    let generated_length = match upload {
+        Some(UploadFraming::Fixed(_)) => true,
+        Some(UploadFraming::Chunked) => false,
+        None => content_length.is_none() && !request.body().is_empty(),
+    };
+    let generated_chunked = matches!(upload, Some(UploadFraming::Chunked));
+    let generated_count = usize::from(generated_host)
+        + usize::from(generated_length)
+        + usize::from(generated_chunked);
     let field_count = request
         .headers()
         .len()
@@ -152,7 +180,11 @@ pub(super) fn serialize_request(
         return Err(request_header_count_limit(limits.header_count));
     }
 
-    let generated_length_value = request.body().len().to_string();
+    let generated_length_value = match upload {
+        Some(UploadFraming::Fixed(length)) => length.to_string(),
+        Some(UploadFraming::Chunked) => String::new(),
+        None => request.body().len().to_string(),
+    };
     let mut header_bytes = request.headers().iter().try_fold(0_usize, |total, header| {
         field_wire_len(header.name().as_bytes(), header.value())
             .and_then(|field| total.checked_add(field))
@@ -163,6 +195,7 @@ pub(super) fn serialize_request(
             b"Content-Length".as_slice(),
             generated_length_value.as_bytes(),
         )),
+        generated_chunked.then_some((b"Transfer-Encoding".as_slice(), b"chunked".as_slice())),
     ]
     .into_iter()
     .flatten()
@@ -188,7 +221,13 @@ pub(super) fn serialize_request(
     let capacity = request_line_bytes
         .checked_add(header_bytes)
         .and_then(|bytes| bytes.checked_add(2))
-        .and_then(|bytes| bytes.checked_add(request.body().len()))
+        .and_then(|bytes| {
+            bytes.checked_add(if upload.is_none() {
+                request.body().len()
+            } else {
+                0
+            })
+        })
         .ok_or_else(|| request_header_bytes_limit(limits.header_bytes))?;
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(method.as_bytes());
@@ -208,8 +247,13 @@ pub(super) fn serialize_request(
             generated_length_value.as_bytes(),
         );
     }
+    if generated_chunked {
+        append_header(&mut bytes, b"Transfer-Encoding", b"chunked");
+    }
     bytes.extend_from_slice(b"\r\n");
-    bytes.extend_from_slice(request.body());
+    if upload.is_none() {
+        bytes.extend_from_slice(request.body());
+    }
     Ok(SerializedRequest {
         bytes,
         response_to_head: matches!(request.method(), Method::Head),
@@ -1463,6 +1507,8 @@ struct HttpTransfer {
     request_write_drained: bool,
     request: Request,
     redirect_hops: u8,
+    upload: Option<NativeUpload>,
+    upload_aborted: bool,
 }
 
 enum TransferResponse {
@@ -1481,6 +1527,105 @@ impl TransferResponse {
     fn is_streaming(&self) -> bool {
         matches!(self, Self::Streaming { .. })
     }
+}
+
+struct NativeUpload {
+    body: UploadBody,
+    framing: UploadFraming,
+    producer_finished: bool,
+    pending_wire: Option<Vec<u8>>,
+}
+
+enum UploadWire {
+    Pending,
+    Bytes(Vec<u8>),
+    Complete,
+}
+
+impl NativeUpload {
+    fn new(body: UploadBody) -> Self {
+        let framing = body.framing();
+        Self {
+            body,
+            framing,
+            producer_finished: false,
+            pending_wire: None,
+        }
+    }
+
+    fn next_wire(&mut self, capacity: Option<usize>) -> Result<UploadWire, Error> {
+        if self.pending_wire.is_none() && !self.producer_finished {
+            self.prepare_wire()?;
+        }
+        if let Some(wire) = self.pending_wire.take() {
+            if capacity.is_some_and(|capacity| wire.len() > capacity) {
+                self.pending_wire = Some(wire);
+                return Ok(UploadWire::Pending);
+            }
+            return Ok(UploadWire::Bytes(wire));
+        }
+        if self.producer_finished {
+            Ok(UploadWire::Complete)
+        } else {
+            Ok(UploadWire::Pending)
+        }
+    }
+
+    fn prepare_wire(&mut self) -> Result<(), Error> {
+        match self.body.try_pop() {
+            UploadPoll::Chunk(chunk) => match self.framing {
+                UploadFraming::Fixed(_) => self.pending_wire = Some(chunk),
+                UploadFraming::Chunked => {
+                    let prefix = format!("{:X}\r\n", chunk.len());
+                    let capacity = prefix
+                        .len()
+                        .checked_add(chunk.len())
+                        .and_then(|length| length.checked_add(2))
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorKind::Internal,
+                                "native chunked upload framing length overflowed",
+                            )
+                        })?;
+                    let mut wire = Vec::with_capacity(capacity);
+                    wire.extend_from_slice(prefix.as_bytes());
+                    wire.extend_from_slice(&chunk);
+                    wire.extend_from_slice(b"\r\n");
+                    self.pending_wire = Some(wire);
+                }
+            },
+            UploadPoll::Pending => {}
+            UploadPoll::Finished => match self.framing {
+                UploadFraming::Fixed(_) => {
+                    self.producer_finished = true;
+                }
+                UploadFraming::Chunked => {
+                    self.producer_finished = true;
+                    self.pending_wire = Some(b"0\r\n\r\n".to_vec());
+                }
+            },
+            UploadPoll::Failed(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.producer_finished && self.pending_wire.is_none()
+    }
+
+    fn close(&mut self) {
+        self.body.close();
+    }
+}
+
+fn cleartext_outbound_limit(serialized: &SerializedRequest, upload: Option<&UploadBody>) -> usize {
+    upload.map_or(serialized.bytes.len(), |upload| {
+        serialized
+            .bytes
+            .len()
+            .saturating_add(upload.queue_capacity())
+            .saturating_add(32)
+    })
 }
 
 impl HttpTransfer {
@@ -1579,33 +1724,54 @@ struct PendingResolve {
 
 enum PendingResponse {
     Buffered,
-    Streaming(ResponseSink),
+    Streaming {
+        response: ResponseSink,
+        upload: Option<UploadBody>,
+    },
 }
 
 impl PendingResponse {
+    fn upload(&self) -> Option<&UploadBody> {
+        match self {
+            Self::Buffered => None,
+            Self::Streaming { upload, .. } => upload.as_ref(),
+        }
+    }
+
     fn fail(self, error: Error) -> Option<Completion> {
         match self {
             Self::Buffered => Some(Completion::Failed(error)),
-            Self::Streaming(mut response) => {
+            Self::Streaming {
+                mut response,
+                upload: _,
+            } => {
                 response.fail(error);
                 None
             }
         }
     }
 
-    fn into_active(self, response_to_head: bool, limits: HttpLimits) -> TransferResponse {
+    fn into_active(
+        self,
+        response_to_head: bool,
+        limits: HttpLimits,
+    ) -> (TransferResponse, Option<NativeUpload>) {
         match self {
-            Self::Buffered => {
-                TransferResponse::Buffered(ResponseDecoder::new(response_to_head, limits))
-            }
-            Self::Streaming(response) => TransferResponse::Streaming {
-                decoder: StreamingResponseDecoder::new(response_to_head, limits, response),
-                retained_cleartext: Vec::new(),
-                retained_offset: 0,
-                peer_closed: false,
-                tls_dirty_eof: false,
-                redirect: None,
-            },
+            Self::Buffered => (
+                TransferResponse::Buffered(ResponseDecoder::new(response_to_head, limits)),
+                None,
+            ),
+            Self::Streaming { response, upload } => (
+                TransferResponse::Streaming {
+                    decoder: StreamingResponseDecoder::new(response_to_head, limits, response),
+                    retained_cleartext: Vec::new(),
+                    retained_offset: 0,
+                    peer_closed: false,
+                    tls_dirty_eof: false,
+                    redirect: None,
+                },
+                upload.map(NativeUpload::new),
+            ),
         }
     }
 }
@@ -1838,7 +2004,9 @@ impl NativeHttpBackend {
         origin_error_kind: ErrorKind,
         response: PendingResponse,
     ) -> Result<PendingResolve, (Error, PendingResponse)> {
-        let serialized = match serialize_request(&request, self.limits) {
+        let upload_framing = response.upload().map(UploadBody::framing);
+        let serialized = match serialize_request_with_upload(&request, self.limits, upload_framing)
+        {
             Ok(serialized) => serialized,
             Err(error) => return Err((error, response)),
         };
@@ -1848,7 +2016,7 @@ impl NativeHttpBackend {
         };
         let tls_verification = request.options().tls_verification;
         let inactivity_timeout = request.options().inactivity_timeout;
-        let body_bearing = !request.body().is_empty();
+        let body_bearing = response.upload().is_some() || !request.body().is_empty();
         let key = ConnectionKey {
             scheme: origin.scheme.clone(),
             host: origin.host.to_ascii_lowercase(),
@@ -1981,7 +2149,7 @@ impl NativeHttpBackend {
         let outbound_limit = if idle.tls.is_some() {
             encrypted_outbound_limit()
         } else {
-            pending.serialized.bytes.len()
+            cleartext_outbound_limit(&pending.serialized, pending.response.upload())
         };
         let receive_limit = if idle.tls.is_some() {
             encrypted_receive_limit(self.limits.reactor_receive_limit())
@@ -2021,7 +2189,7 @@ impl NativeHttpBackend {
             return Some(pending);
         }
         let request_id = pending.request_id;
-        let response = pending
+        let (response, upload) = pending
             .response
             .into_active(pending.serialized.response_to_head, self.limits);
         self.request_to_slot.insert(request_id, idle.slot);
@@ -2044,6 +2212,8 @@ impl NativeHttpBackend {
                 request_write_drained: false,
                 request: pending.request,
                 redirect_hops: pending.redirect_hops,
+                upload,
+                upload_aborted: false,
             },
         );
         None
@@ -2185,7 +2355,7 @@ impl NativeHttpBackend {
         let outbound_limit = if tls.is_some() {
             encrypted_outbound_limit()
         } else {
-            pending.serialized.bytes.len()
+            cleartext_outbound_limit(&pending.serialized, pending.response.upload())
         };
         let receive_limit = if tls.is_some() {
             encrypted_receive_limit(self.limits.reactor_receive_limit())
@@ -2214,7 +2384,7 @@ impl NativeHttpBackend {
         pending.inactivity_deadline = pending
             .inactivity_timeout
             .and_then(|timeout| now.checked_add(timeout));
-        let response = pending
+        let (response, upload) = pending
             .response
             .into_active(pending.serialized.response_to_head, self.limits);
         self.request_to_slot.insert(request_id, slot);
@@ -2237,6 +2407,8 @@ impl NativeHttpBackend {
                 request_write_drained: false,
                 request: pending.request,
                 redirect_hops: pending.redirect_hops,
+                upload,
+                upload_aborted: false,
             },
         );
         None
@@ -2437,6 +2609,141 @@ impl NativeHttpBackend {
         Ok(queued)
     }
 
+    fn pump_request_output(
+        &mut self,
+        slot: SlotId,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<bool, Error> {
+        let mut queued = self.pump_tls_request(slot, completions)?;
+        loop {
+            let Some(uses_tls) = self
+                .transfers
+                .get(&slot)
+                .map(|transfer| transfer.tls.is_some())
+            else {
+                return Ok(queued);
+            };
+            if self
+                .transfers
+                .get(&slot)
+                .is_none_or(|transfer| transfer.upload.is_none())
+            {
+                return Ok(queued);
+            }
+
+            if uses_tls {
+                let ready = self
+                    .transfers
+                    .get(&slot)
+                    .and_then(|transfer| transfer.tls.as_ref())
+                    .is_some_and(|tls| !tls.is_handshaking() && tls.request_fully_encrypted());
+                if !ready {
+                    return Ok(queued);
+                }
+                let next = self
+                    .transfers
+                    .get_mut(&slot)
+                    .and_then(|transfer| transfer.upload.as_mut())
+                    .expect("streamed upload presence checked")
+                    .next_wire(None);
+                match next {
+                    Ok(UploadWire::Bytes(wire)) => {
+                        let begun = self
+                            .transfers
+                            .get_mut(&slot)
+                            .and_then(|transfer| transfer.tls.as_mut())
+                            .expect("TLS upload connection checked")
+                            .begin_request(wire);
+                        if let Err(error) = begun {
+                            self.finish(slot, Completion::Failed(error), completions);
+                            return Ok(queued);
+                        }
+                        queued |= self.pump_tls_request(slot, completions)?;
+                    }
+                    Ok(UploadWire::Pending | UploadWire::Complete) => return Ok(queued),
+                    Err(error) => {
+                        self.finish(slot, Completion::Failed(error), completions);
+                        return Ok(queued);
+                    }
+                }
+            } else {
+                let capacity = match self.reactor.outbound_capacity(slot) {
+                    Ok(capacity) => capacity,
+                    Err(failure) => {
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::new(ErrorKind::Internal, failure.message)),
+                            completions,
+                        );
+                        return Ok(queued);
+                    }
+                };
+                let next = self
+                    .transfers
+                    .get_mut(&slot)
+                    .and_then(|transfer| transfer.upload.as_mut())
+                    .expect("streamed upload presence checked")
+                    .next_wire(Some(capacity));
+                match next {
+                    Ok(UploadWire::Bytes(wire)) => {
+                        if let Err(failure) = self.reactor.queue_write(slot, &wire) {
+                            self.finish(
+                                slot,
+                                Completion::Failed(Error::transport(
+                                    TransportStage::Send,
+                                    failure.message,
+                                )),
+                                completions,
+                            );
+                            return Ok(queued);
+                        }
+                        queued = true;
+                    }
+                    Ok(UploadWire::Pending | UploadWire::Complete) => return Ok(queued),
+                    Err(error) => {
+                        self.finish(slot, Completion::Failed(error), completions);
+                        return Ok(queued);
+                    }
+                }
+            }
+        }
+    }
+
+    fn request_output_complete(transfer: &HttpTransfer) -> bool {
+        if transfer.upload_aborted {
+            return false;
+        }
+        let upload_complete = transfer
+            .upload
+            .as_ref()
+            .is_none_or(NativeUpload::is_complete);
+        let encrypted = transfer
+            .tls
+            .as_ref()
+            .is_none_or(NativeTls::request_fully_encrypted);
+        upload_complete && encrypted
+    }
+
+    fn refresh_request_write_drained(&mut self, slot: SlotId) -> Result<(), Error> {
+        let complete = self
+            .transfers
+            .get(&slot)
+            .is_some_and(|transfer| transfer.connected && Self::request_output_complete(transfer));
+        if !complete {
+            return Ok(());
+        }
+        if self
+            .reactor
+            .outbound_is_empty(slot)
+            .map_err(native_internal_error)?
+        {
+            if let Some(transfer) = self.transfers.get_mut(&slot) {
+                transfer.request_write_drained = true;
+            }
+        }
+        Ok(())
+    }
+
     fn handle_connected(
         &mut self,
         slot: SlotId,
@@ -2588,6 +2895,7 @@ impl NativeHttpBackend {
         let request_id = transfer.request_id;
         let total_deadline = transfer.total_deadline;
         let next_redirect_hops = transfer.redirect_hops.saturating_add(1);
+        let mut redirect_transfer_failed = false;
         let redirect = match &mut transfer.response {
             TransferResponse::Streaming {
                 decoder, redirect, ..
@@ -2596,6 +2904,7 @@ impl NativeHttpBackend {
                 match decoder.take_response() {
                     Ok(response) => Some((request, response)),
                     Err(error) => {
+                        redirect_transfer_failed = true;
                         decoder.fail(error);
                         None
                     }
@@ -2609,6 +2918,7 @@ impl NativeHttpBackend {
         };
         let per_origin_idle = self.idle.get(&transfer.key).map_or(0, VecDeque::len);
         let reusable = response_permits_reuse
+            && !redirect_transfer_failed
             && transfer.request_permits_reuse
             && transfer.request_write_drained
             && !peer_closed
@@ -2662,13 +2972,22 @@ impl NativeHttpBackend {
                 deadlines,
                 next_redirect_hops,
                 ErrorKind::Redirect,
-                PendingResponse::Streaming(response),
+                PendingResponse::Streaming {
+                    response,
+                    upload: None,
+                },
             ) {
                 Ok(pending) => {
                     let completion = self.start_pending(pending);
                     debug_assert!(completion.is_none());
                 }
-                Err((error, PendingResponse::Streaming(mut response))) => response.fail(error),
+                Err((
+                    error,
+                    PendingResponse::Streaming {
+                        mut response,
+                        upload: _,
+                    },
+                )) => response.fail(error),
                 Err((_error, PendingResponse::Buffered)) => {
                     unreachable!("stream redirect changed pending response kind")
                 }
@@ -2739,17 +3058,21 @@ impl NativeHttpBackend {
             match progress {
                 StreamDecodeProgress::Head { head, consumed } => {
                     let redirect = self.transfers.get(&slot).map(|transfer| {
-                        redirected_request(
-                            &transfer.request,
-                            head.status(),
-                            transfer.redirect_hops,
-                            || {
-                                resolved_redirect_target_from_headers(
-                                    &transfer.request,
-                                    head.headers(),
-                                )
-                            },
-                        )
+                        if transfer.upload.is_some() {
+                            Ok(None)
+                        } else {
+                            redirected_request(
+                                &transfer.request,
+                                head.status(),
+                                transfer.redirect_hops,
+                                || {
+                                    resolved_redirect_target_from_headers(
+                                        &transfer.request,
+                                        head.headers(),
+                                    )
+                                },
+                            )
+                        }
                     });
                     let (deliver, redirect) = match redirect {
                         Some(Ok(Some(request))) => (false, Some(request)),
@@ -2762,6 +3085,11 @@ impl NativeHttpBackend {
                     };
                     let decision = if let Some(transfer) = self.transfers.get_mut(&slot) {
                         Self::consume_stream_plaintext(transfer, consumed)?;
+                        if let Some(mut upload) = transfer.upload.take() {
+                            transfer.upload_aborted |=
+                                !upload.is_complete() || !transfer.request_write_drained;
+                            upload.close();
+                        }
                         let TransferResponse::Streaming {
                             decoder,
                             redirect: pending_redirect,
@@ -2997,7 +3325,7 @@ impl NativeHttpBackend {
             }
         }
         if arm_deadline && established && self.transfers.contains_key(&slot) {
-            self.pump_tls_request(slot, completions)?;
+            self.pump_request_output(slot, completions)?;
         }
         self.drain_stream_plaintext(slot, peer_closed, completions)
     }
@@ -3009,6 +3337,10 @@ impl NativeHttpBackend {
             .filter_map(|(slot, transfer)| transfer.response.is_streaming().then_some(*slot))
             .collect::<Vec<_>>();
         for slot in slots {
+            self.pump_request_output(slot, completions)?;
+            if self.transfers.contains_key(&slot) {
+                self.refresh_request_write_drained(slot)?;
+            }
             self.drain_stream_plaintext(slot, false, completions)?;
             if self.transfers.contains_key(&slot) {
                 self.refresh_stream_allowance(slot)?;
@@ -3071,7 +3403,7 @@ impl NativeHttpBackend {
             }
         }
         if arm_deadline && established && self.transfers.contains_key(&slot) {
-            self.pump_tls_request(slot, completions)?;
+            self.pump_request_output(slot, completions)?;
         }
         let decoded = self.transfers.get_mut(&slot).map(|transfer| {
             transfer.response_started |= !plaintext.is_empty();
@@ -3188,12 +3520,15 @@ impl NativeHttpBackend {
             }
             match event {
                 NativeEvent::Connected(slot) => {
-                    self.handle_connected(slot, !failed_slots.contains(&slot), &mut completions)?
+                    self.handle_connected(slot, !failed_slots.contains(&slot), &mut completions)?;
+                    if !failed_slots.contains(&slot) && self.transfers.contains_key(&slot) {
+                        self.pump_request_output(slot, &mut completions)?;
+                    }
                 }
                 NativeEvent::WriteProgress(slot) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
                     if !failed_slots.contains(&slot) {
-                        self.pump_tls_request(slot, &mut completions)?;
+                        self.pump_request_output(slot, &mut completions)?;
                     }
                 }
                 NativeEvent::WriteDrained(slot) => {
@@ -3201,16 +3536,10 @@ impl NativeHttpBackend {
                     let queued_more = if failed_slots.contains(&slot) {
                         false
                     } else {
-                        self.pump_tls_request(slot, &mut completions)?
+                        self.pump_request_output(slot, &mut completions)?
                     };
-                    if !queued_more {
-                        if let Some(transfer) = self.transfers.get_mut(&slot) {
-                            let encrypted = transfer
-                                .tls
-                                .as_ref()
-                                .is_none_or(NativeTls::request_fully_encrypted);
-                            transfer.request_write_drained |= transfer.connected && encrypted;
-                        }
+                    if !queued_more && self.transfers.contains_key(&slot) {
+                        self.refresh_request_write_drained(slot)?;
                     }
                 }
                 NativeEvent::Data(slot, bytes) => {
@@ -3371,18 +3700,10 @@ impl Backend for NativeHttpBackend {
         &mut self,
         id: RequestId,
         request: StreamRequest,
-        mut response: ResponseSink,
+        response: ResponseSink,
         accepted_at: Instant,
     ) {
         let (request, upload) = request.into_parts();
-        if let Some(mut upload) = upload {
-            upload.close();
-            response.fail(Error::new(
-                ErrorKind::Unsupported,
-                "native streamed uploads are not enabled by the buffered-upload streaming slice",
-            ));
-            return;
-        }
         let options = request.options();
         let deadlines = PendingDeadlines {
             connect: options
@@ -3401,10 +3722,16 @@ impl Backend for NativeHttpBackend {
             deadlines,
             0,
             ErrorKind::InvalidRequest,
-            PendingResponse::Streaming(response),
+            PendingResponse::Streaming { response, upload },
         ) {
             Ok(pending) => pending,
-            Err((error, PendingResponse::Streaming(mut response))) => {
+            Err((
+                error,
+                PendingResponse::Streaming {
+                    mut response,
+                    upload: _,
+                },
+            )) => {
                 response.fail(error);
                 return;
             }
@@ -3540,7 +3867,7 @@ mod tests {
     use super::*;
     use crate::{
         Completion, Engine, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, TimeoutKind,
-        TransportStage,
+        TransportStage, TryPushErrorKind, UploadBody,
     };
 
     const LIMITS: HttpLimits = HttpLimits {
@@ -3888,6 +4215,21 @@ mod tests {
         request
     }
 
+    fn push_eventually(sender: &mut crate::UploadSender, mut chunk: Vec<u8>, label: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match sender.try_push(chunk) {
+                Ok(()) => return,
+                Err(error) if error.kind() == TryPushErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "{label} remained backpressured");
+                    chunk = error.into_chunk();
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("{label} failed unexpectedly: {error}"),
+            }
+        }
+    }
+
     fn peer_observed_close(stream: &mut std::net::TcpStream) -> bool {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -3954,6 +4296,8 @@ mod tests {
                     .build()
                     .expect("batch request must build"),
                 redirect_hops: 0,
+                upload: None,
+                upload_aborted: false,
             },
         );
 
@@ -3991,6 +4335,30 @@ mod tests {
                 ) => {}
             Ok(read) => panic!("{context}: received {read} bytes instead of socket close"),
             Err(error) => panic!("{context}: did not observe socket close: {error}"),
+        }
+    }
+
+    fn drain_until_socket_closed(stream: &mut std::net::TcpStream, context: &str) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("socket-close timeout must configure");
+        let mut buffer = [0_u8; 1024];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    return;
+                }
+                Err(error) => panic!("{context}: did not observe socket close: {error}"),
+            }
         }
     }
 
@@ -4084,6 +4452,36 @@ mod tests {
             },
         )
         .expect_err("generated Host must count");
+        assert_eq!(error.limit_kind(), Some(LimitKind::RequestHeaderCount));
+    }
+
+    #[test]
+    fn streamed_upload_serialization_generates_exact_framing_within_header_limits() {
+        let request = Request::post("http://example.test/upload")
+            .build()
+            .expect("stream upload base request must build");
+        let fixed =
+            serialize_request_with_upload(&request, LIMITS, Some(UploadFraming::Fixed(123)))
+                .expect("fixed stream head must serialize");
+        assert_eq!(
+            fixed.bytes,
+            b"POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Length: 123\r\n\r\n"
+        );
+        let chunked = serialize_request_with_upload(&request, LIMITS, Some(UploadFraming::Chunked))
+            .expect("chunked stream head must serialize");
+        assert_eq!(
+            chunked.bytes,
+            b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n"
+        );
+        let error = serialize_request_with_upload(
+            &request,
+            HttpLimits {
+                header_count: 1,
+                ..LIMITS
+            },
+            Some(UploadFraming::Fixed(1)),
+        )
+        .expect_err("generated Host plus framing must count as two fields");
         assert_eq!(error.limit_kind(), Some(LimitKind::RequestHeaderCount));
     }
 
@@ -5785,6 +6183,268 @@ mod tests {
     }
 
     #[test]
+    fn fixed_streamed_upload_pumps_incrementally_over_cleartext() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixed upload fixture must bind");
+        let address = listener.local_addr().expect("fixed upload address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("fixed upload must accept");
+            let request = read_request_wire(&mut stream, "fixed streamed upload");
+            let head_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .expect("fixed upload head delimiter")
+                + 4;
+            let head = std::str::from_utf8(&request[..head_end]).expect("fixed head is UTF-8");
+            assert!(head.contains("Content-Length: 6\r\n"));
+            assert!(!head.to_ascii_lowercase().contains("transfer-encoding"));
+            assert_eq!(&request[head_end..], b"abcdef");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .expect("fixed upload response must write");
+        });
+
+        let (body, mut sender) = UploadBody::fixed(6, 3).expect("fixed pair must construct");
+        sender
+            .try_push(b"abc".to_vec())
+            .expect("first fixed chunk fits");
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(3);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("fixed upload Engine must construct");
+        let reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/fixed"))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("fixed streamed request must build"),
+            )
+            .expect("fixed streamed request must submit");
+        push_eventually(&mut sender, b"def".to_vec(), "second fixed chunk");
+        sender.finish().expect("fixed sender must finish exactly");
+        let response = reader.collect().expect("fixed response must collect");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"ok");
+        engine.shutdown().expect("fixed upload Engine must stop");
+        server.join().expect("fixed upload fixture must join");
+    }
+
+    #[test]
+    fn chunked_streamed_upload_generates_framing_and_terminal_chunk() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("chunked upload fixture must bind");
+        let address = listener.local_addr().expect("chunked upload address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("chunked upload must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("chunked fixture timeout must configure");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 128];
+            while !request.windows(5).any(|window| window == b"0\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("chunked upload must read");
+                assert_ne!(read, 0, "chunked upload closed before terminal chunk");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let head_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .expect("chunked upload head delimiter")
+                + 4;
+            let head = std::str::from_utf8(&request[..head_end]).expect("chunked head is UTF-8");
+            assert!(head.contains("Transfer-Encoding: chunked\r\n"));
+            assert!(!head.to_ascii_lowercase().contains("content-length"));
+            assert_eq!(&request[head_end..], b"2\r\nab\r\n3\r\ncde\r\n0\r\n\r\n");
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+                .expect("chunked upload response must write");
+        });
+
+        let (body, mut sender) = UploadBody::chunked(4).expect("chunked pair must construct");
+        sender
+            .try_push(b"ab".to_vec())
+            .expect("first chunked chunk fits");
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("chunked upload Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/chunked"))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("chunked streamed request must build"),
+            )
+            .expect("chunked streamed request must submit");
+        push_eventually(&mut sender, b"cde".to_vec(), "second chunked chunk");
+        sender.finish().expect("chunked sender must finish");
+        assert_eq!(
+            reader.wait_head().expect("chunked response head").status(),
+            204
+        );
+        assert!(reader.is_eof());
+        engine.shutdown().expect("chunked upload Engine must stop");
+        server.join().expect("chunked upload fixture must join");
+    }
+
+    #[test]
+    fn streamed_upload_redirect_is_returned_unfollowed() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("upload redirect must bind");
+        let address = listener.local_addr().expect("upload redirect address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("upload redirect must accept once");
+            let request = read_request_wire(&mut stream, "upload redirect request");
+            assert!(request.ends_with(b"data"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 303 See Other\r\nContent-Length: 0\r\nLocation: /must-not-follow\r\n\r\n",
+                )
+                .expect("upload redirect response must write");
+            listener
+                .set_nonblocking(true)
+                .expect("upload redirect listener must become nonblocking");
+            thread::sleep(Duration::from_millis(100));
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "a live upload redirect must not open another request"
+            );
+        });
+
+        let (body, mut sender) = UploadBody::fixed(4, 4).expect("upload redirect pair");
+        sender
+            .try_push(b"data".to_vec())
+            .expect("upload redirect data fits");
+        sender.finish().expect("upload redirect producer finishes");
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("upload redirect Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/upload"))
+                    .body_stream(body)
+                    .redirect_limit(5)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("upload redirect request must build"),
+            )
+            .expect("upload redirect request must submit");
+        assert_eq!(
+            reader
+                .wait_head()
+                .expect("redirect head must arrive")
+                .status(),
+            303
+        );
+        assert!(reader.is_eof());
+        engine.shutdown().expect("upload redirect Engine must stop");
+        server.join().expect("upload redirect fixture must join");
+    }
+
+    #[test]
+    fn completed_streamed_upload_can_return_a_clean_connection_to_the_pool() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("upload reuse fixture must bind");
+        let address = listener.local_addr().expect("upload reuse address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("upload reuse must accept once");
+            let first = read_request_wire(&mut stream, "streamed upload before reuse");
+            assert!(first.ends_with(b"data"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .expect("upload reuse first response must write");
+            let second = read_request_wire(&mut stream, "request after streamed upload");
+            assert!(second.starts_with(b"GET /after HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nafter")
+                .expect("upload reuse second response must write");
+        });
+
+        let (body, mut sender) = UploadBody::fixed(4, 4).expect("upload reuse pair");
+        sender
+            .try_push(b"data".to_vec())
+            .expect("upload reuse data fits");
+        sender.finish().expect("upload reuse sender finishes");
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("upload reuse Engine must construct");
+        let first = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/upload"))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("upload reuse stream request must build"),
+            )
+            .expect("upload reuse stream request must submit")
+            .collect()
+            .expect("upload reuse stream response must collect");
+        assert_eq!(first.body(), b"ok");
+        let second = engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/after"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("upload reuse second request must build"),
+            )
+            .expect("upload reuse second request must complete");
+        assert_eq!(second.body(), b"after");
+        engine.shutdown().expect("upload reuse Engine must stop");
+        server.join().expect("upload reuse fixture must join");
+    }
+
+    #[test]
+    fn early_final_response_closes_streamed_upload_and_keeps_http_result() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("early response fixture must bind");
+        let address = listener.local_addr().expect("early response address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("early response must accept");
+            read_request_head(&mut stream, "early response request head");
+            stream
+                .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 6\r\n\r\nreject")
+                .expect("early response must write");
+            drain_until_socket_closed(&mut stream, "early final response");
+        });
+
+        const EARLY_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
+        let (body, mut sender) =
+            UploadBody::fixed(EARLY_UPLOAD_BYTES as u64, 3).expect("early upload pair");
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(3);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("early response Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/reject"))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("early response request must build"),
+            )
+            .expect("early response request must submit");
+        let producer = thread::spawn(move || sender.push(vec![b'x'; EARLY_UPLOAD_BYTES]));
+        assert_eq!(reader.wait_head().expect("413 head must win").status(), 413);
+        let error = producer
+            .join()
+            .expect("early producer thread must join")
+            .expect_err("early response must wake and close blocking producer");
+        assert_eq!(error.kind(), TryPushErrorKind::Closed);
+        assert!(!error.into_chunk().is_empty());
+        let response = reader
+            .collect()
+            .expect("early response body must remain readable under backpressure");
+        assert_eq!(response.body(), b"reject");
+        engine.shutdown().expect("early response Engine must stop");
+        server.join().expect("early response fixture must join");
+    }
+
+    #[test]
     fn streaming_consumer_backpressure_pauses_inactivity_but_not_delivery() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("pressure fixture must bind");
         let address = listener.local_addr().expect("pressure fixture address");
@@ -5813,6 +6473,14 @@ mod tests {
             )
             .expect("pressure request must submit");
         reader.wait_head().expect("pressure head must arrive");
+        let fill_deadline = Instant::now() + Duration::from_secs(1);
+        while reader.queued_bytes_for_test() != 3 {
+            assert!(
+                Instant::now() < fill_deadline,
+                "pressure response queue did not reach its exact full state"
+            );
+            thread::yield_now();
+        }
         thread::sleep(Duration::from_millis(225));
         let response = reader
             .collect()
@@ -6112,6 +6780,182 @@ mod tests {
             .shutdown()
             .expect("manual streaming Engine must stop");
         server.join().expect("manual stream fixture must join");
+    }
+
+    #[test]
+    fn manual_streamed_upload_uses_try_push_and_owner_drive_only() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manual upload fixture must bind");
+        let address = listener.local_addr().expect("manual upload address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("manual upload must accept");
+            let request = read_request_wire(&mut stream, "manual streamed upload");
+            let head_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .expect("manual upload head delimiter")
+                + 4;
+            assert_eq!(&request[head_end..], b"data");
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+                .expect("manual upload response must write");
+        });
+
+        let (body, mut sender) = UploadBody::fixed(4, 4).expect("manual upload pair");
+        sender
+            .try_push(b"dat".to_vec())
+            .expect("manual prequeue fits");
+        let config = EngineConfig::manual().with_max_stream_queue_bytes_per_request(4);
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
+            .expect("manual upload backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("manual upload Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("http://{address}/manual-upload"))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("manual upload request must build"),
+            )
+            .expect("manual upload request must submit");
+        let error = sender
+            .push(b"a".to_vec())
+            .expect_err("manual blocking push must fail");
+        assert_eq!(error.kind(), TryPushErrorKind::WrongMode);
+        assert_eq!(error.into_chunk(), b"a");
+        sender
+            .try_push(b"a".to_vec())
+            .expect("manual try_push works");
+        sender.finish().expect("manual upload must finish");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(10)).min(deadline))
+                .expect("manual upload drive must succeed");
+            match reader.try_head() {
+                Ok(Some(head)) => {
+                    assert_eq!(head.status(), 204);
+                    assert!(reader.is_eof());
+                    break;
+                }
+                Ok(None) => assert!(Instant::now() < deadline, "manual upload timed out"),
+                Err(error) => panic!("manual upload failed: {error}"),
+            }
+        }
+        engine.shutdown().expect("manual upload Engine must stop");
+        server.join().expect("manual upload fixture must join");
+    }
+
+    #[test]
+    fn abandoned_and_length_mismatched_uploads_fail_at_send_stage() {
+        for abandon in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("producer failure must bind");
+            let address = listener.local_addr().expect("producer failure address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("producer failure must accept");
+                if !peer_observed_close(&mut stream) {
+                    assert_socket_closed(&mut stream, &mut [0_u8; 1024], "producer failure");
+                }
+            });
+            let (body, sender) = UploadBody::fixed(4, 4).expect("producer failure pair");
+            let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4);
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("producer failure Engine must construct");
+            let mut reader = engine
+                .client()
+                .submit_stream(
+                    StreamRequest::post(format!("http://{address}/producer-failure"))
+                        .body_stream(body)
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("producer failure request must build"),
+                )
+                .expect("producer failure request must submit");
+            if abandon {
+                drop(sender);
+            } else {
+                let error = sender
+                    .finish()
+                    .expect_err("short fixed producer must reject finish");
+                assert_eq!(error.kind(), crate::UploadFinishErrorKind::LengthMismatch);
+            }
+            let Err(crate::StreamError::Failed(error)) = reader.wait_head() else {
+                panic!("producer failure must fail the reader")
+            };
+            assert_eq!(error.kind(), ErrorKind::Transport);
+            assert_eq!(error.transport_stage(), Some(TransportStage::Send));
+            engine
+                .shutdown()
+                .expect("producer failure Engine must stop");
+            server.join().expect("producer failure fixture must join");
+        }
+    }
+
+    #[test]
+    fn cancel_and_shutdown_wake_blocked_upload_producers() {
+        for shutdown in [false, true] {
+            const BODY_BYTES: usize = 8 * 1024 * 1024;
+            let listener = TcpListener::bind("127.0.0.1:0").expect("upload stop fixture must bind");
+            let address = listener.local_addr().expect("upload stop address");
+            let (head_tx, head_rx) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("upload stop must accept");
+                read_request_head(&mut stream, "upload stop request head");
+                head_tx.send(()).expect("upload stop head must signal");
+                assert_socket_closed(&mut stream, &mut [0_u8; 1024], "upload stop");
+            });
+            let (body, mut sender) =
+                UploadBody::fixed(BODY_BYTES as u64, 1024).expect("upload stop pair");
+            let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(1024);
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("upload stop Engine must construct");
+            let mut reader = engine
+                .client()
+                .submit_stream(
+                    StreamRequest::post(format!("http://{address}/upload-stop"))
+                        .body_stream(body)
+                        .total_timeout(Duration::from_secs(3))
+                        .build()
+                        .expect("upload stop request must build"),
+                )
+                .expect("upload stop request must submit");
+            let producer = thread::spawn(move || sender.push(vec![b'x'; BODY_BYTES]));
+            head_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("upload stop server must observe head");
+            if shutdown {
+                engine
+                    .shutdown()
+                    .expect("upload Engine shutdown must complete");
+            } else {
+                reader
+                    .handle()
+                    .cancel()
+                    .expect("upload cancellation must win");
+                engine
+                    .shutdown()
+                    .expect("cancelled upload Engine must stop");
+            }
+            let error = producer
+                .join()
+                .expect("blocked upload producer must join")
+                .expect_err("blocked upload producer must wake closed");
+            assert_eq!(error.kind(), TryPushErrorKind::Closed);
+            assert!(!error.into_chunk().is_empty());
+            assert!(matches!(
+                reader.try_head(),
+                Err(crate::StreamError::Cancelled)
+            ));
+            server.join().expect("upload stop fixture must join");
+        }
     }
 
     #[test]

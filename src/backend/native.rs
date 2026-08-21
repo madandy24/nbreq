@@ -270,6 +270,13 @@ impl NativeReactor {
             .saturating_sub(connection.outbound.len()))
     }
 
+    pub(crate) fn outbound_is_empty(&mut self, id: SlotId) -> Result<bool, NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native outbound state targeted a stale or closed slot")
+        })?;
+        Ok(connection.outbound.is_empty())
+    }
+
     pub(crate) fn set_read_allowance(
         &mut self,
         id: SlotId,

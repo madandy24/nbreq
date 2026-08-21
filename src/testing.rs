@@ -58,7 +58,7 @@ pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
 /// Creates an Engine using the private Rust-native HTTP proving backend.
 ///
 /// This is not a consumer backend-selection API. It supports the accepted buffered request family
-/// and buffered-upload response streaming; fixed and chunked streamed uploads remain unsupported.
+/// and the native fixed/chunked upload plus streamed-response proving path.
 #[cfg(feature = "native")]
 pub fn native_http_engine(config: EngineConfig) -> Result<Engine, Error> {
     let factory = crate::backend::native_http_factory(&config);

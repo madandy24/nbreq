@@ -1246,7 +1246,7 @@ mod tests {
     use crate::backend::native_tls::TLS_FLIGHT_LIMIT;
     use crate::{
         Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, StreamRequest,
-        TlsVerification, TransportStage,
+        TlsVerification, TransportStage, UploadBody,
     };
 
     struct DnsFixture {
@@ -2278,6 +2278,94 @@ mod tests {
         assert_eq!(received, expected);
         engine.shutdown().expect("stream HTTPS Engine must stop");
         server.join().expect("stream HTTPS fixture must join");
+    }
+
+    #[test]
+    fn fixed_streamed_upload_pumps_incrementally_through_rustls() {
+        let key = KeyPair::generate().expect("upload HTTPS key must generate");
+        let params = CertificateParams::new(vec!["upload.test".to_owned()])
+            .expect("upload HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("upload HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("upload HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("upload HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("upload HTTPS fixture must bind");
+        let address = listener.local_addr().expect("upload HTTPS fixture address");
+        let expected = (0..64 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let server_expected = expected.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("upload HTTPS fixture must accept");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("upload HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 2048];
+            let head_end = loop {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    break position + 4;
+                }
+                let read = tls.read(&mut buffer).expect("upload HTTPS head must read");
+                assert_ne!(read, 0, "client closed before upload HTTPS head");
+                request.extend_from_slice(&buffer[..read]);
+            };
+            let head = std::str::from_utf8(&request[..head_end]).expect("upload head is UTF-8");
+            assert!(head.contains("Content-Length: 65536\r\n"));
+            while request.len() < head_end + server_expected.len() {
+                let read = tls.read(&mut buffer).expect("upload HTTPS body must read");
+                assert_ne!(read, 0, "client closed before upload HTTPS body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            assert_eq!(
+                &request[head_end..head_end + server_expected.len()],
+                server_expected
+            );
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .expect("upload HTTPS response must write");
+            tls.flush().expect("upload HTTPS response must flush");
+        });
+
+        let (body, mut sender) =
+            UploadBody::fixed(expected.len() as u64, 4096).expect("upload pair must construct");
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4096);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            config,
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("upload HTTPS Engine must construct");
+        let reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::post(format!("https://upload.test:{}/", address.port()))
+                    .body_stream(body)
+                    .total_timeout(Duration::from_secs(3))
+                    .build()
+                    .expect("upload HTTPS request must build"),
+            )
+            .expect("upload HTTPS request must submit");
+        sender
+            .push(expected)
+            .expect("blocking upload HTTPS producer must cross its small queue window");
+        sender.finish().expect("upload HTTPS producer must finish");
+        let response = reader
+            .collect()
+            .expect("upload HTTPS response must collect");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"ok");
+        engine.shutdown().expect("upload HTTPS Engine must stop");
+        server.join().expect("upload HTTPS fixture must join");
     }
 
     #[test]

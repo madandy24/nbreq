@@ -59,6 +59,7 @@ impl UploadBody {
                 producer: ProducerState::Open,
                 receiver_alive: true,
                 total_limit: None,
+                run_mode: None,
             }),
             changed: Condvar::new(),
             engine_waker: Mutex::new(None),
@@ -113,6 +114,7 @@ impl UploadBody {
         &self,
         max_queue_capacity: usize,
         total_limit: usize,
+        run_mode: RunMode,
         engine_waker: StreamWaker,
     ) -> Result<(), Error> {
         if self.shared.queue_capacity > max_queue_capacity {
@@ -161,6 +163,7 @@ impl UploadBody {
             ));
         }
         state.total_limit = Some(total_limit);
+        state.run_mode = Some(run_mode);
         *lock_unpoisoned(&self.shared.engine_waker) = Some(engine_waker);
         drop(state);
         Ok(())
@@ -193,6 +196,11 @@ impl UploadBody {
                 "the fixed-length streamed upload finished at the wrong length",
             )),
         }
+    }
+
+    #[cfg(feature = "native")]
+    pub(crate) fn framing(&self) -> UploadFraming {
+        self.shared.framing
     }
 
     #[allow(dead_code)] // Early response, cancellation, and shutdown call this after submission.
@@ -299,6 +307,88 @@ impl UploadSender {
         Ok(())
     }
 
+    /// Queues all caller bytes, waiting for transport capacity on a spawned Engine.
+    ///
+    /// The input may be larger than the transfer's queue window and is admitted progressively.
+    /// If an early response, cancellation, failure, or Engine stop closes the receiver, the error
+    /// returns only the suffix that was not accepted. Call this only after successful submission;
+    /// manual Engines reject it without driving the owner.
+    pub fn push(&mut self, chunk: Vec<u8>) -> Result<(), TryPushError> {
+        let length = match u64::try_from(chunk.len()) {
+            Ok(length) => length,
+            Err(_) => {
+                return Err(TryPushError::new(TryPushErrorKind::LengthExceeded, chunk));
+            }
+        };
+        {
+            let state = lock_unpoisoned(&self.shared.state);
+            match state.run_mode {
+                None => {
+                    return Err(TryPushError::new(TryPushErrorKind::NotSubmitted, chunk));
+                }
+                Some(RunMode::Manual) => {
+                    return Err(TryPushError::new(TryPushErrorKind::WrongMode, chunk));
+                }
+                Some(RunMode::Spawned) => {}
+            }
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            if !state.receiver_alive || state.producer != ProducerState::Open {
+                return Err(TryPushError::new(TryPushErrorKind::Closed, chunk));
+            }
+            let Some(next_accepted) = state.accepted_bytes.checked_add(length) else {
+                return Err(TryPushError::new(TryPushErrorKind::LengthExceeded, chunk));
+            };
+            if state
+                .total_limit
+                .is_some_and(|total_limit| next_accepted > total_limit)
+            {
+                return Err(TryPushError::new(
+                    TryPushErrorKind::TotalLimitExceeded,
+                    chunk,
+                ));
+            }
+            if matches!(self.shared.framing, UploadFraming::Fixed(expected) if next_accepted > expected)
+            {
+                return Err(TryPushError::new(TryPushErrorKind::LengthExceeded, chunk));
+            }
+        }
+
+        let mut offset = 0;
+        while offset < chunk.len() {
+            let mut state = lock_unpoisoned(&self.shared.state);
+            while state.receiver_alive
+                && state.producer == ProducerState::Open
+                && state.queued_bytes == self.shared.queue_capacity
+            {
+                state = self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            if !state.receiver_alive || state.producer != ProducerState::Open {
+                return Err(TryPushError::new(
+                    TryPushErrorKind::Closed,
+                    chunk[offset..].to_vec(),
+                ));
+            }
+            let available = self.shared.queue_capacity - state.queued_bytes;
+            let count = available.min(chunk.len() - offset);
+            let accepted = chunk[offset..offset + count].to_vec();
+            state.accepted_bytes +=
+                u64::try_from(count).expect("validated upload slice length must fit u64");
+            state.queued_bytes += count;
+            state.queue.push_back(accepted);
+            offset += count;
+            drop(state);
+            self.shared.changed.notify_all();
+            self.shared.wake_engine();
+        }
+        Ok(())
+    }
+
     /// Explicitly and irreversibly finishes this producer.
     ///
     /// A fixed-length body must have accepted exactly its declared byte count. This consumes the
@@ -393,9 +483,13 @@ pub enum TryPushErrorKind {
     TotalLimitExceeded,
     /// The receiving body or request is no longer accepting upload data.
     Closed,
+    /// Blocking push was called before the upload was submitted to an Engine.
+    NotSubmitted,
+    /// Blocking push is unavailable for a manually driven Engine.
+    WrongMode,
 }
 
-/// A failed all-or-nothing [`UploadSender::try_push`] operation.
+/// A failed [`UploadSender::try_push`] or [`UploadSender::push`] operation.
 #[derive(Debug)]
 pub struct TryPushError {
     kind: TryPushErrorKind,
@@ -413,7 +507,8 @@ impl TryPushError {
         self.kind
     }
 
-    /// Returns the unchanged caller-owned chunk.
+    /// Returns the unchanged caller-owned chunk for `try_push`, or the unaccepted suffix for
+    /// blocking `push`.
     #[must_use]
     pub fn into_chunk(self) -> Vec<u8> {
         self.chunk
@@ -432,6 +527,12 @@ impl fmt::Display for TryPushError {
                 "the chunk would exceed the streamed request body limit"
             }
             TryPushErrorKind::Closed => "the streamed upload is closed",
+            TryPushErrorKind::NotSubmitted => {
+                "blocking streamed upload push requires successful submission"
+            }
+            TryPushErrorKind::WrongMode => {
+                "blocking streamed upload push is unavailable for a manual Engine"
+            }
         };
         formatter.write_str(message)
     }
@@ -752,6 +853,11 @@ impl ResponseReader {
     #[must_use]
     pub fn is_eof(&self) -> bool {
         self.eof_reached
+    }
+
+    #[cfg(all(test, feature = "native"))]
+    pub(crate) fn queued_bytes_for_test(&self) -> usize {
+        lock_unpoisoned(&self.shared.state).queued_bytes
     }
 
     fn require_spawned(&self, operation: &str) -> Result<(), StreamError> {
@@ -1173,10 +1279,11 @@ impl StreamRequest {
         &self,
         max_queue_capacity: usize,
         total_limit: usize,
+        run_mode: RunMode,
         engine_waker: StreamWaker,
     ) -> Result<(), Error> {
         if let Some(body) = &self.stream_body {
-            body.bind(max_queue_capacity, total_limit, engine_waker)?;
+            body.bind(max_queue_capacity, total_limit, run_mode, engine_waker)?;
         }
         Ok(())
     }
@@ -1355,7 +1462,7 @@ fn validate_stream_body_request(request: &Request, body: &UploadBody) -> Result<
 }
 
 #[derive(Clone, Copy, Debug)]
-enum UploadFraming {
+pub(crate) enum UploadFraming {
     Fixed(u64),
     Chunked,
 }
@@ -1383,6 +1490,7 @@ struct UploadState {
     producer: ProducerState,
     receiver_alive: bool,
     total_limit: Option<u64>,
+    run_mode: Option<RunMode>,
 }
 
 #[allow(dead_code)] // Consumed by native HTTP beginning with the next submission slice.
@@ -1578,6 +1686,26 @@ mod tests {
     }
 
     #[test]
+    fn blocking_push_requires_a_spawned_engine_binding() {
+        let (body, mut sender) = UploadBody::chunked(4).expect("unbound pair must construct");
+        let error = sender
+            .push(b"data".to_vec())
+            .expect_err("blocking push before submission must fail");
+        assert_eq!(error.kind(), TryPushErrorKind::NotSubmitted);
+        assert_eq!(error.into_chunk(), b"data");
+        drop(body);
+
+        let (body, mut sender) = UploadBody::chunked(4).expect("manual pair must construct");
+        body.bind(4, 16, RunMode::Manual, Arc::new(|| {}))
+            .expect("manual body must bind");
+        let error = sender
+            .push(b"data".to_vec())
+            .expect_err("manual blocking push must fail");
+        assert_eq!(error.kind(), TryPushErrorKind::WrongMode);
+        assert_eq!(error.into_chunk(), b"data");
+    }
+
+    #[test]
     fn engine_pull_binding_revalidates_limits_and_observes_producer_terminal_state() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1587,7 +1715,8 @@ mod tests {
             wake_count.fetch_add(1, Ordering::Relaxed);
         });
         let (mut body, mut sender) = UploadBody::fixed(5, 4).expect("valid fixed pair");
-        body.bind(4, 5, waker).expect("body binds once");
+        body.bind(4, 5, RunMode::Spawned, waker)
+            .expect("body binds once");
         sender.try_push(b"abc".to_vec()).expect("first chunk fits");
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
         match body.try_pop() {
@@ -1605,7 +1734,7 @@ mod tests {
         assert!(matches!(body.try_pop(), UploadPoll::Finished));
 
         let (body, mut sender) = UploadBody::chunked(4).expect("valid chunked pair");
-        body.bind(4, 3, Arc::new(|| {}))
+        body.bind(4, 3, RunMode::Spawned, Arc::new(|| {}))
             .expect("queue binds beneath total limit");
         let error = sender
             .try_push(b"four".to_vec())
@@ -1615,7 +1744,7 @@ mod tests {
 
         let (body, _sender) = UploadBody::chunked(8).expect("caller-owned queue may be larger");
         let error = body
-            .bind(4, 16, Arc::new(|| {}))
+            .bind(4, 16, RunMode::Spawned, Arc::new(|| {}))
             .expect_err("Engine clamps the accepted transfer window");
         assert_eq!(error.kind(), ErrorKind::Limit);
         assert_eq!(error.limit_kind(), Some(LimitKind::StreamingQueueBytes));
@@ -1628,7 +1757,7 @@ mod tests {
             .expect("producer is alive during construction");
         drop(sender);
         let error = body
-            .bind(4, 16, Arc::new(|| {}))
+            .bind(4, 16, RunMode::Spawned, Arc::new(|| {}))
             .expect_err("submit-time validation must observe later abandonment");
         assert_eq!(error.kind(), ErrorKind::Transport);
         assert_eq!(error.transport_stage(), Some(crate::TransportStage::Send));
@@ -1658,13 +1787,14 @@ mod tests {
             })
         };
         let (body, sender) = UploadBody::chunked(8).expect("valid chunked pair");
-        body.bind(8, 16, Arc::clone(&waker))
+        body.bind(8, 16, RunMode::Spawned, Arc::clone(&waker))
             .expect("body must bind");
         sender.finish().expect("chunked sender must finish");
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
 
         let (body, sender) = UploadBody::chunked(8).expect("valid chunked pair");
-        body.bind(8, 16, waker).expect("body must bind");
+        body.bind(8, 16, RunMode::Spawned, waker)
+            .expect("body must bind");
         drop(sender);
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
     }

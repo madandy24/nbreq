@@ -69,9 +69,9 @@ readiness and notification, `httparse` for response-head parsing, Hickory's wire
 Engine-owned DNS service, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
 async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
 joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
-and Ubuntu 20.04 prove the accepted buffered path; the buffered-upload response-streaming subset
-currently passes its complete Windows gate. Fixed/chunked `UploadBody` pumping and the matching
-Ubuntu seam remain in progress. Enabling `native` does not make `Engine::new` select it.
+and Ubuntu 20.04 prove the accepted buffered path. Buffered-upload response streaming plus
+fixed/chunked `UploadBody` pumping currently pass their complete Windows gate; the matching exact-
+source Ubuntu seam remains pending. Enabling `native` does not make `Engine::new` select it.
 
 ## Project documents
 

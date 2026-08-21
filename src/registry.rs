@@ -642,6 +642,7 @@ impl Shared {
         request.bind_upload(
             response_window,
             self.max_request_body_bytes,
+            self.run_mode,
             Arc::clone(&stream_waker),
         )?;
         let handle = RequestHandle::new(Client::new(Arc::clone(self)), id);

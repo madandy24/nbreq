@@ -388,12 +388,47 @@ tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy,
 formatting pass. The next slice pumps fixed-length and chunked `UploadBody` data incrementally; it
 does not widen the buffered family or the ordinary `Engine::new` backend choice.
 
+## WP9.4j streamed upload pump — Windows slice
+
+The native owner now consumes the unique `UploadBody` directly. Fixed bodies generate an exact
+`Content-Length`; chunked bodies generate one HTTP/1.1 chunk per producer chunk plus the terminal
+zero chunk. Request heads, producer data, and the final marker enter the existing bounded reactor
+queue incrementally. On TLS connections each producer chunk becomes rustls plaintext only after
+the preceding plaintext and ciphertext have drained, preserving the accepted 512 KiB encrypted
+queue bound without buffering the complete upload or making it replayable.
+
+`UploadSender::push(Vec)` is the spawned-mode blocking convenience. It admits buffers larger than
+the transfer window in pieces, waits on the existing producer condition variable, and returns only
+the unaccepted suffix if an early final response, cancellation, failure, or Engine stop closes the
+receiver. Before submission it returns `NotSubmitted`; on a manual Engine it returns `WrongMode`
+and never drives the owner. `try_push` remains the passive all-or-nothing operation for manual and
+spawned callers. Fixed length mismatch and producer abandonment fail the reader at Send.
+
+A final HTTP response wins over an unfinished upload: queued producer bytes are discarded, blocked
+senders wake Closed, the 4xx/5xx head/body remains a normal reader result, and the connection is
+never pooled unless the complete request was already proven drained. Live uploads never follow a
+redirect. An impossible redirect-sink transfer now also contaminates the socket explicitly rather
+than failing the reader and parking uncertain state.
+
+Windows fixtures prove exact fixed and chunked cleartext wire bytes, generated-header limits,
+64 KiB fixed HTTPS upload through a 4 KiB window using blocking push, manual prequeue/try-push and
+owner drive, a completed upload returning one clean socket to the pool, a 303 returned unfollowed,
+an 8 MiB producer interrupted by a backpressured 413 response, abandonment, fixed length mismatch,
+individual cancellation, and consuming shutdown. The inactivity test now waits
+for an observed full response queue before its clock assertion instead of assuming a sleep filled
+it. The native gate passes 172 unit tests, 4 adversarial tests, 4 public-contract tests, and 6
+doctests; the default gate passes 63 unit tests, 4 public-contract tests, and 6 doctests. Strict
+all-feature clippy, documentation, and formatting pass. The combined curl/native test run retains
+three pre-existing vendored-Schannel fixture failures before ClientHello on this host; isolated
+reruns reproduce them, and no curl source changed in this slice.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
-- Fixed/chunked `UploadBody` pumping and blocking producer convenience remain WP9.4. Buffered-upload
-  response streaming, direct reader delivery, and bounded cleartext/TLS backpressure are now
-  implemented; the one-shot HTTPS body ceiling was removed by WP9.4a. Public limits, metrics,
-  fuzzing, pressure runs, and supported-platform evidence remain WP9.5/WP10.
+- Fixed/chunked `UploadBody` pumping, blocking producer wakeups, buffered-upload response
+  streaming, direct reader delivery, and bounded cleartext/TLS backpressure are implemented on
+  Windows. Exact-source Ubuntu acceptance remains WP9.4. The one-shot HTTPS body ceiling was
+  removed by WP9.4a. Public limits, metrics, fuzzing, pressure runs, and supported-platform evidence
+  remain WP9.5/WP10.

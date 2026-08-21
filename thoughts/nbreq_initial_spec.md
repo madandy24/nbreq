@@ -595,8 +595,9 @@ family:
 than that transfer's queue returns the unchanged `Vec`. Blocking `push` is spawned-mode only and may
 feed a larger buffer progressively; interruption returns its unsent suffix because accepted bytes
 cannot be reclaimed. It wakes for capacity, early final response, cancellation, failure, and Engine
-stop. Early 4xx/5xx remains a completed HTTP exchange through `ResponseReader`; the sender merely
-closes and queued upload chunks are discarded.
+stop. Calling it before successful submission reports `NotSubmitted`; a manual Engine reports
+`WrongMode` without driving. Early 4xx/5xx remains a completed HTTP exchange through
+`ResponseReader`; the sender merely closes and queued upload chunks are discarded.
 
 Manual-mode producer and consumer methods never block and never drive the Engine. They expose
 `try_push`, `try_head`, and `try_read`; progress comes only from the owner's `drive` calls. Blocking
