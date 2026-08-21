@@ -1,8 +1,9 @@
 # WP9 native pooling, redirects, and streaming evidence
 
-Status: **WP9.1/WP9.2 pooling and WP9.3 redirects accepted on Windows and Ubuntu 20.04.** WP8's
-DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`; none of the
-private native slices below changes ordinary `Engine::new` or any GDS backend selection.
+Status: **WP9.1/WP9.2 pooling, WP9.3 redirects, and WP9.4 streaming accepted on Windows and Ubuntu
+20.04.** WP8's DNS/TLS owner is accepted. WP9.0 boundary hardening is checkpointed at `a39adb1`;
+none of the private native slices below changes ordinary `Engine::new` or any GDS backend
+selection.
 
 ## Frozen pool ownership contract
 
@@ -422,13 +423,36 @@ all-feature clippy, documentation, and formatting pass. The combined curl/native
 three pre-existing vendored-Schannel fixture failures before ClientHello on this host; isolated
 reruns reproduce them, and no curl source changed in this slice.
 
+## WP9.4 Ubuntu 20.04 acceptance
+
+Exact commit `d3d2809` was packaged as a 427,945-byte source archive with SHA-256
+`A700B793B9AB7B91B69F5CB56C2A61C3C4629103554CD16BB92A52BF3DBC6FA4`, copied to the Ubuntu
+host, verified before extraction, and built in a fresh directory using rustc/cargo 1.85.0. The
+default gate passes 63 unit tests, 4 public-contract tests, and 6 doctests. The native/test-support
+gate passes 172 unit tests, 4 adversarial tests, 4 public-contract tests, and 6 doctests. Strict
+all-target native/test-support clippy, formatting, and offline all-feature compilation pass.
+
+The first exact archive (`f749df5`) usefully rejected one Windows-shaped cancellation fixture. On
+Linux the peer received 1,024 upload bytes already accepted by the kernel before it observed the
+socket close. The producer still woke `Closed` with its unaccepted suffix and the Engine joined;
+the transport did not continue pumping after cancellation. Commit `d3d2809` corrected the fixture
+to drain bounded in-flight socket bytes and still require the close, rather than claiming that
+cancellation can recall an already completed write. The corrected test passes 50 consecutive
+Windows repetitions and the full local gate before packaging. On Ubuntu, 25 consecutive pairs of
+the cancellation/shutdown and streamed-upload test filters pass, followed by a check that finds no
+surviving proof process.
+
+WP9.4 is accepted on the declared Windows and native Ubuntu targets. This does not select native
+through ordinary `Engine::new`, change the curl pilot or ureq rollback, or claim WP9.5 production
+limits, metrics, fuzzing, pressure, benchmark, Wine-native, or public-backend readiness.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
 - Fixed/chunked `UploadBody` pumping, blocking producer wakeups, buffered-upload response
-  streaming, direct reader delivery, and bounded cleartext/TLS backpressure are implemented on
-  Windows. Exact-source Ubuntu acceptance remains WP9.4. The one-shot HTTPS body ceiling was
-  removed by WP9.4a. Public limits, metrics, fuzzing, pressure runs, and supported-platform evidence
-  remain WP9.5/WP10.
+  streaming, direct reader delivery, and bounded cleartext/TLS backpressure are accepted on
+  Windows and exact-source Ubuntu 20.04. The one-shot HTTPS body ceiling was removed by WP9.4a.
+  Public limits, metrics, fuzzing, pressure runs, and supported-platform evidence remain
+  WP9.5/WP10.
