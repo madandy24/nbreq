@@ -55,10 +55,10 @@ pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
     Engine::with_curl_backend(config)
 }
 
-/// Creates an Engine using the private cleartext Rust-native HTTP proving backend.
+/// Creates an Engine using the private Rust-native HTTP proving backend.
 ///
-/// This accepts literal IP-address URLs only and is not a consumer backend-selection API. It
-/// exists so the backend-neutral adversarial corpus can run before DNS and TLS land.
+/// This is not a consumer backend-selection API. It supports the accepted buffered request family
+/// and buffered-upload response streaming; fixed and chunked streamed uploads remain unsupported.
 #[cfg(feature = "native")]
 pub fn native_http_engine(config: EngineConfig) -> Result<Engine, Error> {
     let factory = crate::backend::native_http_factory(&config);

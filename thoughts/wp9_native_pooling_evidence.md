@@ -356,11 +356,44 @@ tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy,
 formatting pass. Native stream capability remains off. The next slice connects this TLS retention,
 the socket allowance, and the decoder through the real native request lifecycle.
 
+## WP9.4i buffered-upload response streaming — Windows slice
+
+The native backend now advertises its first honest public streaming subset. A `StreamRequest` with
+a replayable buffered body (including `StreamRequest::from(Request)`) carries one unique
+`ResponseSink` through DNS, TCP, rustls, HTTP framing, redirects, pooling, cancellation, and
+consuming shutdown, and returns one direct `ResponseReader`. It never constructs or adapts a
+buffered `Completion`. Fixed and chunked `UploadBody` producers remain deliberately unsupported:
+the backend closes the producer and fails the reader with `Unsupported` before any wire claim.
+
+Streaming pending and active states retain the sink on every construction and resolver failure so
+the specific DNS/connect/TLS/HTTP/limit terminal wins before producer Drop. The live owner replaces
+each socket allowance from the reader's current hole, retains unconsumed cleartext beside the
+decoder and unconsumed TLS plaintext inside rustls, and only replenishes after the reader wakes it.
+Consumer backpressure suppresses inactivity while total time continues. Final no-body heads reach
+EOF immediately; close-delimited EOF waits for retained bytes; a dirty TLS EOF may complete an
+already exactly framed response but always contaminates the connection, while an incomplete or
+close-delimited response fails as Receive.
+
+Integration found two real same-poll bugs. First, a bounded reactor read could emit multiple Data
+events, allowing the first TLS window to retain plaintext before the second encrypted fragment was
+delivered. Bounded reads are now aggregated into one event without changing the buffered path.
+Second, PeerClosed could follow Data before a slow reader drained retained bytes. The stream owner
+now remembers peer closure and applies EOF only after those bytes are consumed. Public spawned and
+manual cleartext/HTTPS fixtures cover tiny response windows, 64 KiB multi-record TLS, redirect-body
+discard, immediate no-body EOF, decode-stage preservation, DNS/TLS cancellation, stalled-socket
+cancel and shutdown, inactivity pause, and total-timeout enforcement.
+
+The Windows gate passes 161 native/test-support unit tests, 4 adversarial tests, 4 public-contract
+tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy, documentation, and
+formatting pass. The next slice pumps fixed-length and chunked `UploadBody` data incrementally; it
+does not widen the buffered family or the ordinary `Engine::new` backend choice.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
   concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
   interruptible.
-- Public upload/download streaming, cleartext queue backpressure, and bounded response delivery
-  remain WP9.4; the one-shot HTTPS body ceiling is removed by WP9.4a. Public limits, metrics,
+- Fixed/chunked `UploadBody` pumping and blocking producer convenience remain WP9.4. Buffered-upload
+  response streaming, direct reader delivery, and bounded cleartext/TLS backpressure are now
+  implemented; the one-shot HTTPS body ceiling was removed by WP9.4a. Public limits, metrics,
   fuzzing, pressure runs, and supported-platform evidence remain WP9.5/WP10.

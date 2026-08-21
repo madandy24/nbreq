@@ -13,7 +13,8 @@ use super::native::{
 };
 use super::native_dns::{NativeResolver, ResolveKey, ResolverConfig};
 use super::native_tls::{
-    NativeTls, NativeTlsConfigs, TlsProgress, encrypted_outbound_limit, encrypted_receive_limit,
+    NativeTls, NativeTlsConfigs, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
+    encrypted_receive_limit,
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
@@ -21,7 +22,7 @@ use crate::stream::{ResponsePushError, ResponseSink};
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
-    Response, ResponseHead, ShutdownError, TimeoutKind, TransportStage,
+    Response, ResponseHead, ShutdownError, StreamRequest, TimeoutKind, TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -789,7 +790,28 @@ impl StreamingResponseDecoder {
         }
     }
 
+    fn socket_capacity(&self) -> usize {
+        if self.pending_head.is_some() {
+            return 0;
+        }
+        match self.output {
+            StreamOutput::AwaitHead | StreamOutput::Discard => 16 * 1024,
+            StreamOutput::Deliver => self
+                .response
+                .as_ref()
+                .map_or(0, ResponseSink::available_capacity),
+        }
+    }
+
+    fn is_consumer_blocked(&self) -> bool {
+        self.output == StreamOutput::Deliver && self.socket_capacity() == 0
+    }
+
     fn into_response(mut self) -> Result<ResponseSink, Error> {
+        self.take_response()
+    }
+
+    fn take_response(&mut self) -> Result<ResponseSink, Error> {
         if self.state != DecodeState::Complete || self.output != StreamOutput::Discard {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -1282,9 +1304,15 @@ fn resolved_redirect_target(
     request: &Request,
     response: &Response,
 ) -> Result<Option<String>, Error> {
+    resolved_redirect_target_from_headers(request, response.headers())
+}
+
+fn resolved_redirect_target_from_headers(
+    request: &Request,
+    headers: &[Header],
+) -> Result<Option<String>, Error> {
     let mut location = None;
-    for header in response
-        .headers()
+    for header in headers
         .iter()
         .filter(|header| header.name().eq_ignore_ascii_case("location"))
     {
@@ -1412,11 +1440,15 @@ impl BackendFactory for NativeHttpFactory {
         })));
         Ok(Box::new(backend))
     }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
 }
 
 struct HttpTransfer {
     request_id: RequestId,
-    decoder: ResponseDecoder,
+    response: TransferResponse,
     body_bearing: bool,
     response_started: bool,
     connected: bool,
@@ -1425,6 +1457,7 @@ struct HttpTransfer {
     total_deadline: Option<Instant>,
     inactivity_timeout: Option<Duration>,
     inactivity_deadline: Option<Instant>,
+    inactivity_paused: bool,
     key: ConnectionKey,
     request_permits_reuse: bool,
     request_write_drained: bool,
@@ -1432,12 +1465,32 @@ struct HttpTransfer {
     redirect_hops: u8,
 }
 
+enum TransferResponse {
+    Buffered(ResponseDecoder),
+    Streaming {
+        decoder: StreamingResponseDecoder,
+        retained_cleartext: Vec<u8>,
+        retained_offset: usize,
+        peer_closed: bool,
+        tls_dirty_eof: bool,
+        redirect: Option<Request>,
+    },
+}
+
+impl TransferResponse {
+    fn is_streaming(&self) -> bool {
+        matches!(self, Self::Streaming { .. })
+    }
+}
+
 impl HttpTransfer {
     fn next_deadline(&self) -> Option<Instant> {
         [
             self.total_deadline,
             (!self.connected).then_some(self.connect_deadline).flatten(),
-            self.inactivity_deadline,
+            (!self.inactivity_paused)
+                .then_some(self.inactivity_deadline)
+                .flatten(),
         ]
         .into_iter()
         .flatten()
@@ -1446,6 +1499,7 @@ impl HttpTransfer {
 
     fn note_progress(&mut self, now: Instant, connected: bool) -> Option<Instant> {
         self.connected |= connected;
+        self.inactivity_paused = false;
         self.inactivity_deadline = self
             .inactivity_timeout
             .and_then(|timeout| now.checked_add(timeout));
@@ -1520,6 +1574,40 @@ struct PendingResolve {
     key: ConnectionKey,
     request: Request,
     redirect_hops: u8,
+    response: PendingResponse,
+}
+
+enum PendingResponse {
+    Buffered,
+    Streaming(ResponseSink),
+}
+
+impl PendingResponse {
+    fn fail(self, error: Error) -> Option<Completion> {
+        match self {
+            Self::Buffered => Some(Completion::Failed(error)),
+            Self::Streaming(mut response) => {
+                response.fail(error);
+                None
+            }
+        }
+    }
+
+    fn into_active(self, response_to_head: bool, limits: HttpLimits) -> TransferResponse {
+        match self {
+            Self::Buffered => {
+                TransferResponse::Buffered(ResponseDecoder::new(response_to_head, limits))
+            }
+            Self::Streaming(response) => TransferResponse::Streaming {
+                decoder: StreamingResponseDecoder::new(response_to_head, limits, response),
+                retained_cleartext: Vec::new(),
+                retained_offset: 0,
+                peer_closed: false,
+                tls_dirty_eof: false,
+                redirect: None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1530,6 +1618,10 @@ struct PendingDeadlines {
 }
 
 impl PendingResolve {
+    fn fail(self, error: Error) -> Option<Completion> {
+        self.response.fail(error)
+    }
+
     fn next_deadline(&self) -> Option<Instant> {
         [
             self.connect_deadline,
@@ -1699,13 +1791,13 @@ impl NativeHttpBackend {
                 break;
             };
             let timeout = pending.expired_timeout(now);
-            completions.push(BackendCompletion {
-                id: pending.request_id,
-                completion: Completion::Failed(Error::timeout(
-                    timeout,
-                    native_timeout_message(timeout),
-                )),
-            });
+            let id = pending.request_id;
+            if let Some(completion) = pending
+                .response
+                .fail(Error::timeout(timeout, native_timeout_message(timeout)))
+            {
+                completions.push(BackendCompletion { id, completion });
+            }
         }
         completions
     }
@@ -1744,9 +1836,16 @@ impl NativeHttpBackend {
         deadlines: PendingDeadlines,
         redirect_hops: u8,
         origin_error_kind: ErrorKind,
-    ) -> Result<PendingResolve, Error> {
-        let serialized = serialize_request(&request, self.limits)?;
-        let origin = http_origin(request.url(), origin_error_kind)?;
+        response: PendingResponse,
+    ) -> Result<PendingResolve, (Error, PendingResponse)> {
+        let serialized = match serialize_request(&request, self.limits) {
+            Ok(serialized) => serialized,
+            Err(error) => return Err((error, response)),
+        };
+        let origin = match http_origin(request.url(), origin_error_kind) {
+            Ok(origin) => origin,
+            Err(error) => return Err((error, response)),
+        };
         let tls_verification = request.options().tls_verification;
         let inactivity_timeout = request.options().inactivity_timeout;
         let body_bearing = !request.body().is_empty();
@@ -1774,6 +1873,7 @@ impl NativeHttpBackend {
             key,
             request,
             redirect_hops,
+            response,
         })
     }
 
@@ -1784,10 +1884,7 @@ impl NativeHttpBackend {
             .is_some_and(|deadline| deadline <= now)
         {
             let timeout = pending.expired_timeout(now);
-            return Some(Completion::Failed(Error::timeout(
-                timeout,
-                native_timeout_message(timeout),
-            )));
+            return pending.fail(Error::timeout(timeout, native_timeout_message(timeout)));
         }
         let pending = self.try_begin_reused(pending)?;
         if !self.make_connection_capacity(&pending.key) || !self.reserve_connection(&pending.key) {
@@ -1804,13 +1901,26 @@ impl NativeHttpBackend {
         completions: &mut Vec<BackendCompletion>,
     ) {
         self.reactor.cancel(slot);
-        if let Some(transfer) = self.transfers.remove(&slot) {
+        if let Some(mut transfer) = self.transfers.remove(&slot) {
             self.request_to_slot.remove(&transfer.request_id);
             self.release_connection(&transfer.key);
-            completions.push(BackendCompletion {
-                id: transfer.request_id,
-                completion,
-            });
+            match &mut transfer.response {
+                TransferResponse::Buffered(_) => completions.push(BackendCompletion {
+                    id: transfer.request_id,
+                    completion,
+                }),
+                TransferResponse::Streaming { decoder, .. } => match completion {
+                    Completion::Failed(error) => decoder.fail(error),
+                    Completion::Cancelled => decoder.fail(Error::new(
+                        ErrorKind::Internal,
+                        "native streaming transport cancelled without registry arbitration",
+                    )),
+                    Completion::Completed(_) => decoder.fail(Error::new(
+                        ErrorKind::Internal,
+                        "native streaming transport produced a buffered completion",
+                    )),
+                },
+            }
         }
     }
 
@@ -1911,12 +2021,15 @@ impl NativeHttpBackend {
             return Some(pending);
         }
         let request_id = pending.request_id;
+        let response = pending
+            .response
+            .into_active(pending.serialized.response_to_head, self.limits);
         self.request_to_slot.insert(request_id, idle.slot);
         self.transfers.insert(
             idle.slot,
             HttpTransfer {
                 request_id,
-                decoder: ResponseDecoder::new(pending.serialized.response_to_head, self.limits),
+                response,
                 body_bearing: pending.body_bearing,
                 response_started: false,
                 connected: true,
@@ -1925,6 +2038,7 @@ impl NativeHttpBackend {
                 total_deadline: pending.total_deadline,
                 inactivity_timeout: pending.inactivity_timeout,
                 inactivity_deadline: pending.inactivity_deadline,
+                inactivity_paused: false,
                 key: pending.key,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
@@ -2021,6 +2135,7 @@ impl NativeHttpBackend {
                     },
                     next_redirect_hops,
                     ErrorKind::Redirect,
+                    PendingResponse::Buffered,
                 ) {
                     Ok(pending) => {
                         if let Some(completion) = self.start_pending(pending) {
@@ -2030,7 +2145,7 @@ impl NativeHttpBackend {
                             });
                         }
                     }
-                    Err(error) => completions.push(BackendCompletion {
+                    Err((error, _response)) => completions.push(BackendCompletion {
                         id: request_id,
                         completion: Completion::Failed(error),
                     }),
@@ -2048,10 +2163,10 @@ impl NativeHttpBackend {
         let tls = if pending.scheme == "https" {
             let Some(configs) = &self.tls else {
                 self.release_connection(&pending.key);
-                return Some(Completion::Failed(Error::new(
+                return pending.fail(Error::new(
                     ErrorKind::Unsupported,
                     "the selected native proving Engine has no TLS configuration",
-                )));
+                ));
             };
             match configs.connection(
                 &pending.host,
@@ -2061,7 +2176,7 @@ impl NativeHttpBackend {
                 Ok(tls) => Some(tls),
                 Err(error) => {
                     self.release_connection(&pending.key);
-                    return Some(Completion::Failed(error));
+                    return pending.fail(error);
                 }
             }
         } else {
@@ -2084,14 +2199,14 @@ impl NativeHttpBackend {
             Ok(slot) => slot,
             Err(failure) => {
                 self.release_connection(&pending.key);
-                return Some(Completion::Failed(native_transport_error(failure)));
+                return pending.fail(native_transport_error(failure));
             }
         };
         if tls.is_none() {
             if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
                 self.reactor.cancel(slot);
                 self.release_connection(&pending.key);
-                return Some(Completion::Failed(native_transport_error(failure)));
+                return pending.fail(native_transport_error(failure));
             }
         }
         let request_id = pending.request_id;
@@ -2099,12 +2214,15 @@ impl NativeHttpBackend {
         pending.inactivity_deadline = pending
             .inactivity_timeout
             .and_then(|timeout| now.checked_add(timeout));
+        let response = pending
+            .response
+            .into_active(pending.serialized.response_to_head, self.limits);
         self.request_to_slot.insert(request_id, slot);
         self.transfers.insert(
             slot,
             HttpTransfer {
                 request_id,
-                decoder: ResponseDecoder::new(pending.serialized.response_to_head, self.limits),
+                response,
                 body_bearing: pending.body_bearing,
                 response_started: false,
                 connected: false,
@@ -2113,6 +2231,7 @@ impl NativeHttpBackend {
                 total_deadline: pending.total_deadline,
                 inactivity_timeout: pending.inactivity_timeout,
                 inactivity_deadline: pending.inactivity_deadline,
+                inactivity_paused: false,
                 key: pending.key,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
@@ -2138,13 +2257,13 @@ impl NativeHttpBackend {
                 Ok(answer) => {
                     let Some(ip) = answer.addresses.into_iter().next() else {
                         self.release_connection(&pending.key);
-                        completions.push(BackendCompletion {
-                            id: pending.request_id,
-                            completion: Completion::Failed(Error::transport(
-                                TransportStage::Dns,
-                                "the native resolver returned no usable address",
-                            )),
-                        });
+                        let id = pending.request_id;
+                        if let Some(completion) = pending.fail(Error::transport(
+                            TransportStage::Dns,
+                            "the native resolver returned no usable address",
+                        )) {
+                            completions.push(BackendCompletion { id, completion });
+                        }
                         continue;
                     };
                     let id = pending.request_id;
@@ -2156,13 +2275,12 @@ impl NativeHttpBackend {
                 }
                 Err(failure) => {
                     self.release_connection(&pending.key);
-                    completions.push(BackendCompletion {
-                        id: pending.request_id,
-                        completion: Completion::Failed(Error::transport(
-                            TransportStage::Dns,
-                            failure.message,
-                        )),
-                    });
+                    let id = pending.request_id;
+                    if let Some(completion) =
+                        pending.fail(Error::transport(TransportStage::Dns, failure.message))
+                    {
+                        completions.push(BackendCompletion { id, completion });
+                    }
                 }
             }
         }
@@ -2192,13 +2310,13 @@ impl NativeHttpBackend {
                 resolver.cancel(key)?;
             }
             let timeout = pending.expired_timeout(now);
-            completions.push(BackendCompletion {
-                id: pending.request_id,
-                completion: Completion::Failed(Error::timeout(
-                    timeout,
-                    native_timeout_message(timeout),
-                )),
-            });
+            let id = pending.request_id;
+            if let Some(completion) = pending
+                .response
+                .fail(Error::timeout(timeout, native_timeout_message(timeout)))
+            {
+                completions.push(BackendCompletion { id, completion });
+            }
         }
         Ok(completions)
     }
@@ -2222,19 +2340,19 @@ impl NativeHttpBackend {
             Ok(key) => key,
             Err(error) => {
                 self.release_connection(&pending.key);
-                return Some(Completion::Failed(error));
+                return pending.fail(error);
             }
         };
         let Some(resolver) = &self.resolver else {
             self.release_connection(&pending.key);
-            return Some(Completion::Failed(Error::new(
+            return pending.fail(Error::new(
                 ErrorKind::Unsupported,
                 "the native HTTP proving Engine requires an injected resolver for hostnames",
-            )));
+            ));
         };
         if let Err(error) = resolver.resolve(key, pending.host.clone()) {
             self.release_connection(&pending.key);
-            return Some(Completion::Failed(error));
+            return pending.fail(error);
         }
         self.request_to_resolve.insert(pending.request_id, key);
         self.resolves.insert(key, pending);
@@ -2357,6 +2475,548 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn consume_stream_plaintext(transfer: &mut HttpTransfer, consumed: usize) -> Result<(), Error> {
+        match &mut transfer.response {
+            TransferResponse::Streaming {
+                retained_cleartext,
+                retained_offset,
+                ..
+            } => {
+                if let Some(tls) = transfer.tls.as_mut() {
+                    tls.consume_retained_plaintext(consumed)
+                } else {
+                    let remaining = retained_cleartext.len().saturating_sub(*retained_offset);
+                    if consumed > remaining {
+                        return Err(Error::new(
+                            ErrorKind::Internal,
+                            "native HTTP consumed beyond retained cleartext streaming bytes",
+                        ));
+                    }
+                    *retained_offset += consumed;
+                    if *retained_offset == retained_cleartext.len() {
+                        retained_cleartext.clear();
+                        *retained_offset = 0;
+                    }
+                    Ok(())
+                }
+            }
+            TransferResponse::Buffered(_) => Err(Error::new(
+                ErrorKind::Internal,
+                "buffered native response entered streaming plaintext consumption",
+            )),
+        }
+    }
+
+    fn stream_plaintext(transfer: &HttpTransfer) -> &[u8] {
+        match &transfer.response {
+            TransferResponse::Streaming {
+                retained_cleartext,
+                retained_offset,
+                ..
+            } => transfer.tls.as_ref().map_or_else(
+                || &retained_cleartext[*retained_offset..],
+                NativeTls::retained_plaintext,
+            ),
+            TransferResponse::Buffered(_) => &[],
+        }
+    }
+
+    fn refresh_stream_allowance(&mut self, slot: SlotId) -> Result<(), Error> {
+        let stream_state = self.transfers.get(&slot).and_then(|transfer| {
+            let TransferResponse::Streaming {
+                decoder,
+                retained_cleartext,
+                retained_offset,
+                ..
+            } = &transfer.response
+            else {
+                return None;
+            };
+            let retained = transfer.tls.as_ref().map_or_else(
+                || retained_cleartext.len().saturating_sub(*retained_offset),
+                |tls| tls.retained_plaintext().len(),
+            );
+            let capacity = decoder.socket_capacity();
+            let allowance = if let Some(tls) = &transfer.tls {
+                tls.streaming_read_allowance(capacity)
+            } else if retained != 0 {
+                0
+            } else {
+                capacity
+            };
+            Some((allowance, decoder.is_consumer_blocked()))
+        });
+        if let Some((allowance, consumer_blocked)) = stream_state {
+            let deadline_update = self.transfers.get_mut(&slot).and_then(|transfer| {
+                let mut changed = false;
+                if consumer_blocked && !transfer.inactivity_paused {
+                    transfer.inactivity_paused = true;
+                    transfer.inactivity_deadline = None;
+                    changed = true;
+                } else if !consumer_blocked && transfer.inactivity_paused {
+                    transfer.inactivity_paused = false;
+                    transfer.inactivity_deadline = transfer
+                        .inactivity_timeout
+                        .and_then(|timeout| Instant::now().checked_add(timeout));
+                    changed = true;
+                }
+                changed.then(|| transfer.next_deadline())
+            });
+            if let Some(deadline) = deadline_update {
+                self.reactor
+                    .set_deadline(slot, deadline)
+                    .map_err(native_internal_error)?;
+            }
+            self.reactor
+                .set_read_allowance(slot, Some(allowance))
+                .map_err(native_internal_error)?;
+        }
+        Ok(())
+    }
+
+    fn complete_stream_response(
+        &mut self,
+        slot: SlotId,
+        response_permits_reuse: bool,
+        peer_closed: bool,
+    ) {
+        let Some(mut transfer) = self.transfers.remove(&slot) else {
+            self.reactor.cancel(slot);
+            return;
+        };
+        self.request_to_slot.remove(&transfer.request_id);
+        let request_id = transfer.request_id;
+        let total_deadline = transfer.total_deadline;
+        let next_redirect_hops = transfer.redirect_hops.saturating_add(1);
+        let redirect = match &mut transfer.response {
+            TransferResponse::Streaming {
+                decoder, redirect, ..
+            } if redirect.is_some() => {
+                let request = redirect.take().expect("redirect presence checked");
+                match decoder.take_response() {
+                    Ok(response) => Some((request, response)),
+                    Err(error) => {
+                        decoder.fail(error);
+                        None
+                    }
+                }
+            }
+            TransferResponse::Streaming { .. } => None,
+            TransferResponse::Buffered(_) => {
+                debug_assert!(false, "buffered response entered streaming completion");
+                None
+            }
+        };
+        let per_origin_idle = self.idle.get(&transfer.key).map_or(0, VecDeque::len);
+        let reusable = response_permits_reuse
+            && transfer.request_permits_reuse
+            && transfer.request_write_drained
+            && !peer_closed
+            && self.idle_count < MAX_IDLE_CONNECTIONS
+            && per_origin_idle < MAX_IDLE_CONNECTIONS_PER_ORIGIN;
+        if reusable {
+            let parked =
+                Instant::now()
+                    .checked_add(IDLE_CONNECTION_LIFETIME)
+                    .filter(|idle_deadline| {
+                        self.reactor
+                            .set_deadline(slot, Some(*idle_deadline))
+                            .is_ok()
+                    });
+            if let Some(expires_at) = parked {
+                self.idle_slots.insert(slot, transfer.key.clone());
+                self.idle
+                    .entry(transfer.key)
+                    .or_default()
+                    .push_back(IdleConnection {
+                        slot,
+                        tls: transfer.tls.take(),
+                        expires_at,
+                    });
+                self.idle_count += 1;
+            } else {
+                self.reactor.cancel(slot);
+                self.release_connection(&transfer.key);
+            }
+        } else {
+            self.reactor.cancel(slot);
+            self.release_connection(&transfer.key);
+        }
+
+        if let Some((request, response)) = redirect {
+            let now = Instant::now();
+            let deadlines = PendingDeadlines {
+                connect: request
+                    .options()
+                    .connect_timeout
+                    .and_then(|timeout| now.checked_add(timeout)),
+                total: total_deadline,
+                inactivity: request
+                    .options()
+                    .inactivity_timeout
+                    .and_then(|timeout| now.checked_add(timeout)),
+            };
+            match self.make_pending(
+                request_id,
+                request,
+                deadlines,
+                next_redirect_hops,
+                ErrorKind::Redirect,
+                PendingResponse::Streaming(response),
+            ) {
+                Ok(pending) => {
+                    let completion = self.start_pending(pending);
+                    debug_assert!(completion.is_none());
+                }
+                Err((error, PendingResponse::Streaming(mut response))) => response.fail(error),
+                Err((_error, PendingResponse::Buffered)) => {
+                    unreachable!("stream redirect changed pending response kind")
+                }
+            }
+        }
+    }
+
+    fn drain_stream_plaintext(
+        &mut self,
+        slot: SlotId,
+        peer_closed: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
+        if peer_closed {
+            if let Some(HttpTransfer {
+                response: TransferResponse::Streaming { peer_closed, .. },
+                ..
+            }) = self.transfers.get_mut(&slot)
+            {
+                *peer_closed = true;
+            }
+        }
+        loop {
+            let progress = {
+                let Some(transfer) = self.transfers.get_mut(&slot) else {
+                    return Ok(());
+                };
+                let HttpTransfer {
+                    response,
+                    response_started,
+                    tls,
+                    ..
+                } = transfer;
+                let TransferResponse::Streaming {
+                    decoder,
+                    retained_cleartext,
+                    retained_offset,
+                    ..
+                } = response
+                else {
+                    return Err(Error::new(
+                        ErrorKind::Internal,
+                        "buffered native response entered streaming decoder drain",
+                    ));
+                };
+                let plaintext = tls.as_ref().map_or_else(
+                    || &retained_cleartext[*retained_offset..],
+                    NativeTls::retained_plaintext,
+                );
+                if plaintext.is_empty() {
+                    None
+                } else {
+                    *response_started = true;
+                    Some(decoder.ingest(plaintext))
+                }
+            };
+
+            let Some(progress) = progress else {
+                break;
+            };
+            let progress = match progress {
+                Ok(progress) => progress,
+                Err(error) => {
+                    self.finish(slot, Completion::Failed(error), completions);
+                    return Ok(());
+                }
+            };
+            match progress {
+                StreamDecodeProgress::Head { head, consumed } => {
+                    let redirect = self.transfers.get(&slot).map(|transfer| {
+                        redirected_request(
+                            &transfer.request,
+                            head.status(),
+                            transfer.redirect_hops,
+                            || {
+                                resolved_redirect_target_from_headers(
+                                    &transfer.request,
+                                    head.headers(),
+                                )
+                            },
+                        )
+                    });
+                    let (deliver, redirect) = match redirect {
+                        Some(Ok(Some(request))) => (false, Some(request)),
+                        Some(Ok(None)) => (true, None),
+                        Some(Err(error)) => {
+                            self.finish(slot, Completion::Failed(error), completions);
+                            return Ok(());
+                        }
+                        None => return Ok(()),
+                    };
+                    let decision = if let Some(transfer) = self.transfers.get_mut(&slot) {
+                        Self::consume_stream_plaintext(transfer, consumed)?;
+                        let TransferResponse::Streaming {
+                            decoder,
+                            redirect: pending_redirect,
+                            ..
+                        } = &mut transfer.response
+                        else {
+                            unreachable!("streaming transfer changed response kind")
+                        };
+                        *pending_redirect = redirect;
+                        decoder.decide_head(deliver)
+                    } else {
+                        return Ok(());
+                    };
+                    match decision {
+                        Ok(StreamHeadDecision {
+                            complete: true,
+                            permits_reuse,
+                        }) => {
+                            let trailing = self.transfers.get(&slot).is_some_and(|transfer| {
+                                !Self::stream_plaintext(transfer).is_empty()
+                            });
+                            let redirecting = self.transfers.get(&slot).is_some_and(|transfer| {
+                                matches!(
+                                    transfer.response,
+                                    TransferResponse::Streaming {
+                                        redirect: Some(_),
+                                        ..
+                                    }
+                                )
+                            });
+                            if trailing && redirecting {
+                                self.finish(
+                                    slot,
+                                    Completion::Failed(Error::transport(
+                                        TransportStage::Http,
+                                        "the peer sent bytes after a no-body redirect response",
+                                    )),
+                                    completions,
+                                );
+                                return Ok(());
+                            }
+                            let peer_closed = self.transfers.get(&slot).is_some_and(|transfer| {
+                                matches!(
+                                    transfer.response,
+                                    TransferResponse::Streaming {
+                                        peer_closed: true,
+                                        ..
+                                    }
+                                )
+                            });
+                            self.complete_stream_response(
+                                slot,
+                                permits_reuse && !trailing,
+                                peer_closed,
+                            );
+                            return Ok(());
+                        }
+                        Ok(StreamHeadDecision {
+                            complete: false, ..
+                        }) => {}
+                        Err(error) => {
+                            self.finish(slot, Completion::Failed(error), completions);
+                            return Ok(());
+                        }
+                    }
+                }
+                StreamDecodeProgress::Body { consumed, blocked } => {
+                    if let Some(transfer) = self.transfers.get_mut(&slot) {
+                        Self::consume_stream_plaintext(transfer, consumed)?;
+                    }
+                    if blocked || consumed == 0 {
+                        break;
+                    }
+                }
+                StreamDecodeProgress::Complete {
+                    consumed,
+                    permits_reuse,
+                    ..
+                } => {
+                    if let Some(transfer) = self.transfers.get_mut(&slot) {
+                        Self::consume_stream_plaintext(transfer, consumed)?;
+                    }
+                    let trailing = self
+                        .transfers
+                        .get(&slot)
+                        .is_some_and(|transfer| !Self::stream_plaintext(transfer).is_empty());
+                    if trailing {
+                        self.finish(
+                            slot,
+                            Completion::Failed(Error::transport(
+                                TransportStage::Http,
+                                "the peer sent bytes after the completed streaming HTTP response",
+                            )),
+                            completions,
+                        );
+                    } else {
+                        let peer_closed = self.transfers.get(&slot).is_some_and(|transfer| {
+                            matches!(
+                                transfer.response,
+                                TransferResponse::Streaming {
+                                    peer_closed: true,
+                                    ..
+                                }
+                            )
+                        });
+                        self.complete_stream_response(slot, permits_reuse, peer_closed);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        let should_eof = self.transfers.get(&slot).is_some_and(|transfer| {
+            matches!(
+                transfer.response,
+                TransferResponse::Streaming {
+                    peer_closed: true,
+                    ..
+                }
+            ) && Self::stream_plaintext(transfer).is_empty()
+        });
+        if should_eof {
+            let tls_dirty_eof = self.transfers.get(&slot).is_some_and(|transfer| {
+                matches!(
+                    transfer.response,
+                    TransferResponse::Streaming {
+                        tls_dirty_eof: true,
+                        ..
+                    }
+                )
+            });
+            if tls_dirty_eof {
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::transport(
+                        TransportStage::Receive,
+                        "the TLS peer closed without an authenticated close notification",
+                    )),
+                    completions,
+                );
+                return Ok(());
+            }
+            let eof = self.transfers.get_mut(&slot).map(|transfer| {
+                let TransferResponse::Streaming { decoder, .. } = &mut transfer.response else {
+                    unreachable!("streaming transfer changed response kind")
+                };
+                decoder.eof()
+            });
+            match eof {
+                Some(Ok(Some((permits_reuse, _)))) => {
+                    self.complete_stream_response(slot, permits_reuse, true)
+                }
+                Some(Ok(None)) => self.finish(
+                    slot,
+                    Completion::Failed(Error::transport(
+                        TransportStage::Receive,
+                        "the peer closed without completing a streaming response",
+                    )),
+                    completions,
+                ),
+                Some(Err(error)) => self.finish(slot, Completion::Failed(error), completions),
+                None => {}
+            }
+        }
+        if self.transfers.contains_key(&slot) {
+            self.refresh_stream_allowance(slot)?;
+        }
+        Ok(())
+    }
+
+    fn handle_stream_data(
+        &mut self,
+        slot: SlotId,
+        bytes: Vec<u8>,
+        arm_deadline: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
+        let tls_progress = self
+            .transfers
+            .get_mut(&slot)
+            .and_then(|transfer| transfer.tls.as_mut())
+            .map(|tls| tls.receive_streaming(&bytes));
+        let (established, outbound, peer_closed) = match tls_progress {
+            Some(Ok(TlsStreamProgress {
+                outbound,
+                handshake_complete,
+                peer_closed,
+            })) => (handshake_complete, outbound, peer_closed),
+            Some(Err(error)) => {
+                self.finish(slot, Completion::Failed(error), completions);
+                return Ok(());
+            }
+            None => {
+                let Some(transfer) = self.transfers.get_mut(&slot) else {
+                    return Ok(());
+                };
+                let TransferResponse::Streaming {
+                    retained_cleartext,
+                    retained_offset,
+                    ..
+                } = &mut transfer.response
+                else {
+                    return Err(Error::new(
+                        ErrorKind::Internal,
+                        "buffered native response entered streaming data path",
+                    ));
+                };
+                if *retained_offset != retained_cleartext.len() {
+                    self.finish(
+                        slot,
+                        Completion::Failed(Error::new(
+                            ErrorKind::Internal,
+                            "native cleartext accepted bytes while streaming plaintext remained",
+                        )),
+                        completions,
+                    );
+                    return Ok(());
+                }
+                *retained_cleartext = bytes;
+                *retained_offset = 0;
+                (false, Vec::new(), false)
+            }
+        };
+        self.note_progress(slot, established, arm_deadline)?;
+        if arm_deadline && !outbound.is_empty() {
+            if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::transport(TransportStage::Tls, failure.message)),
+                    completions,
+                );
+                return Ok(());
+            }
+        }
+        if arm_deadline && established && self.transfers.contains_key(&slot) {
+            self.pump_tls_request(slot, completions)?;
+        }
+        self.drain_stream_plaintext(slot, peer_closed, completions)
+    }
+
+    fn resume_streams(&mut self, completions: &mut Vec<BackendCompletion>) -> Result<(), Error> {
+        let slots = self
+            .transfers
+            .iter()
+            .filter_map(|(slot, transfer)| transfer.response.is_streaming().then_some(*slot))
+            .collect::<Vec<_>>();
+        for slot in slots {
+            self.drain_stream_plaintext(slot, false, completions)?;
+            if self.transfers.contains_key(&slot) {
+                self.refresh_stream_allowance(slot)?;
+            }
+        }
+        Ok(())
+    }
+
     fn handle_data(
         &mut self,
         slot: SlotId,
@@ -2364,6 +3024,13 @@ impl NativeHttpBackend {
         arm_deadline: bool,
         completions: &mut Vec<BackendCompletion>,
     ) -> Result<(), Error> {
+        if self
+            .transfers
+            .get(&slot)
+            .is_some_and(|transfer| transfer.response.is_streaming())
+        {
+            return self.handle_stream_data(slot, bytes, arm_deadline, completions);
+        }
         let tls_progress = self
             .transfers
             .get_mut(&slot)
@@ -2408,7 +3075,10 @@ impl NativeHttpBackend {
         }
         let decoded = self.transfers.get_mut(&slot).map(|transfer| {
             transfer.response_started |= !plaintext.is_empty();
-            transfer.decoder.ingest(&plaintext)
+            match &mut transfer.response {
+                TransferResponse::Buffered(decoder) => decoder.ingest(&plaintext),
+                TransferResponse::Streaming { .. } => unreachable!("streaming data branched above"),
+            }
         });
         match decoded {
             Some(Ok(DecodeProgress {
@@ -2430,10 +3100,15 @@ impl NativeHttpBackend {
             ),
             Some(Err(error)) => self.finish(slot, Completion::Failed(error), completions),
             Some(Ok(DecodeProgress { response: None, .. })) if peer_closed => {
-                let eof = self
-                    .transfers
-                    .get_mut(&slot)
-                    .map(|transfer| transfer.decoder.eof());
+                let eof =
+                    self.transfers
+                        .get_mut(&slot)
+                        .map(|transfer| match &mut transfer.response {
+                            TransferResponse::Buffered(decoder) => decoder.eof(),
+                            TransferResponse::Streaming { .. } => {
+                                unreachable!("streaming data branched above")
+                            }
+                        });
                 match eof {
                     Some(Ok(Some(response))) => {
                         self.finish(slot, Completion::Completed(response), completions)
@@ -2559,6 +3234,21 @@ impl NativeHttpBackend {
                         continue;
                     }
                     if tls_state == Some(false) {
+                        if let Some(HttpTransfer {
+                            response:
+                                TransferResponse::Streaming {
+                                    peer_closed,
+                                    tls_dirty_eof,
+                                    ..
+                                },
+                            ..
+                        }) = self.transfers.get_mut(&slot)
+                        {
+                            *peer_closed = true;
+                            *tls_dirty_eof = true;
+                            self.drain_stream_plaintext(slot, false, &mut completions)?;
+                            continue;
+                        }
                         self.finish(
                             slot,
                             Completion::Failed(Error::transport(
@@ -2569,10 +3259,23 @@ impl NativeHttpBackend {
                         );
                         continue;
                     }
+                    if self
+                        .transfers
+                        .get(&slot)
+                        .is_some_and(|transfer| transfer.response.is_streaming())
+                    {
+                        self.drain_stream_plaintext(slot, true, &mut completions)?;
+                        continue;
+                    }
                     let decoded = self
                         .transfers
                         .get_mut(&slot)
-                        .map(|transfer| transfer.decoder.eof());
+                        .map(|transfer| match &mut transfer.response {
+                            TransferResponse::Buffered(decoder) => decoder.eof(),
+                            TransferResponse::Streaming { .. } => {
+                                unreachable!("streaming peer close branched above")
+                            }
+                        });
                     match decoded {
                         Some(Ok(Some(response))) => {
                             self.finish(slot, Completion::Completed(response), &mut completions)
@@ -2656,11 +3359,64 @@ impl Backend for NativeHttpBackend {
             },
             0,
             ErrorKind::InvalidRequest,
+            PendingResponse::Buffered,
         ) {
             Ok(pending) => pending,
-            Err(error) => return Some(Completion::Failed(error)),
+            Err((error, _response)) => return Some(Completion::Failed(error)),
         };
         self.start_pending(pending)
+    }
+
+    fn submit_stream(
+        &mut self,
+        id: RequestId,
+        request: StreamRequest,
+        mut response: ResponseSink,
+        accepted_at: Instant,
+    ) {
+        let (request, upload) = request.into_parts();
+        if let Some(mut upload) = upload {
+            upload.close();
+            response.fail(Error::new(
+                ErrorKind::Unsupported,
+                "native streamed uploads are not enabled by the buffered-upload streaming slice",
+            ));
+            return;
+        }
+        let options = request.options();
+        let deadlines = PendingDeadlines {
+            connect: options
+                .connect_timeout
+                .and_then(|timeout| accepted_at.checked_add(timeout)),
+            total: options
+                .total_timeout
+                .and_then(|timeout| accepted_at.checked_add(timeout)),
+            inactivity: options
+                .inactivity_timeout
+                .and_then(|timeout| accepted_at.checked_add(timeout)),
+        };
+        let pending = match self.make_pending(
+            id,
+            request,
+            deadlines,
+            0,
+            ErrorKind::InvalidRequest,
+            PendingResponse::Streaming(response),
+        ) {
+            Ok(pending) => pending,
+            Err((error, PendingResponse::Streaming(mut response))) => {
+                response.fail(error);
+                return;
+            }
+            Err((_error, PendingResponse::Buffered)) => {
+                unreachable!("stream submission changed pending response kind")
+            }
+        };
+        let completion = self.start_pending(pending);
+        debug_assert!(
+            completion.is_none(),
+            "streaming pending failures must commit directly into ResponseSink"
+        );
     }
 
     fn cancel(&mut self, id: RequestId) {
@@ -2693,6 +3449,7 @@ impl Backend for NativeHttpBackend {
         completions.extend(self.process_resolver_results()?);
         completions.extend(self.expire_resolves()?);
         completions.extend(self.dispatch_waiting());
+        self.resume_streams(&mut completions)?;
         let poll_deadline = if completions.is_empty() {
             deadline
         } else {
@@ -2735,6 +3492,10 @@ impl Backend for NativeHttpBackend {
 
     fn wants_poll_without_requests(&self) -> bool {
         self.idle_count != 0
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
     }
 }
 
@@ -3176,7 +3937,7 @@ mod tests {
             slot,
             HttpTransfer {
                 request_id,
-                decoder: ResponseDecoder::new(false, LIMITS),
+                response: TransferResponse::Buffered(ResponseDecoder::new(false, LIMITS)),
                 body_bearing: true,
                 response_started: false,
                 connected: true,
@@ -3185,6 +3946,7 @@ mod tests {
                 total_deadline: Some(deadline),
                 inactivity_timeout: Some(Duration::from_secs(1)),
                 inactivity_deadline: Some(deadline),
+                inactivity_paused: false,
                 key: connection_key,
                 request_permits_reuse: true,
                 request_write_drained: false,
@@ -4977,6 +5739,275 @@ mod tests {
     }
 
     #[test]
+    fn public_stream_reader_drains_a_backpressured_native_cleartext_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("stream fixture must bind");
+        let address = listener.local_addr().expect("stream fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stream fixture must accept");
+            read_request_head(&mut stream, "stream request head");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcdefghij")
+                .expect("stream response must write");
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_stream_queue_bytes_per_request(3)
+            .with_max_stream_queued_bytes(3);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("native streaming Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("http://{address}/stream"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("stream request must build"),
+            )
+            .expect("native stream request must submit");
+        assert_eq!(
+            reader
+                .wait_head()
+                .expect("stream head must arrive")
+                .status(),
+            200
+        );
+        let mut received = Vec::new();
+        let mut hole = [0_u8; 2];
+        while let Some(read) = reader.read(&mut hole).expect("stream body must read") {
+            received.extend_from_slice(&hole[..read]);
+        }
+        assert_eq!(received, b"abcdefghij");
+        engine
+            .shutdown()
+            .expect("native streaming Engine must stop");
+        server.join().expect("stream fixture must join");
+    }
+
+    #[test]
+    fn streaming_consumer_backpressure_pauses_inactivity_but_not_delivery() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("pressure fixture must bind");
+        let address = listener.local_addr().expect("pressure fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("pressure fixture must accept");
+            read_request_head(&mut stream, "pressure request head");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef")
+                .expect("pressure response must write");
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_stream_queue_bytes_per_request(3)
+            .with_max_stream_queued_bytes(3);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("pressure Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("http://{address}/pressure"))
+                    .inactivity_timeout(Duration::from_millis(75))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("pressure request must build"),
+            )
+            .expect("pressure request must submit");
+        reader.wait_head().expect("pressure head must arrive");
+        thread::sleep(Duration::from_millis(225));
+        let response = reader
+            .collect()
+            .expect("consumer backpressure must suppress inactivity timeout");
+        assert_eq!(response.body(), b"abcdef");
+        engine.shutdown().expect("pressure Engine must stop");
+        server.join().expect("pressure fixture must join");
+    }
+
+    #[test]
+    fn streaming_consumer_backpressure_does_not_pause_total_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("total fixture must bind");
+        let address = listener.local_addr().expect("total fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("total fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("total fixture timeout must configure");
+            read_request_head(&mut stream, "total request head");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc")
+                .expect("total partial response must write");
+            assert_socket_closed(&mut stream, &mut [0_u8; 1], "stream total timeout");
+        });
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(3);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("total Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("http://{address}/total"))
+                    .total_timeout(Duration::from_millis(100))
+                    .build()
+                    .expect("total request must build"),
+            )
+            .expect("total request must submit");
+        reader.wait_head().expect("total head must arrive");
+        thread::sleep(Duration::from_millis(200));
+        let Err(crate::StreamError::Failed(error)) = reader.try_read(&mut [0_u8; 1]) else {
+            panic!("total timeout must fail a backpressured stream")
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        engine.shutdown().expect("total Engine must stop");
+        server.join().expect("total fixture must join");
+    }
+
+    #[test]
+    fn buffered_stream_request_discards_redirect_body_and_publishes_only_final_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("stream redirect must bind");
+        let address = listener.local_addr().expect("stream redirect address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stream redirect must accept");
+            read_request_head(&mut stream, "stream redirect first request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nContent-Length: 3\r\nLocation: /final\r\n\r\nold",
+                )
+                .expect("stream redirect response must write");
+            read_request_head(&mut stream, "stream redirect final request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .expect("stream redirect final response must write");
+        });
+        let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(2);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("stream redirect Engine must construct");
+        let reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("http://{address}/first"))
+                    .redirect_limit(2)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("stream redirect request must build"),
+            )
+            .expect("stream redirect request must submit");
+        let response = reader.collect().expect("stream redirect must complete");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"new");
+        engine.shutdown().expect("stream redirect Engine must stop");
+        server.join().expect("stream redirect fixture must join");
+    }
+
+    #[test]
+    fn public_stream_no_body_is_immediate_eof_and_decode_error_keeps_its_stage() {
+        for malformed in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("stream rule fixture must bind");
+            let address = listener.local_addr().expect("stream rule fixture address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("stream rule fixture must accept");
+                read_request_head(&mut stream, "stream rule request");
+                let response = if malformed {
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n".as_slice()
+                } else {
+                    b"HTTP/1.1 204 No Content\r\n\r\n".as_slice()
+                };
+                stream
+                    .write_all(response)
+                    .expect("stream rule response must write");
+            });
+            let config = EngineConfig::spawned();
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("stream rule Engine must construct");
+            let mut reader = engine
+                .client()
+                .submit_stream(
+                    StreamRequest::get(format!("http://{address}/rule"))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("stream rule request must build"),
+                )
+                .expect("stream rule request must submit");
+            if malformed {
+                assert_eq!(
+                    reader
+                        .wait_head()
+                        .expect("malformed response head must publish")
+                        .status(),
+                    200
+                );
+                let Err(crate::StreamError::Failed(error)) = reader.read(&mut [0_u8; 1]) else {
+                    panic!("malformed streamed body must fail the reader")
+                };
+                assert_eq!(error.kind(), ErrorKind::Transport);
+                assert_eq!(error.transport_stage(), Some(TransportStage::Http));
+            } else {
+                assert_eq!(
+                    reader.wait_head().expect("204 head must publish").status(),
+                    204
+                );
+                assert!(reader.is_eof());
+                assert_eq!(reader.read(&mut [0_u8; 1]).expect("204 must be EOF"), None);
+            }
+            engine.shutdown().expect("stream rule Engine must stop");
+            server.join().expect("stream rule fixture must join");
+        }
+    }
+
+    #[test]
+    fn stream_cancel_and_engine_shutdown_close_stalled_sockets_and_readers() {
+        for shutdown in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("cancel fixture must bind");
+            let address = listener.local_addr().expect("cancel fixture address");
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("cancel fixture must accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("cancel fixture timeout must configure");
+                read_request_head(&mut stream, "cancel request head");
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc")
+                    .expect("cancel partial response must write");
+                let mut byte = [0_u8; 1];
+                assert_socket_closed(&mut stream, &mut byte, "stream cancellation");
+            });
+            let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(3);
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("cancel Engine must construct");
+            let mut reader = engine
+                .client()
+                .submit_stream(
+                    StreamRequest::get(format!("http://{address}/cancel"))
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("cancel request must build"),
+                )
+                .expect("cancel request must submit");
+            reader.wait_head().expect("cancel head must arrive");
+            if shutdown {
+                engine.shutdown().expect("streaming Engine must shut down");
+            } else {
+                reader
+                    .handle()
+                    .cancel()
+                    .expect("stream request must cancel");
+                engine.shutdown().expect("cancel Engine must stop");
+            }
+            assert!(matches!(
+                reader.try_read(&mut [0_u8; 1]),
+                Err(crate::StreamError::Cancelled)
+            ));
+            server.join().expect("cancel fixture must join");
+        }
+    }
+
+    #[test]
     fn manual_native_http_engine_uses_the_same_canonical_completion() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
         let address = listener.local_addr().expect("HTTP fixture address");
@@ -5019,6 +6050,68 @@ mod tests {
             .shutdown()
             .expect("manual native HTTP Engine must stop");
         server.join().expect("HTTP fixture must join");
+    }
+
+    #[test]
+    fn manual_native_stream_reader_progresses_only_when_the_owner_drives() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("manual stream fixture must bind");
+        let address = listener
+            .local_addr()
+            .expect("manual stream fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("manual stream fixture must accept");
+            read_request_head(&mut stream, "manual stream request head");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nmanual")
+                .expect("manual stream response must write");
+        });
+
+        let config = EngineConfig::manual().with_max_stream_queue_bytes_per_request(3);
+        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
+            .expect("manual streaming backend must construct");
+        let mut engine = Engine::with_backend(config, Box::new(backend))
+            .expect("manual streaming Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("http://{address}/manual-stream"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("manual stream request must build"),
+            )
+            .expect("manual stream request must submit");
+        assert!(
+            reader
+                .try_head()
+                .expect("passive head probe must work")
+                .is_none()
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut received = Vec::new();
+        let mut buffer = [0_u8; 2];
+        loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(10)).min(deadline))
+                .expect("manual stream drive must succeed");
+            match reader
+                .try_read(&mut buffer)
+                .expect("manual passive read must succeed")
+            {
+                crate::StreamRead::Pending => {
+                    assert!(Instant::now() < deadline, "manual stream timed out")
+                }
+                crate::StreamRead::Data(read) => received.extend_from_slice(&buffer[..read]),
+                crate::StreamRead::Eof => break,
+            }
+        }
+        assert_eq!(received, b"manual");
+        engine
+            .shutdown()
+            .expect("manual streaming Engine must stop");
+        server.join().expect("manual stream fixture must join");
     }
 
     #[test]

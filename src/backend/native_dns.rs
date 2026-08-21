@@ -1245,8 +1245,8 @@ mod tests {
     use crate::backend::native::NativeReactor;
     use crate::backend::native_tls::TLS_FLIGHT_LIMIT;
     use crate::{
-        Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, TlsVerification,
-        TransportStage,
+        Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, StreamRequest,
+        TlsVerification, TransportStage,
     };
 
     struct DnsFixture {
@@ -2062,6 +2062,43 @@ mod tests {
     }
 
     #[test]
+    fn public_stream_cancel_during_dns_is_terminal_and_engine_joins_resolver() {
+        let nameserver = StdUdpSocket::bind("127.0.0.1:0").expect("stream DNS barrier must bind");
+        nameserver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("stream DNS barrier timeout must configure");
+        let address = nameserver.local_addr().expect("stream DNS barrier address");
+        let engine =
+            crate::testing::native_http_engine_with_nameserver(EngineConfig::spawned(), address)
+                .expect("native stream DNS Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get("http://cancel-stream-dns.test/proof")
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("stream DNS cancellation request must build"),
+            )
+            .expect("stream DNS cancellation request must submit");
+        let mut query = [0_u8; DNS_PACKET_LIMIT];
+        let received = nameserver
+            .recv(&mut query)
+            .expect("stream DNS barrier must observe a query");
+        assert!(Message::from_vec(&query[..received]).is_ok());
+        reader
+            .handle()
+            .cancel()
+            .expect("stream DNS request must cancel");
+        assert!(matches!(
+            reader.try_head(),
+            Err(crate::StreamError::Cancelled)
+        ));
+        let started = Instant::now();
+        engine.shutdown().expect("stream DNS Engine must shut down");
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
     fn resolved_https_verifies_hostname_and_preserves_explicit_bypass() {
         let key = KeyPair::generate().expect("HTTPS fixture key must generate");
         let params = CertificateParams::new(vec!["resolved.test".to_owned()])
@@ -2161,6 +2198,89 @@ mod tests {
     }
 
     #[test]
+    fn public_stream_reader_drains_bounded_tls_plaintext_through_dns_and_https() {
+        let key = KeyPair::generate().expect("stream HTTPS key must generate");
+        let params = CertificateParams::new(vec!["stream.test".to_owned()])
+            .expect("stream HTTPS parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("stream HTTPS certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("stream HTTPS versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("stream HTTPS identity must configure");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("stream HTTPS fixture must bind");
+        let address = listener.local_addr().expect("stream HTTPS fixture address");
+        let expected = vec![b't'; 64 * 1024];
+        let server_body = expected.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("stream HTTPS fixture must accept");
+            let connection = ServerConnection::new(Arc::new(server_config))
+                .expect("stream HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = tls
+                    .read(&mut buffer)
+                    .expect("stream HTTPS request must read");
+                assert_ne!(read, 0, "client closed before stream HTTPS request");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            tls.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    server_body.len()
+                )
+                .as_bytes(),
+            )
+            .expect("stream HTTPS response head must write");
+            tls.write_all(&server_body)
+                .expect("stream HTTPS response body must write");
+            tls.flush().expect("stream HTTPS response must flush");
+        });
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let config = EngineConfig::spawned()
+            .with_max_stream_queue_bytes_per_request(257)
+            .with_max_stream_queued_bytes(257);
+        let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
+            config,
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+        )
+        .expect("stream HTTPS Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("https://stream.test:{}/", address.port()))
+                    .total_timeout(Duration::from_secs(3))
+                    .build()
+                    .expect("stream HTTPS request must build"),
+            )
+            .expect("stream HTTPS request must submit");
+        assert_eq!(
+            reader
+                .wait_head()
+                .expect("stream HTTPS head must arrive")
+                .status(),
+            200
+        );
+        let mut received = Vec::new();
+        let mut hole = [0_u8; 101];
+        while let Some(read) = reader.read(&mut hole).expect("stream HTTPS body must read") {
+            received.extend_from_slice(&hole[..read]);
+        }
+        assert_eq!(received, expected);
+        engine.shutdown().expect("stream HTTPS Engine must stop");
+        server.join().expect("stream HTTPS fixture must join");
+    }
+
+    #[test]
     fn public_cancel_during_tls_handshake_closes_peer_and_joins() {
         let key = KeyPair::generate().expect("TLS stall key must generate");
         let params = CertificateParams::new(vec!["stall.test".to_owned()])
@@ -2172,28 +2292,38 @@ mod tests {
         let address = listener.local_addr().expect("TLS stall address");
         let (hello_tx, hello_rx) = test_channel::channel();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("TLS stall must accept");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("TLS stall read timeout");
-            let mut buffer = [0_u8; 4096];
-            let read = stream
-                .read(&mut buffer)
-                .expect("TLS stall must read ClientHello");
-            assert_ne!(read, 0, "TLS client closed before ClientHello");
-            hello_tx.send(()).expect("TLS stall barrier must signal");
-            let started = Instant::now();
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => return started.elapsed(),
-                    Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                        panic!("TLS peer was not closed after cancellation")
+            let mut closes = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("TLS stall must accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("TLS stall read timeout");
+                let mut buffer = [0_u8; 4096];
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("TLS stall must read ClientHello");
+                assert_ne!(read, 0, "TLS client closed before ClientHello");
+                hello_tx.send(()).expect("TLS stall barrier must signal");
+                let started = Instant::now();
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => {
+                            closes.push(started.elapsed());
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                            panic!("TLS peer was not closed after cancellation")
+                        }
+                        Err(_) => {
+                            closes.push(started.elapsed());
+                            break;
+                        }
                     }
-                    Err(_) => return started.elapsed(),
                 }
             }
+            closes
         });
         let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
         let engine = crate::testing::native_https_engine_with_nameserver_and_test_root(
@@ -2219,8 +2349,34 @@ mod tests {
             .cancel()
             .expect("TLS handshake request must cancel");
         assert!(matches!(pending.wait(), Completion::Cancelled));
-        let peer_close = server.join().expect("TLS stall must join");
-        assert!(peer_close < Duration::from_millis(500));
+
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("https://stall.test:{}/stream", address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("TLS stream stall request must build"),
+            )
+            .expect("TLS stream stall request must submit");
+        hello_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("TLS stream stall must observe ClientHello");
+        reader
+            .handle()
+            .cancel()
+            .expect("TLS stream handshake request must cancel");
+        assert!(matches!(
+            reader.try_head(),
+            Err(crate::StreamError::Cancelled)
+        ));
+
+        let peer_closes = server.join().expect("TLS stall must join");
+        assert!(
+            peer_closes
+                .into_iter()
+                .all(|elapsed| elapsed < Duration::from_millis(500))
+        );
         let started = Instant::now();
         engine.shutdown().expect("TLS stall Engine must stop");
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -2373,22 +2529,28 @@ mod tests {
             let connection = ServerConnection::new(Arc::new(server_config))
                 .expect("manual HTTPS server state must build");
             let mut tls = StreamOwned::new(connection, stream);
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = tls
-                    .read(&mut buffer)
-                    .expect("manual HTTPS request must read");
-                assert_ne!(read, 0, "client closed before manual HTTPS request");
-                request.extend_from_slice(&buffer[..read]);
+            for body in [b"manual".as_slice(), b"stream".as_slice()] {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = tls
+                        .read(&mut buffer)
+                        .expect("manual HTTPS request must read");
+                    assert_ne!(read, 0, "client closed before manual HTTPS request");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                tls.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+                )
+                .expect("manual HTTPS response head must write");
+                tls.write_all(body)
+                    .expect("manual HTTPS response body must write");
+                tls.flush().expect("manual HTTPS response must flush");
             }
-            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nmanual")
-                .expect("manual HTTPS response must write");
-            tls.flush().expect("manual HTTPS response must flush");
         });
         let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
         let mut engine = crate::testing::native_https_manual_engine_with_nameserver_and_test_root(
-            EngineConfig::manual(),
+            EngineConfig::manual().with_max_stream_queue_bytes_per_request(3),
             dns.address,
             certificate_der.as_ref().to_vec(),
         )
@@ -2409,6 +2571,35 @@ mod tests {
             panic!("manual native HTTPS request did not complete");
         };
         assert_eq!(response.body(), b"manual");
+
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get(format!("https://manual.test:{}/stream", address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("manual HTTPS stream request must build"),
+            )
+            .expect("manual HTTPS stream request must submit");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut streamed = Vec::new();
+        let mut buffer = [0_u8; 2];
+        loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(10)).min(deadline))
+                .expect("manual HTTPS stream drive must succeed");
+            match reader
+                .try_read(&mut buffer)
+                .expect("manual HTTPS stream read must succeed")
+            {
+                crate::StreamRead::Pending => {
+                    assert!(Instant::now() < deadline, "manual HTTPS stream timed out")
+                }
+                crate::StreamRead::Data(read) => streamed.extend_from_slice(&buffer[..read]),
+                crate::StreamRead::Eof => break,
+            }
+        }
+        assert_eq!(streamed, b"stream");
         engine
             .shutdown()
             .expect("manual native HTTPS Engine must stop");

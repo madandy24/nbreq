@@ -64,17 +64,14 @@ until it returns; blocking-only requests do not consume callback capacity.
 
 ## Native backend status
 
-The private `native` feature now builds the HTTP-independent nonblocking TCP foundation using
-`mio` for portable OS readiness and notification. `mio` is not an executor and NBReq does not
-adopt Tokio or any async runtime. NBReq owns socket state, generation-safe identities, bounded byte
-queues, deadlines, cancellation, bidirectional half-close, a bounded wake-failure safety poll, and
-shutdown. Windows and Ubuntu 20.04 raw-transfer and Engine-lifecycle fixtures pass, completing
-WP6. WP7 now adds a private cleartext HTTP/1.1 proving backend with pinned `httparse` 1.10.1,
-bounded incremental response framing, all three timeout clocks, and spawned/manual Engine tests.
-The exact source passes the shared adversarial suite and extended reset soak on Windows and Ubuntu
-20.04, completing WP7. It remains literal-IP, one-request-per-connection test support until WP8
-adds DNS/TLS and later parity work proves consumer selection. Enabling `native` does not make
-`Engine::new` select it.
+The private `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
+readiness and notification, `httparse` for response-head parsing, Hickory's wire types for an
+Engine-owned DNS service, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
+async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
+joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
+and Ubuntu 20.04 prove the accepted buffered path; the buffered-upload response-streaming subset
+currently passes its complete Windows gate. Fixed/chunked `UploadBody` pumping and the matching
+Ubuntu seam remain in progress. Enabling `native` does not make `Engine::new` select it.
 
 ## Project documents
 

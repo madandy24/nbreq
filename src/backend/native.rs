@@ -552,6 +552,10 @@ impl NativeReactor {
 
     fn read_ready(&mut self, id: SlotId, output: &mut Vec<NativeEvent>) {
         let mut buffer = vec![0_u8; READ_CHUNK];
+        let bounded = self
+            .connection_mut(id)
+            .is_some_and(|connection| connection.read_allowance.is_some());
+        let mut bounded_data = Vec::new();
         loop {
             let allowed = self
                 .connection_mut(id)
@@ -559,6 +563,9 @@ impl NativeReactor {
                 .unwrap_or(READ_CHUNK)
                 .min(READ_CHUNK);
             if allowed == 0 {
+                if !bounded_data.is_empty() {
+                    output.push(NativeEvent::Data(id, bounded_data));
+                }
                 return;
             }
             let read_result = match self.connection_mut(id) {
@@ -571,6 +578,9 @@ impl NativeReactor {
                 Ok(0) => {
                     if let Some(connection) = self.connection_mut(id) {
                         connection.peer_read_closed = true;
+                    }
+                    if !bounded_data.is_empty() {
+                        output.push(NativeEvent::Data(id, bounded_data));
                     }
                     output.push(NativeEvent::PeerClosed(id));
                     return;
@@ -585,6 +595,9 @@ impl NativeReactor {
                     });
                     if over_limit {
                         self.remove(id);
+                        if !bounded_data.is_empty() {
+                            output.push(NativeEvent::Data(id, bounded_data));
+                        }
                         output.push(NativeEvent::Failed(
                             id,
                             NativeFailure {
@@ -594,11 +607,23 @@ impl NativeReactor {
                         ));
                         return;
                     }
-                    output.push(NativeEvent::Data(id, buffer[..read].to_vec()));
+                    if bounded {
+                        bounded_data.extend_from_slice(&buffer[..read]);
+                    } else {
+                        output.push(NativeEvent::Data(id, buffer[..read].to_vec()));
+                    }
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if !bounded_data.is_empty() {
+                        output.push(NativeEvent::Data(id, bounded_data));
+                    }
+                    return;
+                }
                 Err(error) => {
                     self.remove(id);
+                    if !bounded_data.is_empty() {
+                        output.push(NativeEvent::Data(id, bounded_data));
+                    }
                     output.push(NativeEvent::Failed(
                         id,
                         NativeFailure::io(NativeFailureKind::Read, "read", &error),
