@@ -260,6 +260,25 @@ and are not evidence for this native-only slice; no curl code changed. Next is n
 the stream command, direct incremental head/body delivery, response-window read pausing/splitting,
 and fixed/chunked upload pumping.
 
+## WP9.4e stream panic-terminal ordering correction — Windows slice
+
+Review found that the first WP9.4d panic claim was too broad. The spawned run-loop originally owned
+its `ReactorCore` inside the unwind boundary. A panic therefore dropped the backend and every live
+`ResponseSink` before `contain_reactor_panic` could call `fail_all`; sink Drop won with the generic
+"streaming response producer ended" Internal error rather than the canonical reactor-panic error.
+
+The reactor owner now remains outside the caught closure. Factory creation is contained as its own
+phase, then the created reactor is likewise retained outside the run-loop boundary. On run-loop
+panic the registry commits `NBReq reactor thread panicked` to buffered and streaming requests while
+backend-held sinks are still alive; their later Drop loses the already-set terminal race. A backend
+that stores the unique sink and panics during `submit_stream` proves the reader observes that exact
+canonical error and shutdown keeps it observable. The existing buffered panic test remains green.
+The public StreamRequest rustdoc now points to the already-landed `Client::submit_stream` method.
+
+The corrected Windows gate passes 145 native/test-support unit tests, 4 adversarial tests, 4
+public-contract tests, and 6 doctests; 62 default unit tests, strict all-feature clippy, documentation,
+and formatting pass. Native wire streaming remains unsupported and is still the next slice.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

@@ -1058,8 +1058,8 @@ pub(crate) fn response_pair(
 /// A request whose response body will be consumed through the streaming API.
 ///
 /// A StreamRequest can carry either replayable buffered bytes or one unique streamed upload. It is
-/// intentionally not cloneable. Submission and `ResponseReader` arrive in the next WP9.4 slice;
-/// constructing the type does not make buffered Client methods accept it.
+/// intentionally not cloneable. Submit it with [`Client::submit_stream`](crate::Client::submit_stream);
+/// buffered Client methods deliberately continue to accept only [`Request`].
 ///
 /// ```compile_fail
 /// fn require_sync<T: Sync>() {}

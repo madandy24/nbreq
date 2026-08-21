@@ -583,7 +583,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::backend::BackendCompletion;
-    use crate::{CallbackDispatch, Request, RequestId};
+    use crate::stream::ResponseSink;
+    use crate::{CallbackDispatch, Request, RequestId, StreamError, StreamRequest};
 
     use super::*;
 
@@ -625,6 +626,10 @@ mod tests {
 
     struct PanicOnSubmitBackend;
 
+    struct PanicOnStreamSubmitBackend {
+        response: Option<ResponseSink>,
+    }
+
     impl Backend for PanicOnSubmitBackend {
         fn submit(
             &mut self,
@@ -643,6 +648,42 @@ mod tests {
 
         fn shutdown(&mut self) -> Result<(), ShutdownError> {
             Ok(())
+        }
+    }
+
+    impl Backend for PanicOnStreamSubmitBackend {
+        fn submit(
+            &mut self,
+            _id: RequestId,
+            _request: Request,
+            _accepted_at: Instant,
+        ) -> Option<Completion> {
+            None
+        }
+
+        fn submit_stream(
+            &mut self,
+            _id: RequestId,
+            _request: StreamRequest,
+            response: ResponseSink,
+            _accepted_at: Instant,
+        ) {
+            self.response = Some(response);
+            panic!("deliberate spawned stream reactor panic");
+        }
+
+        fn cancel(&mut self, _id: RequestId) {}
+
+        fn poll(&mut self, _deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+            Ok(Vec::new())
+        }
+
+        fn shutdown(&mut self) -> Result<(), ShutdownError> {
+            Ok(())
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
         }
     }
 
@@ -768,6 +809,35 @@ mod tests {
         let shutdown = engine
             .shutdown()
             .expect_err("the contained reactor panic must remain observable at shutdown");
+        assert_eq!(shutdown.error().kind(), ErrorKind::Internal);
+    }
+
+    #[test]
+    fn spawned_reactor_panic_beats_backend_sink_drop_for_stream_readers() {
+        let engine = Engine::with_backend(
+            EngineConfig::spawned(),
+            Box::new(PanicOnStreamSubmitBackend { response: None }),
+        )
+        .expect("Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                StreamRequest::get("http://example.test/")
+                    .build()
+                    .expect("stream request must build"),
+            )
+            .expect("stream request must be accepted before the reactor panic");
+
+        match reader.wait_head() {
+            Err(StreamError::Failed(error)) => {
+                assert_eq!(error.kind(), ErrorKind::Internal);
+                assert_eq!(error.message(), "NBReq reactor thread panicked");
+            }
+            other => panic!("reactor panic did not win the stream terminal race: {other:?}"),
+        }
+        let shutdown = engine
+            .shutdown()
+            .expect_err("the contained stream reactor panic must remain observable at shutdown");
         assert_eq!(shutdown.error().kind(), ErrorKind::Internal);
     }
 

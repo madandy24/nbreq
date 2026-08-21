@@ -182,16 +182,16 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
 #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
 pub(crate) fn spawned_main<B: Backend + ?Sized>(
     shared: Arc<Shared>,
-    reactor: ReactorCore<B>,
+    mut reactor: ReactorCore<B>,
 ) -> Result<(), ShutdownError> {
-    contain_reactor_panic(Arc::clone(&shared), move || {
-        spawned_main_inner(shared, reactor)
+    contain_reactor_panic(Arc::clone(&shared), || {
+        spawned_main_inner(shared, &mut reactor)
     })
 }
 
 fn spawned_main_inner<B: Backend + ?Sized>(
     shared: Arc<Shared>,
-    mut reactor: ReactorCore<B>,
+    reactor: &mut ReactorCore<B>,
 ) -> Result<(), ShutdownError> {
     let mut seen_generation = 0;
     loop {
@@ -226,13 +226,22 @@ pub(crate) fn spawned_main_factory(
     shared: Arc<Shared>,
     factory: Box<dyn BackendFactory>,
 ) -> Result<(), ShutdownError> {
-    contain_reactor_panic(Arc::clone(&shared), move || match factory.create(&shared) {
-        Ok(backend) => spawned_main_inner(shared, ReactorCore::new(backend)),
+    let mut backend = None;
+    contain_reactor_panic(Arc::clone(&shared), || match factory.create(&shared) {
+        Ok(created) => {
+            backend = Some(created);
+            Ok(())
+        }
         Err(error) => {
             shared.fail_all(error.clone());
             shared.mark_stopped();
             Err(ShutdownError::new(error))
         }
+    })?;
+    let mut reactor =
+        ReactorCore::new(backend.expect("successful backend factory did not return its backend"));
+    contain_reactor_panic(Arc::clone(&shared), || {
+        spawned_main_inner(shared, &mut reactor)
     })
 }
 
