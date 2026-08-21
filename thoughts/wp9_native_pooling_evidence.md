@@ -279,6 +279,33 @@ The corrected Windows gate passes 145 native/test-support unit tests, 4 adversar
 public-contract tests, and 6 doctests; 62 default unit tests, strict all-feature clippy, documentation,
 and formatting pass. Native wire streaming remains unsupported and is still the next slice.
 
+## WP9.4f isolated incremental streaming decoder — Windows slice
+
+The native HTTP module now has a distinct streaming decoder which owns `ResponseSink` directly; it
+does not construct a buffered `Response` or adapt `Completion`. Native backend capability remains
+off while this decoder is isolated from sockets. Informational heads stay internal. Parsing stops
+at the exact final-head boundary and returns that immutable head to the owner for redirect policy
+before publication or body consumption. A delivered no-body head commits EOF immediately.
+
+Body delivery takes a snapshot of `ResponseSink::available_capacity`, consumes no more body bytes
+than that current hole, and pushes one bounded chunk. It may continue across framing metadata while
+full, but stops before the next fixed, close-delimited, or chunk-data byte. Tests force a three-byte
+window and repeatedly open only two-byte reader holes, proving the decoder splits progress rather
+than waiting for an entire input chunk or exceeding the queue. Exact consumed counts retain bytes
+after message completion for contamination checks.
+
+Redirect heads can instead be kept private. Their bodies are framing-validated and discarded under
+the ordinary response total limit; on exact completion the decoder returns the same unique sink for
+the next hop. A 302-to-200 fixture proves the reader sees only the final head/body. Informational,
+fixed, chunked, trailer, no-body, oversize-before-publication, and terminal failure rules share the
+existing parser policy and have direct reader-state assertions.
+
+The Windows gate passes 149 native/test-support unit tests, 4 adversarial tests, 4 public-contract
+tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy, documentation, and
+formatting pass. Next is socket-owner integration: per-slot read allowance must prevent a reactor
+readiness batch from outrunning the reader window, while TLS may retain only its documented one-record
+allowance. Native must remain capability-off until that path and cancellation are end-to-end proven.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

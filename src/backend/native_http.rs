@@ -17,10 +17,11 @@ use super::native_tls::{
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::registry::Shared;
+use crate::stream::{ResponsePushError, ResponseSink};
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
-    Response, ShutdownError, TimeoutKind, TransportStage,
+    Response, ResponseHead, ShutdownError, TimeoutKind, TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -593,6 +594,420 @@ impl ResponseDecoder {
             std::mem::take(&mut self.body),
         ))
     }
+}
+
+#[allow(dead_code)] // Connected to NativeHttpBackend after its isolated framing gate.
+struct StreamingResponseDecoder {
+    limits: HttpLimits,
+    response_to_head: bool,
+    state: DecodeState,
+    scratch: Vec<u8>,
+    pending_head: Option<ResponseHead>,
+    output: StreamOutput,
+    response: Option<ResponseSink>,
+    body_bytes: usize,
+    informational_responses: u8,
+    framing_bytes: usize,
+    permits_reuse: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamOutput {
+    AwaitHead,
+    Deliver,
+    Discard,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum StreamDecodeProgress {
+    Head {
+        head: ResponseHead,
+        consumed: usize,
+    },
+    Body {
+        consumed: usize,
+        blocked: bool,
+    },
+    Complete {
+        consumed: usize,
+        permits_reuse: bool,
+        delivered: bool,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StreamHeadDecision {
+    complete: bool,
+    permits_reuse: bool,
+}
+
+#[allow(dead_code)]
+impl StreamingResponseDecoder {
+    fn new(response_to_head: bool, limits: HttpLimits, response: ResponseSink) -> Self {
+        Self {
+            limits,
+            response_to_head,
+            state: DecodeState::Head,
+            scratch: Vec::new(),
+            pending_head: None,
+            output: StreamOutput::AwaitHead,
+            response: Some(response),
+            body_bytes: 0,
+            informational_responses: 0,
+            framing_bytes: 0,
+            permits_reuse: false,
+        }
+    }
+
+    fn ingest(&mut self, bytes: &[u8]) -> Result<StreamDecodeProgress, Error> {
+        if self.state == DecodeState::Complete {
+            return Err(Error::transport(
+                TransportStage::Http,
+                "native streaming decoder received bytes after completion",
+            ));
+        }
+        if self.pending_head.is_some() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native streaming decoder advanced before its final head was decided",
+            ));
+        }
+
+        let available = match self.output {
+            StreamOutput::Deliver => self
+                .response
+                .as_ref()
+                .map_or(0, ResponseSink::available_capacity),
+            StreamOutput::AwaitHead | StreamOutput::Discard => usize::MAX,
+        };
+        let mut body = Vec::new();
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            if self.output == StreamOutput::Deliver
+                && self.next_byte_is_body()
+                && body.len() == available
+            {
+                self.flush_body(body)?;
+                return Ok(StreamDecodeProgress::Body {
+                    consumed: index,
+                    blocked: true,
+                });
+            }
+            match self.consume_stream_byte(byte, &mut body)? {
+                StreamByteProgress::Continue => {}
+                StreamByteProgress::Head(head) => {
+                    self.flush_body(body)?;
+                    return Ok(StreamDecodeProgress::Head {
+                        head,
+                        consumed: index + 1,
+                    });
+                }
+                StreamByteProgress::Complete => {
+                    self.flush_body(body)?;
+                    let delivered = self.output == StreamOutput::Deliver;
+                    if delivered {
+                        self.response_mut()?.complete();
+                    }
+                    return Ok(StreamDecodeProgress::Complete {
+                        consumed: index + 1,
+                        permits_reuse: self.permits_reuse,
+                        delivered,
+                    });
+                }
+            }
+        }
+        self.flush_body(body)?;
+        Ok(StreamDecodeProgress::Body {
+            consumed: bytes.len(),
+            blocked: false,
+        })
+    }
+
+    fn decide_head(&mut self, deliver: bool) -> Result<StreamHeadDecision, Error> {
+        let head = self.pending_head.take().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                "native streaming decoder has no final head to decide",
+            )
+        })?;
+        self.output = if deliver {
+            StreamOutput::Deliver
+        } else {
+            StreamOutput::Discard
+        };
+        let complete = matches!(self.state, DecodeState::Complete);
+        if deliver && !self.response_mut()?.publish_head(head, complete) {
+            return Err(Error::transport(
+                TransportStage::Receive,
+                "the streaming response reader closed before head publication",
+            ));
+        }
+        Ok(StreamHeadDecision {
+            complete,
+            permits_reuse: self.permits_reuse,
+        })
+    }
+
+    fn eof(&mut self) -> Result<Option<(bool, bool)>, Error> {
+        if self.pending_head.is_some() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native streaming response reached EOF before its final head was decided",
+            ));
+        }
+        match self.state {
+            DecodeState::CloseDelimited => {
+                self.state = DecodeState::Complete;
+                let delivered = self.output == StreamOutput::Deliver;
+                if delivered {
+                    self.response_mut()?.complete();
+                }
+                Ok(Some((self.permits_reuse, delivered)))
+            }
+            DecodeState::Complete => Ok(None),
+            DecodeState::Head => Err(Error::transport(
+                TransportStage::Receive,
+                "the peer closed before a complete HTTP response head arrived",
+            )),
+            DecodeState::Fixed { .. } => Err(Error::transport(
+                TransportStage::Receive,
+                "the peer closed before the Content-Length body completed",
+            )),
+            DecodeState::ChunkSize
+            | DecodeState::ChunkData { .. }
+            | DecodeState::ChunkEnd { .. }
+            | DecodeState::Trailers => Err(http_error(
+                "the peer closed before the chunked response completed",
+            )),
+        }
+    }
+
+    fn fail(&mut self, error: Error) {
+        if let Some(response) = &mut self.response {
+            response.fail(error);
+        }
+    }
+
+    fn into_response(mut self) -> Result<ResponseSink, Error> {
+        if self.state != DecodeState::Complete || self.output != StreamOutput::Discard {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "only a completely discarded streaming response can transfer its sink",
+            ));
+        }
+        self.response.take().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                "native streaming decoder response sink was already taken",
+            )
+        })
+    }
+
+    fn next_byte_is_body(&self) -> bool {
+        matches!(
+            self.state,
+            DecodeState::Fixed { .. } | DecodeState::CloseDelimited | DecodeState::ChunkData { .. }
+        )
+    }
+
+    fn consume_stream_byte(
+        &mut self,
+        byte: u8,
+        body: &mut Vec<u8>,
+    ) -> Result<StreamByteProgress, Error> {
+        match self.state {
+            DecodeState::Head => {
+                self.push_stream_scratch(byte, "response head", false)?;
+                if self.scratch.ends_with(b"\r\n\r\n") {
+                    let parsed =
+                        parse_response_head(&self.scratch, self.response_to_head, self.limits)?;
+                    self.scratch.clear();
+                    match parsed {
+                        ParsedHead::Informational => {
+                            self.informational_responses = self
+                                .informational_responses
+                                .checked_add(1)
+                                .ok_or_else(|| http_error("too many informational responses"))?;
+                            if self.informational_responses > MAX_INFORMATIONAL_RESPONSES {
+                                return Err(http_error("too many informational responses"));
+                            }
+                        }
+                        ParsedHead::Final {
+                            status,
+                            headers,
+                            framing,
+                            permits_reuse,
+                        } => {
+                            self.permits_reuse = permits_reuse;
+                            self.state = match framing {
+                                BodyFraming::None | BodyFraming::Fixed(0) => DecodeState::Complete,
+                                BodyFraming::Fixed(remaining) => DecodeState::Fixed { remaining },
+                                BodyFraming::Chunked => DecodeState::ChunkSize,
+                                BodyFraming::CloseDelimited => DecodeState::CloseDelimited,
+                            };
+                            let head = ResponseHead::new(status, headers);
+                            self.pending_head = Some(head.clone());
+                            return Ok(StreamByteProgress::Head(head));
+                        }
+                    }
+                }
+            }
+            DecodeState::Fixed { remaining } => {
+                self.push_stream_body(byte, body)?;
+                if remaining == 1 {
+                    self.state = DecodeState::Complete;
+                    return Ok(StreamByteProgress::Complete);
+                }
+                self.state = DecodeState::Fixed {
+                    remaining: remaining - 1,
+                };
+            }
+            DecodeState::CloseDelimited => self.push_stream_body(byte, body)?,
+            DecodeState::ChunkSize => {
+                self.push_stream_scratch(byte, "chunk-size line", true)?;
+                if self.scratch.ends_with(b"\r\n") {
+                    let (used, size) = match httparse::parse_chunk_size(&self.scratch) {
+                        Ok(httparse::Status::Complete(parsed)) => parsed,
+                        Ok(httparse::Status::Partial) | Err(_) => {
+                            return Err(http_error("response contains an invalid chunk size"));
+                        }
+                    };
+                    if used != self.scratch.len() {
+                        return Err(http_error("response chunk size has trailing bytes"));
+                    }
+                    self.scratch.clear();
+                    let size = usize::try_from(size)
+                        .map_err(|_| response_body_limit(self.limits.body_bytes))?;
+                    if size > self.limits.body_bytes.saturating_sub(self.body_bytes) {
+                        return Err(response_body_limit(self.limits.body_bytes));
+                    }
+                    self.state = if size == 0 {
+                        DecodeState::Trailers
+                    } else {
+                        DecodeState::ChunkData { remaining: size }
+                    };
+                }
+            }
+            DecodeState::ChunkData { remaining } => {
+                self.push_stream_body(byte, body)?;
+                self.state = if remaining == 1 {
+                    DecodeState::ChunkEnd { matched: 0 }
+                } else {
+                    DecodeState::ChunkData {
+                        remaining: remaining - 1,
+                    }
+                };
+            }
+            DecodeState::ChunkEnd { matched: 0 } if byte == b'\r' => {
+                self.count_stream_framing_byte("chunk terminator")?;
+                self.state = DecodeState::ChunkEnd { matched: 1 };
+            }
+            DecodeState::ChunkEnd { matched: 1 } if byte == b'\n' => {
+                self.count_stream_framing_byte("chunk terminator")?;
+                self.state = DecodeState::ChunkSize;
+            }
+            DecodeState::ChunkEnd { .. } => {
+                return Err(http_error("response chunk data is not followed by CRLF"));
+            }
+            DecodeState::Trailers => {
+                self.push_stream_scratch(byte, "response trailers", true)?;
+                if self.scratch == b"\r\n" || self.scratch.ends_with(b"\r\n\r\n") {
+                    validate_trailers(&self.scratch, self.limits)?;
+                    self.scratch.clear();
+                    self.state = DecodeState::Complete;
+                    return Ok(StreamByteProgress::Complete);
+                }
+            }
+            DecodeState::Complete => {
+                return Err(Error::transport(
+                    TransportStage::Http,
+                    "native streaming decoder advanced after completion",
+                ));
+            }
+        }
+        Ok(StreamByteProgress::Continue)
+    }
+
+    fn push_stream_scratch(&mut self, byte: u8, context: &str, framing: bool) -> Result<(), Error> {
+        if self.scratch.len() >= self.limits.header_bytes {
+            return Err(Error::limit(
+                LimitKind::ResponseHeaderBytes,
+                format!(
+                    "{context} exceeds the configured {} byte limit",
+                    self.limits.header_bytes
+                ),
+            ));
+        }
+        if framing {
+            self.count_stream_framing_byte(context)?;
+        }
+        self.scratch.push(byte);
+        Ok(())
+    }
+
+    fn count_stream_framing_byte(&mut self, context: &str) -> Result<(), Error> {
+        if self.framing_bytes >= self.limits.header_bytes {
+            return Err(Error::limit(
+                LimitKind::ResponseHeaderBytes,
+                format!(
+                    "{context} exceeds the configured {} byte framing-metadata limit",
+                    self.limits.header_bytes
+                ),
+            ));
+        }
+        self.framing_bytes += 1;
+        Ok(())
+    }
+
+    fn push_stream_body(&mut self, byte: u8, body: &mut Vec<u8>) -> Result<(), Error> {
+        if self.body_bytes >= self.limits.body_bytes {
+            return Err(response_body_limit(self.limits.body_bytes));
+        }
+        self.body_bytes += 1;
+        if self.output == StreamOutput::Deliver {
+            body.push(byte);
+        }
+        Ok(())
+    }
+
+    fn flush_body(&mut self, body: Vec<u8>) -> Result<(), Error> {
+        if body.is_empty() {
+            return Ok(());
+        }
+        match self.response_mut()?.try_push(body) {
+            Ok(()) => Ok(()),
+            Err(ResponsePushError::WouldBlock(_)) => Err(Error::new(
+                ErrorKind::Internal,
+                "streaming decoder exceeded the capacity it observed",
+            )),
+            Err(ResponsePushError::Closed(_)) => Err(Error::transport(
+                TransportStage::Receive,
+                "the streaming response reader closed during delivery",
+            )),
+            Err(ResponsePushError::Protocol(_)) => Err(Error::new(
+                ErrorKind::Internal,
+                "streaming decoder delivered body before its final head",
+            )),
+            Err(ResponsePushError::Limit(_)) => Err(response_body_limit(self.limits.body_bytes)),
+        }
+    }
+
+    fn response_mut(&mut self) -> Result<&mut ResponseSink, Error> {
+        self.response.as_mut().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                "native streaming decoder no longer owns its response sink",
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum StreamByteProgress {
+    Continue,
+    Head(ResponseHead),
+    Complete,
 }
 
 enum ParsedHead {
@@ -2372,6 +2787,249 @@ mod tests {
         header_bytes: 1024,
         header_count: 16,
     };
+
+    fn synthetic_stream_decoder(
+        queue_capacity: usize,
+    ) -> (Engine, crate::ResponseReader, StreamingResponseDecoder) {
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::spawned()).expect("held Engine must construct");
+        let pending = engine
+            .client()
+            .submit(
+                Request::get("http://example.test/")
+                    .build()
+                    .expect("synthetic handle request must build"),
+            )
+            .expect("synthetic handle request must submit");
+        let handle = pending.handle();
+        drop(pending);
+        let (reader, sink, _control) = crate::stream::response_pair(
+            handle,
+            crate::RunMode::Spawned,
+            queue_capacity,
+            LIMITS.body_bytes,
+            None,
+        )
+        .expect("synthetic response pair must construct");
+        (
+            engine,
+            reader,
+            StreamingResponseDecoder::new(false, LIMITS, sink),
+        )
+    }
+
+    #[test]
+    fn streaming_decoder_publishes_head_then_body_and_reports_exact_boundary() {
+        let (engine, reader, mut decoder) = synthetic_stream_decoder(8);
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Test: yes\r\n\r\nhelloextra";
+        let head_consumed = match decoder.ingest(wire).expect("head must parse") {
+            StreamDecodeProgress::Head { head, consumed } => {
+                assert_eq!(head.status(), 200);
+                assert!(head.headers().iter().any(|header| {
+                    header.name().eq_ignore_ascii_case("x-test") && header.value() == b"yes"
+                }));
+                consumed
+            }
+            other => panic!("stream decoder skipped the head boundary: {other:?}"),
+        };
+        let decision = decoder.decide_head(true).expect("head must publish");
+        assert!(!decision.complete);
+        let body_consumed = match decoder
+            .ingest(&wire[head_consumed..])
+            .expect("body must decode")
+        {
+            StreamDecodeProgress::Complete {
+                consumed,
+                delivered,
+                ..
+            } => {
+                assert!(delivered);
+                consumed
+            }
+            other => panic!("stream body did not complete: {other:?}"),
+        };
+        assert_eq!(body_consumed, 5, "trailing bytes must remain unconsumed");
+        let response = reader
+            .collect()
+            .expect("reader must collect delivered body");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"hello");
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
+    fn streaming_decoder_splits_body_to_the_current_reader_hole() {
+        let (engine, mut reader, mut decoder) = synthetic_stream_decoder(3);
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n";
+        assert!(matches!(
+            decoder.ingest(head).expect("head must parse"),
+            StreamDecodeProgress::Head { consumed, .. } if consumed == head.len()
+        ));
+        decoder.decide_head(true).expect("head must publish");
+
+        let body = b"abcdefgh";
+        let mut offset = 0;
+        let mut received = Vec::new();
+        while offset < body.len() {
+            match decoder
+                .ingest(&body[offset..])
+                .expect("bounded body pass must decode")
+            {
+                StreamDecodeProgress::Body { consumed, blocked } => {
+                    assert!(blocked);
+                    assert_ne!(consumed, 0);
+                    offset += consumed;
+                }
+                StreamDecodeProgress::Complete { consumed, .. } => {
+                    offset += consumed;
+                }
+                StreamDecodeProgress::Head { .. } => panic!("head was published twice"),
+            }
+            let mut hole = [0_u8; 2];
+            if let Some(count) = reader
+                .read(&mut hole)
+                .expect("reader must drain a small hole")
+            {
+                received.extend_from_slice(&hole[..count]);
+            }
+        }
+        let mut tail = [0_u8; 8];
+        while let Some(count) = reader.read(&mut tail).expect("reader must reach EOF") {
+            received.extend_from_slice(&tail[..count]);
+        }
+        assert_eq!(received, body);
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
+    fn streaming_decoder_no_body_head_is_complete_and_redirect_discard_reuses_sink() {
+        let (engine, mut reader, mut decoder) = synthetic_stream_decoder(8);
+        let no_body = b"HTTP/1.1 204 No Content\r\n\r\n";
+        assert!(matches!(
+            decoder.ingest(no_body).expect("204 head must parse"),
+            StreamDecodeProgress::Head { .. }
+        ));
+        let decision = decoder.decide_head(true).expect("204 head must publish");
+        assert!(decision.complete);
+        assert_eq!(
+            reader.wait_head().expect("204 head must arrive").status(),
+            204
+        );
+        assert!(reader.is_eof());
+        drop(reader);
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+
+        let (engine, reader, mut redirect) = synthetic_stream_decoder(8);
+        let first = b"HTTP/1.1 302 Found\r\nContent-Length: 3\r\nLocation: /next\r\n\r\nold";
+        let head_used = match redirect.ingest(first).expect("redirect head must parse") {
+            StreamDecodeProgress::Head { consumed, .. } => consumed,
+            other => panic!("redirect head was not exposed for policy: {other:?}"),
+        };
+        redirect
+            .decide_head(false)
+            .expect("redirect head must remain private");
+        assert!(matches!(
+            redirect
+                .ingest(&first[head_used..])
+                .expect("redirect body must drain"),
+            StreamDecodeProgress::Complete {
+                delivered: false,
+                ..
+            }
+        ));
+        let sink = redirect
+            .into_response()
+            .expect("discarded redirect must return the unique sink");
+        let mut final_decoder = StreamingResponseDecoder::new(false, LIMITS, sink);
+        let final_wire = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew";
+        let head_used = match final_decoder
+            .ingest(final_wire)
+            .expect("final head must parse")
+        {
+            StreamDecodeProgress::Head { consumed, .. } => consumed,
+            other => panic!("final head was not exposed: {other:?}"),
+        };
+        final_decoder
+            .decide_head(true)
+            .expect("final head must publish");
+        assert!(matches!(
+            final_decoder
+                .ingest(&final_wire[head_used..])
+                .expect("final body must decode"),
+            StreamDecodeProgress::Complete {
+                delivered: true,
+                ..
+            }
+        ));
+        let response = reader.collect().expect("reader sees only the final hop");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"new");
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
+    fn streaming_decoder_preserves_informational_chunked_trailer_and_limit_rules() {
+        let (engine, mut reader, mut decoder) = synthetic_stream_decoder(4);
+        let wire = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: yes\r\n\r\n";
+        let head_used = match decoder.ingest(wire).expect("final head must parse") {
+            StreamDecodeProgress::Head { head, consumed } => {
+                assert_eq!(head.status(), 200);
+                consumed
+            }
+            other => panic!("informational head escaped or final head vanished: {other:?}"),
+        };
+        decoder.decide_head(true).expect("final head must publish");
+        let mut offset = head_used;
+        let mut received = Vec::new();
+        while offset < wire.len() {
+            match decoder
+                .ingest(&wire[offset..])
+                .expect("chunked framing must decode")
+            {
+                StreamDecodeProgress::Body { consumed, blocked } => {
+                    assert!(blocked || offset + consumed == wire.len());
+                    assert_ne!(consumed, 0);
+                    offset += consumed;
+                }
+                StreamDecodeProgress::Complete { consumed, .. } => {
+                    offset += consumed;
+                    break;
+                }
+                StreamDecodeProgress::Head { .. } => panic!("final head was published twice"),
+            }
+            let mut hole = [0_u8; 3];
+            if let Some(count) = reader.read(&mut hole).expect("chunked reader must drain") {
+                received.extend_from_slice(&hole[..count]);
+            }
+        }
+        assert_eq!(offset, wire.len());
+        let mut tail = [0_u8; 8];
+        while let Some(count) = reader.read(&mut tail).expect("chunked reader must finish") {
+            received.extend_from_slice(&tail[..count]);
+        }
+        assert_eq!(received, b"hello");
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+
+        let (engine, mut reader, mut decoder) = synthetic_stream_decoder(8);
+        decoder.limits.body_bytes = 4;
+        let error = decoder
+            .ingest(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+            .expect_err("oversize final head must fail before publication");
+        assert_eq!(error.kind(), ErrorKind::Limit);
+        assert_eq!(error.limit_kind(), Some(LimitKind::ResponseBodyBytes));
+        decoder.fail(error.clone());
+        assert!(matches!(
+            reader.try_head(),
+            Err(crate::StreamError::Failed(observed)) if observed == error
+        ));
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+    }
 
     fn read_request_head(stream: &mut std::net::TcpStream, label: &str) {
         let mut request = Vec::new();
