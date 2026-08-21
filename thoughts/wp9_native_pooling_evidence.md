@@ -331,6 +331,31 @@ The Windows gate passes 150 native/test-support unit tests, 4 adversarial tests,
 tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy, and formatting pass.
 Native stream capability remains off.
 
+## WP9.4h bounded TLS streaming window — Windows slice
+
+The rustls owner now has a streaming-only receive path distinct from the buffered batch path. A
+streaming socket may admit at most one 18 KiB encrypted window before returning to the HTTP owner.
+That is a conservative maximum-record-sized memory allowance, not a second TLS parser and not a
+claim that the window contains exactly one wire record. Any application plaintext produced from
+the window remains inside `NativeTls` until the HTTP decoder explicitly consumes it.
+
+While retained plaintext exists, the next socket read allowance is exactly zero. Once it drains,
+the owner may replace the allowance with one fresh 18 KiB window; a full response queue likewise
+keeps it at zero after handshake. A 64 KiB generated-rustls fixture feeds ciphertext only in those
+windows, drains retained plaintext through repeated 100-byte consumer holes, proves byte-for-byte
+delivery, and rejects input one byte beyond the advertised allowance before rustls sees it.
+
+The isolated streaming decoder also now proves the close-delimited paused-FIN rule explicitly: it
+fills a three-byte reader queue, retains the remaining two response bytes outside the decoder,
+drains and delivers those bytes after capacity reopens, and only then lets EOF complete the reader.
+This is the policy the socket owner must apply when FIN arrives while readable interest is paused.
+Fixed and chunked bodies remain framing-complete without waiting for FIN.
+
+The Windows gate passes 152 native/test-support unit tests, 4 adversarial tests, 4 public-contract
+tests, and 6 doctests; 62 default unit tests, warning-denied all-feature clippy, documentation, and
+formatting pass. Native stream capability remains off. The next slice connects this TLS retention,
+the socket allowance, and the decoder through the real native request lifecycle.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

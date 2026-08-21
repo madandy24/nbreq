@@ -22,6 +22,10 @@ use crate::{Error, ErrorKind, TlsVerification, TransportStage};
 
 pub(super) const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
 const TLS_PLAINTEXT_CHUNK: usize = 16 * 1024;
+// TLS application records carry at most 16 KiB of plaintext. This includes generous wire
+// overhead without teaching the HTTP owner how to parse TLS records itself. A streaming socket
+// grants at most this much encrypted input before returning to its owner.
+const TLS_STREAM_WIRE_ALLOWANCE: usize = 18 * 1024;
 
 #[derive(Clone)]
 pub(super) struct NativeTlsConfigs {
@@ -107,6 +111,10 @@ impl NativeTlsConfigs {
                 bytes: request,
                 offset: 0,
             }),
+            retained_response: PendingPlaintext {
+                bytes: Vec::new(),
+                offset: 0,
+            },
             handshake_received: 0,
         })
     }
@@ -115,6 +123,7 @@ impl NativeTlsConfigs {
 pub(super) struct NativeTls {
     connection: ClientConnection,
     request: Option<PendingPlaintext>,
+    retained_response: PendingPlaintext,
     handshake_received: usize,
 }
 
@@ -123,10 +132,27 @@ struct PendingPlaintext {
     offset: usize,
 }
 
+impl PendingPlaintext {
+    fn remaining(&self) -> &[u8] {
+        &self.bytes[self.offset..]
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct TlsProgress {
     pub(super) outbound: Vec<u8>,
     pub(super) plaintext: Vec<u8>,
+    pub(super) handshake_complete: bool,
+    pub(super) peer_closed: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct TlsStreamProgress {
+    pub(super) outbound: Vec<u8>,
     pub(super) handshake_complete: bool,
     pub(super) peer_closed: bool,
 }
@@ -186,6 +212,76 @@ impl NativeTls {
             handshake_complete: !self.connection.is_handshaking(),
             peer_closed,
         })
+    }
+
+    /// Consumes one bounded encrypted streaming window and retains any resulting application
+    /// plaintext until the HTTP owner explicitly consumes it.
+    ///
+    /// Buffered responses may drain a large reactor event in one pass. Streaming responses must
+    /// not accept a second window until reader backpressure has released all plaintext from the
+    /// first.
+    pub(super) fn receive_streaming(
+        &mut self,
+        encrypted: &[u8],
+    ) -> Result<TlsStreamProgress, Error> {
+        if !self.retained_response.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS accepted another streaming window before retained plaintext drained",
+            ));
+        }
+        if encrypted.len() > TLS_STREAM_WIRE_ALLOWANCE {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS streaming input exceeded its advertised socket allowance",
+            ));
+        }
+        let progress = self.receive(encrypted)?;
+        if progress.plaintext.len() > TLS_STREAM_WIRE_ALLOWANCE {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS produced more streaming plaintext than its bounded input window",
+            ));
+        }
+        self.retained_response = PendingPlaintext {
+            bytes: progress.plaintext,
+            offset: 0,
+        };
+        Ok(TlsStreamProgress {
+            outbound: progress.outbound,
+            handshake_complete: progress.handshake_complete,
+            peer_closed: progress.peer_closed,
+        })
+    }
+
+    /// Returns the absolute encrypted read allowance for the next streaming socket pass.
+    pub(super) fn streaming_read_allowance(&self, response_capacity: usize) -> usize {
+        if !self.retained_response.is_empty()
+            || (!self.connection.is_handshaking() && response_capacity == 0)
+        {
+            0
+        } else {
+            TLS_STREAM_WIRE_ALLOWANCE
+        }
+    }
+
+    pub(super) fn retained_plaintext(&self) -> &[u8] {
+        self.retained_response.remaining()
+    }
+
+    pub(super) fn consume_retained_plaintext(&mut self, consumed: usize) -> Result<(), Error> {
+        if consumed > self.retained_response.remaining().len() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native HTTP consumed beyond retained TLS plaintext",
+            ));
+        }
+        self.retained_response.offset += consumed;
+        if self.retained_response.is_empty() {
+            self.retained_response.bytes.clear();
+            self.retained_response.offset = 0;
+        }
+        Ok(())
     }
 
     fn drain_plaintext(&mut self, plaintext: &mut Vec<u8>) -> Result<(), Error> {
@@ -825,5 +921,97 @@ mod tests {
             .receive(&event)
             .expect("one multi-record reactor event must be fully consumed");
         assert_eq!(progress.plaintext, expected);
+    }
+
+    #[test]
+    fn streaming_tls_retains_one_bounded_wire_window_before_reopening_reads() {
+        let (cert, key) = identity();
+        let configs =
+            NativeTlsConfigs::with_test_root(cert.clone()).expect("TLS client config must build");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("TLS client state must build");
+        let mut server =
+            ServerConnection::new(server_config(cert, key)).expect("TLS server state must build");
+        let mut to_server = client.start().expect("ClientHello must encode");
+        for _ in 0..16 {
+            if !to_server.is_empty() {
+                server
+                    .read_tls(&mut Cursor::new(&to_server))
+                    .expect("server handshake bytes must read");
+                server
+                    .process_new_packets()
+                    .expect("server handshake bytes must process");
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server
+                    .write_tls(&mut to_client)
+                    .expect("server handshake flight must encode");
+            }
+            if to_client.is_empty() {
+                if !client.is_handshaking() && !server.is_handshaking() {
+                    break;
+                }
+                continue;
+            }
+            to_server = client
+                .receive(&to_client)
+                .expect("client handshake must advance")
+                .outbound;
+        }
+        assert!(!client.is_handshaking());
+        assert!(!server.is_handshaking());
+
+        let expected = vec![b's'; 64 * 1024];
+        server
+            .writer()
+            .write_all(&expected)
+            .expect("server plaintext must buffer");
+        let mut encrypted = Vec::new();
+        while server.wants_write() {
+            server
+                .write_tls(&mut encrypted)
+                .expect("server records must encode");
+        }
+
+        let mut received = Vec::new();
+        for wire_window in encrypted.chunks(TLS_STREAM_WIRE_ALLOWANCE) {
+            assert_eq!(
+                client.streaming_read_allowance(100),
+                TLS_STREAM_WIRE_ALLOWANCE,
+                "an empty retained window must reopen exactly one bounded socket allowance"
+            );
+            let progress = client
+                .receive_streaming(wire_window)
+                .expect("bounded TLS window must decode");
+            assert!(progress.outbound.is_empty());
+            assert!(progress.handshake_complete);
+            assert!(!progress.peer_closed);
+            while !client.retained_plaintext().is_empty() {
+                assert_eq!(
+                    client.streaming_read_allowance(100),
+                    0,
+                    "retained plaintext must close the socket allowance"
+                );
+                let take = client.retained_plaintext().len().min(100);
+                received.extend_from_slice(&client.retained_plaintext()[..take]);
+                client
+                    .consume_retained_plaintext(take)
+                    .expect("retained plaintext consumption must stay in bounds");
+            }
+        }
+        assert_eq!(received, expected);
+        assert_eq!(client.streaming_read_allowance(0), 0);
+        assert_eq!(
+            client.streaming_read_allowance(1),
+            TLS_STREAM_WIRE_ALLOWANCE
+        );
+
+        let oversized = vec![0_u8; TLS_STREAM_WIRE_ALLOWANCE + 1];
+        let error = client
+            .receive_streaming(&oversized)
+            .expect_err("input above the advertised allowance must fail closed");
+        assert_eq!(error.kind(), ErrorKind::Internal);
     }
 }

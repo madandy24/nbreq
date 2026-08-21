@@ -2972,6 +2972,55 @@ mod tests {
     }
 
     #[test]
+    fn streaming_close_delimited_body_drains_retained_bytes_before_fin_completes_it() {
+        let (engine, mut reader, mut decoder) = synthetic_stream_decoder(3);
+        let head = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+        assert!(matches!(
+            decoder.ingest(head).expect("close-delimited head must parse"),
+            StreamDecodeProgress::Head { consumed, .. } if consumed == head.len()
+        ));
+        decoder
+            .decide_head(true)
+            .expect("close-delimited head must publish");
+
+        let body = b"abcde";
+        let consumed = match decoder
+            .ingest(body)
+            .expect("first close-delimited window must decode")
+        {
+            StreamDecodeProgress::Body { consumed, blocked } => {
+                assert!(blocked);
+                consumed
+            }
+            other => panic!("close-delimited body did not pause: {other:?}"),
+        };
+        assert_eq!(consumed, 3);
+        let mut first = [0_u8; 3];
+        assert_eq!(reader.read(&mut first).expect("reader must drain"), Some(3));
+        assert_eq!(&first, b"abc");
+
+        assert!(matches!(
+            decoder
+                .ingest(&body[consumed..])
+                .expect("retained close-delimited bytes must drain"),
+            StreamDecodeProgress::Body {
+                consumed: 2,
+                blocked: false
+            }
+        ));
+        assert_eq!(
+            decoder.eof().expect("peer FIN must complete body"),
+            Some((false, true))
+        );
+        let mut tail = [0_u8; 3];
+        assert_eq!(reader.read(&mut tail).expect("tail must drain"), Some(2));
+        assert_eq!(&tail[..2], b"de");
+        assert_eq!(reader.read(&mut tail).expect("reader must reach EOF"), None);
+        engine.cancel_all();
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
     fn streaming_decoder_preserves_informational_chunked_trailer_and_limit_rules() {
         let (engine, mut reader, mut decoder) = synthetic_stream_decoder(4);
         let wire = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: yes\r\n\r\n";
