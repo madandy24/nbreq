@@ -446,6 +446,29 @@ WP9.4 is accepted on the declared Windows and native Ubuntu targets. This does n
 through ordinary `Engine::new`, change the curl pilot or ureq rollback, or claim WP9.5 production
 limits, metrics, fuzzing, pressure, benchmark, Wine-native, or public-backend readiness.
 
+## WP9.5a production configuration and metrics freeze — Windows slice
+
+The proven private pool values become immutable `EngineConfig` fields with the same defaults: 32
+connecting/leased/idle sockets globally, 8 per origin, 32 idle globally, 4 idle per origin, and a
+30-second idle timeout. Active values are non-zero. Either applicable idle cap or a zero timeout
+disables retention. The global cap naturally wins over a larger per-origin value. Connection
+waiters keep their accepted request identity, original clocks, oldest-eligible fairness, and
+no-transparent-replay rule.
+
+The first observability surface is frozen as a nonblocking payload-free snapshot on the unique
+Engine, not on Client and not through callbacks. It will expose per-Engine saturating request and
+connection counters, current bounded-resource gauges, and high-water marks. Snapshots are
+approximate across concurrently changing fields and cannot be reset. They retain no request or
+origin identity, user bytes, address, certificate, backend-native error, or timing histogram. This
+preserves `Engine: Send + !Sync` and does not smuggle shared Engine ownership back into the model.
+
+The first implementation slice wires all five connection settings through every private native
+factory. Existing active-cap/fairness and queue-timeout fixtures now construct those limits through
+the public configuration rather than a private test-only struct. A live sequential fixture proves
+that zero global idle, zero per-origin idle, and zero idle timeout each close the clean connection
+instead of pooling it. Native remains private; the curl pilot does not yet claim these knobs, and
+WP10 must map them or reject unsupported policy before backend parity/public selection.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

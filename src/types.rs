@@ -35,6 +35,11 @@ pub struct EngineConfig {
     max_stream_queued_bytes: usize,
     max_header_bytes: usize,
     max_header_count: usize,
+    max_connections: NonZeroUsize,
+    max_connections_per_origin: NonZeroUsize,
+    max_idle_connections: usize,
+    max_idle_connections_per_origin: usize,
+    idle_connection_timeout: Duration,
 }
 
 const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -42,6 +47,11 @@ const DEFAULT_STREAM_QUEUE_LIMIT: usize = 256 * 1024;
 const DEFAULT_STREAM_QUEUED_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_HEADER_BYTES_LIMIT: usize = 64 * 1024;
 const DEFAULT_HEADER_COUNT_LIMIT: usize = 256;
+const DEFAULT_MAX_CONNECTIONS: usize = 32;
+const DEFAULT_MAX_CONNECTIONS_PER_ORIGIN: usize = 8;
+const DEFAULT_MAX_IDLE_CONNECTIONS: usize = 32;
+const DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
+const DEFAULT_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl EngineConfig {
     /// Returns the convenient default: an owned reactor and one callback worker.
@@ -59,6 +69,11 @@ impl EngineConfig {
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
+            max_connections: nonzero(DEFAULT_MAX_CONNECTIONS),
+            max_connections_per_origin: nonzero(DEFAULT_MAX_CONNECTIONS_PER_ORIGIN),
+            max_idle_connections: DEFAULT_MAX_IDLE_CONNECTIONS,
+            max_idle_connections_per_origin: DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN,
+            idle_connection_timeout: DEFAULT_IDLE_CONNECTION_TIMEOUT,
         }
     }
 
@@ -77,6 +92,11 @@ impl EngineConfig {
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
+            max_connections: nonzero(DEFAULT_MAX_CONNECTIONS),
+            max_connections_per_origin: nonzero(DEFAULT_MAX_CONNECTIONS_PER_ORIGIN),
+            max_idle_connections: DEFAULT_MAX_IDLE_CONNECTIONS,
+            max_idle_connections_per_origin: DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN,
+            idle_connection_timeout: DEFAULT_IDLE_CONNECTION_TIMEOUT,
         }
     }
 
@@ -153,6 +173,47 @@ impl EngineConfig {
         self
     }
 
+    /// Selects the maximum connecting, leased, and idle connections owned by the Engine.
+    #[must_use]
+    pub fn with_max_connections(mut self, connections: NonZeroUsize) -> Self {
+        self.max_connections = connections;
+        self
+    }
+
+    /// Selects the maximum connecting, leased, and idle connections for one origin.
+    ///
+    /// The global connection limit remains authoritative when it is smaller.
+    #[must_use]
+    pub fn with_max_connections_per_origin(mut self, connections: NonZeroUsize) -> Self {
+        self.max_connections_per_origin = connections;
+        self
+    }
+
+    /// Selects the maximum idle connections retained by the Engine. Zero disables idle reuse.
+    #[must_use]
+    pub fn with_max_idle_connections(mut self, connections: usize) -> Self {
+        self.max_idle_connections = connections;
+        self
+    }
+
+    /// Selects the maximum idle connections retained for one origin. Zero disables idle reuse.
+    ///
+    /// The global idle limit remains authoritative when it is smaller.
+    #[must_use]
+    pub fn with_max_idle_connections_per_origin(mut self, connections: usize) -> Self {
+        self.max_idle_connections_per_origin = connections;
+        self
+    }
+
+    /// Selects how long an unused persistent connection may remain pooled.
+    ///
+    /// A zero duration disables idle reuse.
+    #[must_use]
+    pub fn with_idle_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_connection_timeout = timeout;
+        self
+    }
+
     /// Returns the configured run mode.
     #[must_use]
     pub fn run_mode(&self) -> RunMode {
@@ -217,6 +278,36 @@ impl EngineConfig {
     #[must_use]
     pub fn max_header_count(&self) -> usize {
         self.max_header_count
+    }
+
+    /// Returns the Engine-wide active connection limit.
+    #[must_use]
+    pub fn max_connections(&self) -> NonZeroUsize {
+        self.max_connections
+    }
+
+    /// Returns the per-origin active connection limit.
+    #[must_use]
+    pub fn max_connections_per_origin(&self) -> NonZeroUsize {
+        self.max_connections_per_origin
+    }
+
+    /// Returns the Engine-wide idle connection limit.
+    #[must_use]
+    pub fn max_idle_connections(&self) -> usize {
+        self.max_idle_connections
+    }
+
+    /// Returns the per-origin idle connection limit.
+    #[must_use]
+    pub fn max_idle_connections_per_origin(&self) -> usize {
+        self.max_idle_connections_per_origin
+    }
+
+    /// Returns the idle connection expiry duration.
+    #[must_use]
+    pub fn idle_connection_timeout(&self) -> Duration {
+        self.idle_connection_timeout
     }
 }
 

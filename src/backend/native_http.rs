@@ -26,23 +26,25 @@ use crate::{
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
-const MAX_IDLE_CONNECTIONS: usize = 32;
-const MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
-const IDLE_CONNECTION_LIFETIME: Duration = Duration::from_secs(30);
-const MAX_NATIVE_CONNECTIONS: usize = 32;
-const MAX_NATIVE_CONNECTIONS_PER_ORIGIN: usize = 8;
-
 #[derive(Clone, Copy)]
 struct ConnectionLimits {
     global: usize,
     per_origin: usize,
+    idle_global: usize,
+    idle_per_origin: usize,
+    idle_timeout: Duration,
 }
 
 impl ConnectionLimits {
-    const DEFAULT: Self = Self {
-        global: MAX_NATIVE_CONNECTIONS,
-        per_origin: MAX_NATIVE_CONNECTIONS_PER_ORIGIN,
-    };
+    fn from_config(config: &EngineConfig) -> Self {
+        Self {
+            global: config.max_connections().get(),
+            per_origin: config.max_connections_per_origin().get(),
+            idle_global: config.max_idle_connections(),
+            idle_per_origin: config.max_idle_connections_per_origin(),
+            idle_timeout: config.idle_connection_timeout(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1398,6 +1400,7 @@ fn resolved_redirect_target_from_headers(
 #[allow(dead_code)]
 pub(super) struct NativeHttpFactory {
     limits: HttpLimits,
+    connection_limits: ConnectionLimits,
     resolver: Option<ResolverConfig>,
     tls: Option<NativeTlsConfigs>,
 }
@@ -1407,6 +1410,7 @@ impl NativeHttpFactory {
     pub(super) fn new(config: &EngineConfig) -> Self {
         Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: None,
             tls: None,
         }
@@ -1415,6 +1419,7 @@ impl NativeHttpFactory {
     pub(super) fn new_with_nameserver(config: &EngineConfig, nameserver: SocketAddr) -> Self {
         Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
             tls: None,
         }
@@ -1423,6 +1428,7 @@ impl NativeHttpFactory {
     pub(super) fn new_with_system_dns(config: &EngineConfig) -> Result<Self, Error> {
         Ok(Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::system()?),
             tls: None,
         })
@@ -1434,6 +1440,7 @@ impl NativeHttpFactory {
     ) -> Result<Self, Error> {
         Ok(Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
             tls: Some(NativeTlsConfigs::platform()?),
         })
@@ -1444,6 +1451,7 @@ impl NativeHttpFactory {
     ) -> Result<Self, Error> {
         Ok(Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::system()?),
             tls: Some(NativeTlsConfigs::platform()?),
         })
@@ -1456,6 +1464,7 @@ impl NativeHttpFactory {
     ) -> Result<Self, Error> {
         Ok(Self {
             limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
             tls: Some(NativeTlsConfigs::with_test_root(root_der.into())?),
         })
@@ -1466,13 +1475,15 @@ impl NativeHttpFactory {
             self.limits,
             self.resolver,
             self.tls,
+            self.connection_limits,
         )?))
     }
 }
 
 impl BackendFactory for NativeHttpFactory {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
-        let backend = NativeHttpBackend::new(self.limits, self.resolver, self.tls)?;
+        let backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
         let waker = backend.reactor.waker();
         shared.queue.set_external_waker(Some(Arc::new(move || {
             waker.wake().map_err(|error| {
@@ -1823,8 +1834,9 @@ impl NativeHttpBackend {
         limits: HttpLimits,
         resolver: Option<ResolverConfig>,
         tls: Option<NativeTlsConfigs>,
+        connection_limits: ConnectionLimits,
     ) -> Result<Self, Error> {
-        Self::new_with_connection_limits(limits, resolver, tls, ConnectionLimits::DEFAULT)
+        Self::new_with_connection_limits(limits, resolver, tls, connection_limits)
     }
 
     fn new_with_connection_limits(
@@ -1833,10 +1845,7 @@ impl NativeHttpBackend {
         tls: Option<NativeTlsConfigs>,
         connection_limits: ConnectionLimits,
     ) -> Result<Self, Error> {
-        if connection_limits.global == 0
-            || connection_limits.per_origin == 0
-            || connection_limits.per_origin > connection_limits.global
-        {
+        if connection_limits.global == 0 || connection_limits.per_origin == 0 {
             return Err(Error::new(
                 ErrorKind::Internal,
                 "native connection limits are invalid",
@@ -2246,17 +2255,17 @@ impl NativeHttpBackend {
             && transfer.request_permits_reuse
             && transfer.request_write_drained
             && !peer_closed
-            && self.idle_count < MAX_IDLE_CONNECTIONS
-            && per_origin_idle < MAX_IDLE_CONNECTIONS_PER_ORIGIN;
+            && self.connection_limits.idle_timeout != Duration::ZERO
+            && self.idle_count < self.connection_limits.idle_global
+            && per_origin_idle < self.connection_limits.idle_per_origin;
         if reusable {
-            let parked =
-                Instant::now()
-                    .checked_add(IDLE_CONNECTION_LIFETIME)
-                    .filter(|idle_deadline| {
-                        self.reactor
-                            .set_deadline(slot, Some(*idle_deadline))
-                            .is_ok()
-                    });
+            let parked = Instant::now()
+                .checked_add(self.connection_limits.idle_timeout)
+                .filter(|idle_deadline| {
+                    self.reactor
+                        .set_deadline(slot, Some(*idle_deadline))
+                        .is_ok()
+                });
             if let Some(expires_at) = parked {
                 self.idle_slots.insert(slot, transfer.key.clone());
                 self.idle
@@ -2922,17 +2931,17 @@ impl NativeHttpBackend {
             && transfer.request_permits_reuse
             && transfer.request_write_drained
             && !peer_closed
-            && self.idle_count < MAX_IDLE_CONNECTIONS
-            && per_origin_idle < MAX_IDLE_CONNECTIONS_PER_ORIGIN;
+            && self.connection_limits.idle_timeout != Duration::ZERO
+            && self.idle_count < self.connection_limits.idle_global
+            && per_origin_idle < self.connection_limits.idle_per_origin;
         if reusable {
-            let parked =
-                Instant::now()
-                    .checked_add(IDLE_CONNECTION_LIFETIME)
-                    .filter(|idle_deadline| {
-                        self.reactor
-                            .set_deadline(slot, Some(*idle_deadline))
-                            .is_ok()
-                    });
+            let parked = Instant::now()
+                .checked_add(self.connection_limits.idle_timeout)
+                .filter(|idle_deadline| {
+                    self.reactor
+                        .set_deadline(slot, Some(*idle_deadline))
+                        .is_ok()
+                });
             if let Some(expires_at) = parked {
                 self.idle_slots.insert(slot, transfer.key.clone());
                 self.idle
@@ -4255,8 +4264,10 @@ mod tests {
     fn terminal_socket_failure_dominates_same_batch_write_progress() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("batch fixture must bind");
         let address = listener.local_addr().expect("batch fixture address");
+        let config = EngineConfig::manual();
         let mut backend =
-            NativeHttpBackend::new(LIMITS, None, None).expect("native backend must construct");
+            NativeHttpBackend::new(LIMITS, None, None, ConnectionLimits::from_config(&config))
+                .expect("native backend must construct");
         let deadline = Instant::now() + Duration::from_secs(5);
         let slot = backend
             .reactor
@@ -4727,6 +4738,75 @@ mod tests {
     }
 
     #[test]
+    fn configured_zero_idle_limits_or_timeout_disable_reuse() {
+        for config in [
+            EngineConfig::spawned().with_max_idle_connections(0),
+            EngineConfig::spawned().with_max_idle_connections_per_origin(0),
+            EngineConfig::spawned().with_idle_connection_timeout(Duration::ZERO),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("no-idle fixture must bind");
+            let address = listener.local_addr().expect("no-idle fixture address");
+            listener
+                .set_nonblocking(true)
+                .expect("no-idle listener must become nonblocking");
+            let server = thread::spawn(move || {
+                for body in [b"one".as_slice(), b"two".as_slice()] {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    let (mut stream, _) = loop {
+                        match listener.accept() {
+                            Ok(accepted) => break accepted,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(
+                                    Instant::now() < deadline,
+                                    "disabled idle retention did not open a replacement socket"
+                                );
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(error) => panic!("no-idle accept failed: {error}"),
+                        }
+                    };
+                    stream
+                        .set_nonblocking(false)
+                        .expect("no-idle accepted socket must become blocking");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .expect("no-idle socket timeout must configure");
+                    read_request_head(&mut stream, "no-idle request");
+                    stream
+                        .write_all(
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len())
+                                .as_bytes(),
+                        )
+                        .expect("no-idle response head must write");
+                    stream
+                        .write_all(body)
+                        .expect("no-idle response body must write");
+                    assert_socket_closed(&mut stream, &mut [0_u8; 1], "no-idle retention");
+                }
+            });
+            let engine = Engine::with_spawned_factory(
+                config.clone(),
+                Box::new(NativeHttpFactory::new(&config)),
+            )
+            .expect("no-idle Engine must construct");
+            for expected in [b"one".as_slice(), b"two".as_slice()] {
+                let response = engine
+                    .client()
+                    .execute(
+                        Request::get(format!("http://{address}/no-idle"))
+                            .total_timeout(Duration::from_secs(2))
+                            .build()
+                            .expect("no-idle request must build"),
+                    )
+                    .expect("no-idle request must complete");
+                assert_eq!(response.body(), expected);
+            }
+            engine.shutdown().expect("no-idle Engine must stop");
+            server.join().expect("no-idle fixture must join");
+        }
+    }
+
+    #[test]
     fn manual_native_http_reuses_one_clean_connection() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("manual reuse fixture must bind");
         let address = listener.local_addr().expect("manual reuse address");
@@ -4752,8 +4832,13 @@ mod tests {
             }
         });
         let config = EngineConfig::manual();
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
-            .expect("manual reuse backend must construct");
+        let backend = NativeHttpBackend::new(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits::from_config(&config),
+        )
+        .expect("manual reuse backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual reuse Engine must construct");
         for expected in [b"one".as_slice(), b"two".as_slice()] {
@@ -4883,9 +4968,11 @@ mod tests {
     fn synthetic_idle_expiry_destroys_the_socket_and_releases_capacity() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("idle expiry fixture must bind");
         let address = listener.local_addr().expect("idle expiry address");
-        let mut backend =
-            NativeHttpBackend::new(LIMITS, None, None).expect("idle expiry backend must construct");
-        let expires_at = Instant::now() + IDLE_CONNECTION_LIFETIME;
+        let config = EngineConfig::manual().with_idle_connection_timeout(Duration::from_millis(17));
+        let connection_limits = ConnectionLimits::from_config(&config);
+        let mut backend = NativeHttpBackend::new(LIMITS, None, None, connection_limits)
+            .expect("idle expiry backend must construct");
+        let expires_at = Instant::now() + connection_limits.idle_timeout;
         let slot = backend
             .reactor
             .connect(address, Some(expires_at), 1, 1)
@@ -5828,8 +5915,13 @@ mod tests {
         });
 
         let config = EngineConfig::manual();
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
-            .expect("manual lease-probe backend must construct");
+        let backend = NativeHttpBackend::new(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits::from_config(&config),
+        )
+        .expect("manual lease-probe backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual lease-probe Engine must construct");
         let first = engine
@@ -5928,15 +6020,16 @@ mod tests {
                 .expect("origin B response must write");
         });
 
-        let config = EngineConfig::manual();
+        let config = EngineConfig::manual()
+            .with_max_connections(std::num::NonZeroUsize::new(2).expect("two is non-zero"))
+            .with_max_connections_per_origin(
+                std::num::NonZeroUsize::new(1).expect("one is non-zero"),
+            );
         let backend = NativeHttpBackend::new_with_connection_limits(
             HttpLimits::from_config(&config),
             None,
             None,
-            ConnectionLimits {
-                global: 2,
-                per_origin: 1,
-            },
+            ConnectionLimits::from_config(&config),
         )
         .expect("bounded native backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
@@ -6016,15 +6109,16 @@ mod tests {
                 other => panic!("first capped socket was not closed: {other:?}"),
             }
         });
-        let config = EngineConfig::manual();
+        let config = EngineConfig::manual()
+            .with_max_connections(std::num::NonZeroUsize::new(1).expect("one is non-zero"))
+            .with_max_connections_per_origin(
+                std::num::NonZeroUsize::new(1).expect("one is non-zero"),
+            );
         let backend = NativeHttpBackend::new_with_connection_limits(
             HttpLimits::from_config(&config),
             None,
             None,
-            ConnectionLimits {
-                global: 1,
-                per_origin: 1,
-            },
+            ConnectionLimits::from_config(&config),
         )
         .expect("queue-timeout backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
@@ -6694,8 +6788,13 @@ mod tests {
         });
 
         let config = EngineConfig::manual();
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
-            .expect("manual native HTTP backend must construct");
+        let backend = NativeHttpBackend::new(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits::from_config(&config),
+        )
+        .expect("manual native HTTP backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual native HTTP Engine must construct");
         let pending = engine
@@ -6737,8 +6836,13 @@ mod tests {
         });
 
         let config = EngineConfig::manual().with_max_stream_queue_bytes_per_request(3);
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
-            .expect("manual streaming backend must construct");
+        let backend = NativeHttpBackend::new(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits::from_config(&config),
+        )
+        .expect("manual streaming backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual streaming Engine must construct");
         let mut reader = engine
@@ -6805,8 +6909,13 @@ mod tests {
             .try_push(b"dat".to_vec())
             .expect("manual prequeue fits");
         let config = EngineConfig::manual().with_max_stream_queue_bytes_per_request(4);
-        let backend = NativeHttpBackend::new(HttpLimits::from_config(&config), None, None)
-            .expect("manual upload backend must construct");
+        let backend = NativeHttpBackend::new(
+            HttpLimits::from_config(&config),
+            None,
+            None,
+            ConnectionLimits::from_config(&config),
+        )
+        .expect("manual upload backend must construct");
         let mut engine = Engine::with_backend(config, Box::new(backend))
             .expect("manual upload Engine must construct");
         let mut reader = engine

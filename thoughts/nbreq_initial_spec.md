@@ -541,6 +541,27 @@ Requirements:
 - fair admission so one origin cannot starve all others;
 - shutdown closes all idle and active connections.
 
+The production-facing Engine configuration uses five immutable values. `max_connections` and
+`max_connections_per_origin` are non-zero and count connecting, leased, and idle sockets together.
+`max_idle_connections` and `max_idle_connections_per_origin` may be zero; zero in either applicable
+scope disables idle retention there. `idle_connection_timeout` is measured from the instant a clean
+connection is parked, and zero disables idle retention. Defaults preserve the proven native policy:
+32 active globally, 8 active per origin, 32 idle globally, 4 idle per origin, and 30 seconds idle.
+The smaller applicable global/per-origin bound always wins, so a per-origin value larger than its
+global partner is valid but cannot enlarge the global budget. Accepted requests waiting for a
+connection remain admitted under their original total/connect/inactivity clocks and oldest-eligible
+fairness; capacity pressure does not create a transparent retry or a second request identity.
+
+WP9.5 observability is an immutable, nonblocking snapshot obtained from the unique Engine owner.
+It does not add `Arc<Engine>`, `Engine: Sync`, callbacks, background reporters, reset operations, or
+Client-wide inspection of unrelated traffic. The first snapshot includes monotonic accepted,
+completed, failed, cancelled, connection-opened/reused/closed, and idle-evicted counters; current
+inflight, command/callback queue, streaming-byte, active/idle connection, and connection-waiter
+gauges; and high-water marks for the bounded gauges. Values are per Engine, saturating, and may be
+slightly cross-field inconsistent while work progresses. No URL, origin, method, header, body,
+certificate, address, or backend-native error value is retained. Timing/stage histograms require a
+later explicit privacy and cost decision rather than appearing accidentally in the first snapshot.
+
 Initial native milestones may disable reuse until single-request correctness is established.
 
 ## 18. Bodies, streaming, and limits

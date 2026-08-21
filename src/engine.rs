@@ -570,6 +570,43 @@ impl EngineBuilder {
         self
     }
 
+    /// Selects the Engine-wide connecting, leased, and idle connection limit.
+    #[must_use]
+    pub fn max_connections(mut self, connections: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_connections(connections);
+        self
+    }
+
+    /// Selects the per-origin connecting, leased, and idle connection limit.
+    #[must_use]
+    pub fn max_connections_per_origin(mut self, connections: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_connections_per_origin(connections);
+        self
+    }
+
+    /// Selects the Engine-wide idle connection limit. Zero disables idle reuse.
+    #[must_use]
+    pub fn max_idle_connections(mut self, connections: usize) -> Self {
+        self.config = self.config.with_max_idle_connections(connections);
+        self
+    }
+
+    /// Selects the per-origin idle connection limit. Zero disables idle reuse.
+    #[must_use]
+    pub fn max_idle_connections_per_origin(mut self, connections: usize) -> Self {
+        self.config = self
+            .config
+            .with_max_idle_connections_per_origin(connections);
+        self
+    }
+
+    /// Selects how long an unused persistent connection may remain pooled.
+    #[must_use]
+    pub fn idle_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.config = self.config.with_idle_connection_timeout(timeout);
+        self
+    }
+
     /// Builds one independent Engine.
     pub fn build(self) -> Result<Engine, Error> {
         Engine::new(self.config)
@@ -842,15 +879,23 @@ mod tests {
     }
 
     #[test]
-    fn builder_sets_callback_worker_count() {
+    fn builder_sets_engine_configuration() {
         let workers = NonZeroUsize::new(3).expect("three is non-zero");
         let command_capacity = NonZeroUsize::new(7).expect("seven is non-zero");
         let callback_capacity = NonZeroUsize::new(9).expect("nine is non-zero");
+        let connection_capacity = NonZeroUsize::new(11).expect("eleven is non-zero");
+        let origin_capacity = NonZeroUsize::new(5).expect("five is non-zero");
+        let idle_timeout = Duration::from_secs(17);
         let engine = EngineBuilder::spawned()
             .callback_workers(workers)
             .max_inflight_requests(command_capacity)
             .command_queue_capacity(command_capacity)
             .callback_queue_capacity(callback_capacity)
+            .max_connections(connection_capacity)
+            .max_connections_per_origin(origin_capacity)
+            .max_idle_connections(6)
+            .max_idle_connections_per_origin(2)
+            .idle_connection_timeout(idle_timeout)
             .build()
             .expect("Engine must construct");
         assert_eq!(
@@ -860,5 +905,10 @@ mod tests {
         assert_eq!(engine.config.max_inflight_requests(), command_capacity);
         assert_eq!(engine.config.command_queue_capacity(), command_capacity);
         assert_eq!(engine.config.callback_queue_capacity(), callback_capacity);
+        assert_eq!(engine.config.max_connections(), connection_capacity);
+        assert_eq!(engine.config.max_connections_per_origin(), origin_capacity);
+        assert_eq!(engine.config.max_idle_connections(), 6);
+        assert_eq!(engine.config.max_idle_connections_per_origin(), 2);
+        assert_eq!(engine.config.idle_connection_timeout(), idle_timeout);
     }
 }
