@@ -10,6 +10,7 @@ mod client;
 mod context;
 mod dispatch;
 mod engine;
+mod metrics;
 mod reactor;
 mod registry;
 mod stream;
@@ -26,6 +27,7 @@ mod lifecycle_tests;
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};
 pub use engine::{Engine, EngineBuilder};
+pub use metrics::{EngineMetrics, ResourceMetrics};
 pub use stream::{
     ResponseHead, ResponseReader, StreamError, StreamRead, StreamRequest, StreamRequestBuilder,
     TryPushError, TryPushErrorKind, UploadBody, UploadFinishError, UploadFinishErrorKind,

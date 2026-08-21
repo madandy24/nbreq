@@ -936,6 +936,13 @@ impl ResponseControl {
         lock_unpoisoned(&self.shared.state).terminal.is_some()
     }
 
+    pub(crate) fn outcome(&self) -> Option<StreamOutcome> {
+        lock_unpoisoned(&self.shared.state)
+            .terminal
+            .as_ref()
+            .map(StreamOutcome::from)
+    }
+
     pub(crate) fn fail(&self, error: Error) -> bool {
         self.commit_terminal(StreamTerminal::Failed(error))
     }
@@ -1109,6 +1116,23 @@ enum StreamTerminal {
     Complete,
     Failed(Error),
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StreamOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl From<&StreamTerminal> for StreamOutcome {
+    fn from(terminal: &StreamTerminal) -> Self {
+        match terminal {
+            StreamTerminal::Complete => Self::Completed,
+            StreamTerminal::Failed(_) => Self::Failed,
+            StreamTerminal::Cancelled => Self::Cancelled,
+        }
+    }
 }
 
 #[allow(dead_code)] // Called by stream acceptance beginning with the next slice.

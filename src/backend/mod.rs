@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "curl-pilot")]
 use crate::EngineConfig;
+use crate::metrics::Metrics;
 use crate::registry::Shared;
 use crate::stream::ResponseSink;
 use crate::{Completion, Error, Request, RequestId, ShutdownError, StreamRequest};
@@ -46,6 +47,8 @@ pub(crate) struct ResponseLimits {
 }
 
 pub(crate) trait Backend {
+    fn attach_metrics(&mut self, _metrics: Arc<Metrics>) {}
+
     fn submit(
         &mut self,
         id: RequestId,

@@ -17,6 +17,7 @@ use super::native_tls::{
     encrypted_receive_limit,
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
+use crate::metrics::Metrics;
 use crate::registry::Shared;
 use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, UploadPoll};
 use crate::types::{http_origin, redirected_request};
@@ -1482,8 +1483,9 @@ impl NativeHttpFactory {
 
 impl BackendFactory for NativeHttpFactory {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
-        let backend =
+        let mut backend =
             NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.attach_metrics(Arc::clone(&shared.metrics));
         let waker = backend.reactor.waker();
         shared.queue.set_external_waker(Some(Arc::new(move || {
             waker.wake().map_err(|error| {
@@ -1699,6 +1701,7 @@ struct NativeHttpBackend {
     connections_per_key: HashMap<ConnectionKey, usize>,
     waiting: VecDeque<PendingResolve>,
     connection_limits: ConnectionLimits,
+    metrics: Option<Arc<Metrics>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1872,6 +1875,7 @@ impl NativeHttpBackend {
             connections_per_key: HashMap::new(),
             waiting: VecDeque::new(),
             connection_limits,
+            metrics: None,
         })
     }
 
@@ -1887,6 +1891,9 @@ impl NativeHttpBackend {
         }
         self.connection_count += 1;
         *self.connections_per_key.entry(key.clone()).or_default() += 1;
+        if let Some(metrics) = &self.metrics {
+            metrics.connection_opened(self.connection_count);
+        }
         true
     }
 
@@ -1903,6 +1910,9 @@ impl NativeHttpBackend {
         *count -= 1;
         if *count == 0 {
             self.connections_per_key.remove(key);
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.connection_closed(self.connection_count);
         }
     }
 
@@ -1974,6 +1984,9 @@ impl NativeHttpBackend {
                 completions.push(BackendCompletion { id, completion });
             }
         }
+        if let Some(metrics) = &self.metrics {
+            metrics.set_connection_waiters(self.waiting.len());
+        }
         completions
     }
 
@@ -2000,6 +2013,9 @@ impl NativeHttpBackend {
                 completions.push(BackendCompletion { id, completion });
             }
             index = 0;
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.set_connection_waiters(self.waiting.len());
         }
         completions
     }
@@ -2066,6 +2082,9 @@ impl NativeHttpBackend {
         let pending = self.try_begin_reused(pending)?;
         if !self.make_connection_capacity(&pending.key) || !self.reserve_connection(&pending.key) {
             self.waiting.push_back(pending);
+            if let Some(metrics) = &self.metrics {
+                metrics.set_connection_waiters(self.waiting.len());
+            }
             return None;
         }
         self.start_reserved(pending)
@@ -2108,6 +2127,9 @@ impl NativeHttpBackend {
         }
         self.idle_slots.remove(&connection.slot);
         self.idle_count = self.idle_count.saturating_sub(1);
+        if let Some(metrics) = &self.metrics {
+            metrics.set_idle_connections(self.idle_count);
+        }
         Some(connection)
     }
 
@@ -2127,6 +2149,10 @@ impl NativeHttpBackend {
             if connections.is_empty() {
                 self.idle.remove(&key);
             }
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.set_idle_connections(self.idle_count);
+            metrics.idle_evicted();
         }
         self.reactor.cancel(slot);
         self.release_connection(&key);
@@ -2225,6 +2251,9 @@ impl NativeHttpBackend {
                 upload_aborted: false,
             },
         );
+        if let Some(metrics) = &self.metrics {
+            metrics.connection_reused();
+        }
         None
     }
 
@@ -2277,6 +2306,9 @@ impl NativeHttpBackend {
                         expires_at,
                     });
                 self.idle_count += 1;
+                if let Some(metrics) = &self.metrics {
+                    metrics.set_idle_connections(self.idle_count);
+                }
             } else {
                 self.reactor.cancel(slot);
                 self.release_connection(&transfer.key);
@@ -2953,6 +2985,9 @@ impl NativeHttpBackend {
                         expires_at,
                     });
                 self.idle_count += 1;
+                if let Some(metrics) = &self.metrics {
+                    metrics.set_idle_connections(self.idle_count);
+                }
             } else {
                 self.reactor.cancel(slot);
                 self.release_connection(&transfer.key);
@@ -3671,6 +3706,13 @@ impl NativeHttpBackend {
 }
 
 impl Backend for NativeHttpBackend {
+    fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
+        metrics.set_active_connections(self.connection_count);
+        metrics.set_idle_connections(self.idle_count);
+        metrics.set_connection_waiters(self.waiting.len());
+        self.metrics = Some(metrics);
+    }
+
     fn submit(
         &mut self,
         id: RequestId,
@@ -3762,6 +3804,9 @@ impl Backend for NativeHttpBackend {
             .position(|pending| pending.request_id == id)
         {
             self.waiting.remove(index);
+            if let Some(metrics) = &self.metrics {
+                metrics.set_connection_waiters(self.waiting.len());
+            }
         }
         if let Some(key) = self.request_to_resolve.remove(&id) {
             if let Some(pending) = self.resolves.remove(&key) {
@@ -3803,6 +3848,7 @@ impl Backend for NativeHttpBackend {
     }
 
     fn shutdown(&mut self) -> Result<(), ShutdownError> {
+        let closing = self.connection_count;
         self.request_to_slot.clear();
         self.transfers.clear();
         self.request_to_resolve.clear();
@@ -3813,6 +3859,13 @@ impl Backend for NativeHttpBackend {
         self.connection_count = 0;
         self.connections_per_key.clear();
         self.waiting.clear();
+        if let Some(metrics) = &self.metrics {
+            for _ in 0..closing {
+                metrics.connection_closed(0);
+            }
+            metrics.set_idle_connections(0);
+            metrics.set_connection_waiters(0);
+        }
         if let Some(resolver) = &mut self.resolver {
             resolver.shutdown().map_err(ShutdownError::new)?;
         }
@@ -4693,6 +4746,7 @@ mod tests {
     fn native_http_reuses_one_clean_connection_for_sequential_requests() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("reuse fixture must bind");
         let address = listener.local_addr().expect("reuse fixture address");
+        let (release_tx, release_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("reuse fixture must accept once");
             stream
@@ -4716,6 +4770,9 @@ mod tests {
                     .write_all(body)
                     .expect("reused response body must write");
             }
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("metrics observation must release the reusable peer");
         });
         let config = EngineConfig::spawned();
         let engine =
@@ -4733,6 +4790,17 @@ mod tests {
                 .expect("reuse request must complete");
             assert_eq!(response.body(), expected);
         }
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), 2);
+        assert_eq!(metrics.requests_completed(), 2);
+        assert_eq!(metrics.connections_opened(), 1);
+        assert_eq!(metrics.connections_reused(), 1);
+        assert_eq!(metrics.connections_closed(), 0);
+        assert_eq!(metrics.current().active_connections(), 1);
+        assert_eq!(metrics.current().idle_connections(), 1);
+        assert_eq!(metrics.high_water().active_connections(), 1);
+        assert_eq!(metrics.high_water().idle_connections(), 1);
+        release_tx.send(()).expect("reusable peer must release");
         engine.shutdown().expect("reuse Engine must stop");
         server.join().expect("reuse fixture must join");
     }
@@ -5737,6 +5805,11 @@ mod tests {
             )
             .expect("second idle-close request must use a replacement socket");
         assert_eq!(second.body(), b"2");
+        let metrics = engine.metrics();
+        assert_eq!(metrics.connections_opened(), 2);
+        assert_eq!(metrics.connections_reused(), 0);
+        assert!(metrics.connections_closed() >= 1);
+        assert!(metrics.idle_connections_evicted() >= 1);
         engine.shutdown().expect("idle-close Engine must stop");
         server.join().expect("idle-close fixture must join");
     }
@@ -6149,6 +6222,12 @@ mod tests {
         };
         assert_eq!(error.kind(), ErrorKind::Timeout);
         assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), 2);
+        assert_eq!(metrics.requests_failed(), 1);
+        assert_eq!(metrics.current().active_connections(), 1);
+        assert_eq!(metrics.current().connection_waiters(), 0);
+        assert_eq!(metrics.high_water().connection_waiters(), 1);
         first_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("first capped request must own the only connection");

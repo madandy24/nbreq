@@ -469,6 +469,38 @@ that zero global idle, zero per-origin idle, and zero idle timeout each close th
 instead of pooling it. Native remains private; the curl pilot does not yet claim these knobs, and
 WP10 must map them or reject unsupported policy before backend parity/public selection.
 
+## WP9.5b owner metrics — Windows slice
+
+`Engine::metrics()` now returns public `EngineMetrics` and `ResourceMetrics` value snapshots without
+locking a registry, pool, callback queue, or command queue. The unique Engine remains `Send + !Sync`;
+the snapshot values themselves are `Send + Sync`, cloneable values and do not expose a Client-wide
+inspection path. Counters use saturating atomics and have no reset operation. Current values are
+loaded independently, so the documented cross-field approximation is real rather than an implied
+transactional snapshot.
+
+The canonical registry winner increments accepted/completed/failed/cancelled request counters for
+both buffered and streamed families. Rejected admission does not increment accepted. Current
+inflight follows the existing admission permit: a terminal callback increments its outcome counter
+but deliberately remains inflight until user code returns. Command and callback queue gauges move
+at the actual push/drain/dequeue ownership transitions. The streaming-byte gauge reports bytes
+reserved against the aggregate Engine budget, not bytes copied into a user-visible payload queue;
+its permit release returns the gauge to zero on cancel/failure/terminal completion.
+
+Native pool gauges and counters move on the owner thread. Active connection capacity includes DNS,
+connecting, leased, and idle reservations, so `connections_opened`/`connections_closed` describe
+those balanced capacity lifecycles rather than falsely claiming every reservation completed a TCP
+handshake. A successful clean lease increments reuse; parking/taking/discarding updates idle; cap,
+expiry, contamination, or peer-close removal increments idle eviction; and the oldest-eligible
+capacity queue owns the waiter gauge. Shutdown clears remaining native gauges while closing the
+remaining capacity lifecycles. Curl/scaffold snapshots report zero connection values rather than
+inventing backend-native introspection.
+
+The Windows gate at this slice passes 175 native unit tests, 4 adversarial HTTP tests, 5 public
+contract tests, and 6 doctests. The default build passes 65 unit, 5 contract, and 6 doctests. Strict
+all-target/all-feature clippy, formatting, all-feature documentation, request terminal/callback
+retention, stream reservation release, one-socket reuse, and capacity-wait high-water tests pass.
+Exact-source Ubuntu repetition remains required before this metrics slice is accepted there.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

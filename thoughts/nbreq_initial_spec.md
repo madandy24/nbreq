@@ -561,6 +561,9 @@ gauges; and high-water marks for the bounded gauges. Values are per Engine, satu
 slightly cross-field inconsistent while work progresses. No URL, origin, method, header, body,
 certificate, address, or backend-native error value is retained. Timing/stage histograms require a
 later explicit privacy and cost decision rather than appearing accidentally in the first snapshot.
+Native opened/closed counters follow the same capacity lifecycle as the active gauge: the lifecycle
+begins when DNS/connect capacity is reserved and can therefore close before a TCP handshake. Reuse
+counts only a successful lease of an already-clean idle connection.
 
 Initial native milestones may disable reuse until single-request correctness is established.
 

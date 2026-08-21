@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use crate::context;
 use crate::dispatch::{CallbackDomain, CallbackJob};
+use crate::metrics::{EngineMetrics, Metrics};
 use crate::stream::{ResponseControl, ResponseSink, response_pair};
 use crate::{
     Client, Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestHandle,
@@ -275,10 +276,11 @@ pub(crate) struct CommandQueue {
     changed: Condvar,
     external_waker: Mutex<Option<ExternalWaker>>,
     external_wake_failure: Mutex<Option<Error>>,
+    metrics: Arc<Metrics>,
 }
 
 impl CommandQueue {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, metrics: Arc<Metrics>) -> Self {
         Self {
             capacity,
             state: Mutex::new(QueueState {
@@ -288,6 +290,7 @@ impl CommandQueue {
             changed: Condvar::new(),
             external_waker: Mutex::new(None),
             external_wake_failure: Mutex::new(None),
+            metrics,
         }
     }
 
@@ -297,6 +300,7 @@ impl CommandQueue {
             return false;
         }
         state.submissions.push_back(submission);
+        self.metrics.command_queued();
         state.generation = state.generation.wrapping_add(1);
         self.changed.notify_one();
         drop(state);
@@ -305,7 +309,12 @@ impl CommandQueue {
     }
 
     pub(crate) fn drain(&self) -> Vec<Submission> {
-        lock_unpoisoned(&self.state).submissions.drain(..).collect()
+        let drained = lock_unpoisoned(&self.state)
+            .submissions
+            .drain(..)
+            .collect::<Vec<_>>();
+        self.metrics.commands_drained(drained.len());
+        drained
     }
 
     pub(crate) fn wake(&self) {
@@ -396,6 +405,7 @@ pub(crate) struct Shared {
     pub(crate) stopped: AtomicBool,
     pub(crate) run_mode: RunMode,
     pub(crate) queue: CommandQueue,
+    pub(crate) metrics: Arc<Metrics>,
     callback_domain: Arc<CallbackDomain>,
     core: Mutex<CoreState>,
     inflight: Arc<AtomicUsize>,
@@ -443,6 +453,7 @@ impl Shared {
         config: &EngineConfig,
         callback_domain: Arc<CallbackDomain>,
         streaming_supported: bool,
+        metrics: Arc<Metrics>,
     ) -> Arc<Self> {
         let command_capacity = config.command_queue_capacity().get();
         let callback_capacity = config.callback_queue_capacity().get();
@@ -450,7 +461,8 @@ impl Shared {
             id,
             stopped: AtomicBool::new(false),
             run_mode: config.run_mode(),
-            queue: CommandQueue::new(command_capacity),
+            queue: CommandQueue::new(command_capacity, Arc::clone(&metrics)),
+            metrics,
             callback_domain,
             core: Mutex::new(CoreState {
                 lifecycle: LifecycleState::Running,
@@ -538,6 +550,10 @@ impl Shared {
                 "the Engine's bounded command queue is full",
             ));
         }
+        self.metrics.request_accepted(
+            self.inflight.load(Ordering::Acquire),
+            self.stream_queued_bytes.load(Ordering::Acquire),
+        );
 
         let activation = if has_callback {
             *lock_unpoisoned(&self.callback_activations) += 1;
@@ -668,6 +684,10 @@ impl Shared {
                 "the Engine's bounded command queue is full",
             ));
         }
+        self.metrics.request_accepted(
+            self.inflight.load(Ordering::Acquire),
+            self.stream_queued_bytes.load(Ordering::Acquire),
+        );
         drop(core);
         Ok(reader)
     }
@@ -770,11 +790,13 @@ impl Shared {
     }
 
     pub(crate) fn complete_state(&self, state: &Arc<RequestState>, completion: Completion) -> bool {
+        let terminal = completion.clone();
         let (won, job) = state.commit(completion);
         if !won {
             return false;
         }
         lock_unpoisoned(&self.core).requests.remove(&state.id());
+        self.metrics.request_terminal(&terminal);
         if let Some(job) = job {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
@@ -783,9 +805,17 @@ impl Shared {
 
     pub(crate) fn finish_stream_state(&self, state: &Arc<StreamRequestState>) {
         state.release_permits();
-        lock_unpoisoned(&self.core)
+        let removed = lock_unpoisoned(&self.core)
             .stream_requests
-            .remove(&state.id());
+            .remove(&state.id())
+            .is_some();
+        if removed {
+            if let Some(outcome) = state.control.outcome() {
+                self.metrics.stream_terminal(outcome);
+            } else {
+                debug_assert!(false, "nonterminal stream request left the registry");
+            }
+        }
     }
 
     fn cancel_stream_state(&self, state: &Arc<StreamRequestState>) -> bool {
@@ -813,6 +843,13 @@ impl Shared {
             }
         }
         self.queue.wake();
+    }
+
+    pub(crate) fn metrics_snapshot(&self) -> EngineMetrics {
+        self.metrics.snapshot(
+            self.inflight.load(Ordering::Acquire),
+            self.stream_queued_bytes.load(Ordering::Acquire),
+        )
     }
 
     fn validate_request_limits(&self, request: &Request) -> Result<(), Error> {

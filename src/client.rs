@@ -266,6 +266,11 @@ mod tests {
                     .expect("first stream request must build"),
             )
             .expect("one response window must fit");
+        assert_eq!(engine.metrics().current().reserved_stream_queue_bytes(), 8);
+        assert_eq!(
+            engine.metrics().high_water().reserved_stream_queue_bytes(),
+            8
+        );
         let error = client
             .submit_stream(
                 crate::StreamRequest::get("http://example.test/two")
@@ -278,7 +283,10 @@ mod tests {
             error.limit_kind(),
             Some(crate::LimitKind::StreamingQueueBytes)
         );
+        assert_eq!(engine.metrics().requests_accepted(), 1);
         first.handle().cancel().expect("first stream must cancel");
+        assert_eq!(engine.metrics().current().reserved_stream_queue_bytes(), 0);
+        assert_eq!(engine.metrics().requests_cancelled(), 1);
         let second = client
             .submit_stream(
                 crate::StreamRequest::get("http://example.test/two")
@@ -286,6 +294,7 @@ mod tests {
                     .expect("second stream request must rebuild"),
             )
             .expect("cancel must release the aggregate reservation");
+        assert_eq!(engine.metrics().requests_accepted(), 2);
         second.handle().cancel().expect("second stream must cancel");
         engine.shutdown().expect("held Engine must stop");
     }

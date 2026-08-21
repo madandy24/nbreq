@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::callback::{CallbackCompletion, DetachedCallbacks};
 use crate::context::{ContextGuard, ContextKind};
+use crate::metrics::Metrics;
 use crate::{CallbackDispatch, Error, ErrorKind, RequestId, ShutdownError};
 
 pub(crate) struct CallbackJob {
@@ -57,12 +58,13 @@ pub(crate) struct CallbackDomain {
     changed: Condvar,
     completion: Arc<CallbackCompletion>,
     panic_count: AtomicUsize,
+    metrics: Arc<Metrics>,
     #[cfg(test)]
     worker_exit_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl CallbackDomain {
-    fn new(engine_id: u64, capacity: usize) -> Arc<Self> {
+    fn new(engine_id: u64, capacity: usize, metrics: Arc<Metrics>) -> Arc<Self> {
         Arc::new(Self {
             engine_id,
             capacity,
@@ -76,6 +78,7 @@ impl CallbackDomain {
             changed: Condvar::new(),
             completion: CallbackCompletion::pending(),
             panic_count: AtomicUsize::new(0),
+            metrics,
             #[cfg(test)]
             worker_exit_hook: Mutex::new(None),
         })
@@ -86,7 +89,8 @@ impl CallbackDomain {
         if state.sealed {
             return false;
         }
-        if state.queue.len() == self.capacity {
+        let previous_len = state.queue.len();
+        if previous_len == self.capacity {
             if let Some(progress) = state
                 .queue
                 .iter()
@@ -101,6 +105,9 @@ impl CallbackDomain {
             // on that defensive bug path.
         }
         state.queue.push_back(job);
+        if state.queue.len() > previous_len {
+            self.metrics.callback_queued();
+        }
         self.changed.notify_all();
         true
     }
@@ -125,16 +132,18 @@ impl CallbackDomain {
             return false;
         }
         state.queue.push_back(job);
+        self.metrics.callback_queued();
         self.changed.notify_all();
         true
     }
 
-    fn take_runnable(state: &mut DispatchState) -> Option<CallbackJob> {
+    fn take_runnable(&self, state: &mut DispatchState) -> Option<CallbackJob> {
         let position = state
             .queue
             .iter()
             .position(|job| !state.active_requests.contains(&job.request_id))?;
         let job = state.queue.remove(position)?;
+        self.metrics.callback_dequeued();
         state.active_requests.insert(job.request_id);
         state.running += 1;
         Some(job)
@@ -159,7 +168,7 @@ impl CallbackDomain {
             let job = {
                 let mut state = lock_unpoisoned(&self.state);
                 loop {
-                    if let Some(job) = Self::take_runnable(&mut state) {
+                    if let Some(job) = self.take_runnable(&mut state) {
                         break Some(job);
                     }
                     if state.sealed && state.queue.is_empty() {
@@ -190,7 +199,7 @@ impl CallbackDomain {
         loop {
             let job = {
                 let mut state = lock_unpoisoned(&self.state);
-                Self::take_runnable(&mut state)
+                self.take_runnable(&mut state)
             };
             match job {
                 Some(job) => self.run_job(job),
@@ -251,12 +260,13 @@ impl DispatcherOwner {
         engine_id: u64,
         capacity: usize,
         dispatch: CallbackDispatch,
+        metrics: Arc<Metrics>,
     ) -> Result<Self, Error> {
         let worker_count = match dispatch {
             CallbackDispatch::Inline => 0,
             CallbackDispatch::Workers(workers) => workers.get(),
         };
-        let domain = CallbackDomain::new(engine_id, capacity);
+        let domain = CallbackDomain::new(engine_id, capacity, metrics);
         let mut workers = Vec::with_capacity(worker_count);
         for index in 0..worker_count {
             let worker_domain = Arc::clone(&domain);
@@ -358,10 +368,14 @@ mod tests {
         }
     }
 
+    fn metrics() -> Arc<Metrics> {
+        Arc::new(Metrics::default())
+    }
+
     #[test]
     fn worker_pool_serializes_each_request_but_runs_peers() {
         let workers = std::num::NonZeroUsize::new(2).expect("two is non-zero");
-        let owner = DispatcherOwner::new(77, 4, CallbackDispatch::Workers(workers))
+        let owner = DispatcherOwner::new(77, 4, CallbackDispatch::Workers(workers), metrics())
             .expect("dispatcher must construct");
         let domain = owner.domain();
         let (first_started_tx, first_started_rx) = mpsc::channel();
@@ -399,7 +413,7 @@ mod tests {
     #[test]
     fn callback_panic_is_counted_and_worker_survives() {
         let workers = std::num::NonZeroUsize::new(1).expect("one is non-zero");
-        let owner = DispatcherOwner::new(77, 2, CallbackDispatch::Workers(workers))
+        let owner = DispatcherOwner::new(77, 2, CallbackDispatch::Workers(workers), metrics())
             .expect("dispatcher must construct");
         let domain = owner.domain();
         let observed = Arc::clone(&domain);
@@ -420,7 +434,7 @@ mod tests {
 
     #[test]
     fn progress_coalesces_and_terminal_events_displace_progress() {
-        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Inline)
+        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Inline, metrics())
             .expect("dispatcher must construct");
         let domain = owner.domain();
         let (progress_tx, progress_rx) = mpsc::channel();
@@ -461,7 +475,7 @@ mod tests {
     #[test]
     fn detached_wait_joins_worker_after_domain_completion() {
         let workers = std::num::NonZeroUsize::new(1).expect("one is non-zero");
-        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Workers(workers))
+        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Workers(workers), metrics())
             .expect("dispatcher must construct");
         let domain = owner.domain();
         let (callback_started_tx, callback_started_rx) = mpsc::channel();
@@ -515,7 +529,7 @@ mod tests {
 
     #[test]
     fn terminal_enqueue_after_seal_is_rejected_without_panicking() {
-        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Inline)
+        let owner = DispatcherOwner::new(77, 1, CallbackDispatch::Inline, metrics())
             .expect("dispatcher must construct");
         let domain = owner.domain();
         domain.seal();
@@ -527,7 +541,7 @@ mod tests {
 
     #[test]
     fn terminal_only_overflow_is_preserved_without_panicking_or_discarding() {
-        let domain = CallbackDomain::new(1, 1);
+        let domain = CallbackDomain::new(1, 1, metrics());
         let (first_tx, first_rx) = mpsc::channel();
         let (second_tx, second_rx) = mpsc::channel();
         assert!(domain.enqueue_terminal(CallbackJob::new(id(1), move || {

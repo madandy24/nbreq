@@ -21,6 +21,53 @@ fn response(marker: u8) -> Completion {
 }
 
 #[test]
+fn metrics_follow_canonical_terminal_and_retained_callback_resources() {
+    let (mut engine, controller) =
+        testing::engine(EngineConfig::manual()).expect("deterministic Engine must construct");
+    let client = engine.client();
+    let (callback_tx, callback_rx) = mpsc::channel();
+    let handle = client
+        .start(request(), move |completion| {
+            callback_tx
+                .send(completion)
+                .expect("test receiver must remain");
+        })
+        .expect("callback request must submit");
+
+    let accepted = engine.metrics();
+    assert_eq!(accepted.requests_accepted(), 1);
+    assert_eq!(accepted.current().inflight_requests(), 1);
+    assert_eq!(accepted.current().queued_commands(), 1);
+    assert_eq!(accepted.high_water().inflight_requests(), 1);
+    assert_eq!(accepted.high_water().queued_commands(), 1);
+
+    assert!(controller.complete(handle.id(), response(7)));
+    let terminal = engine.metrics();
+    assert_eq!(terminal.requests_completed(), 1);
+    assert_eq!(terminal.requests_failed(), 0);
+    assert_eq!(terminal.requests_cancelled(), 0);
+    assert_eq!(terminal.current().queued_callbacks(), 1);
+    assert_eq!(terminal.current().inflight_requests(), 1);
+
+    engine
+        .drive(Instant::now() + Duration::from_millis(20))
+        .expect("manual drive must drain command and callback queues");
+    assert!(matches!(
+        callback_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback must run"),
+        Completion::Completed(_)
+    ));
+    let drained = engine.metrics();
+    assert_eq!(drained.current().queued_commands(), 0);
+    assert_eq!(drained.current().queued_callbacks(), 0);
+    assert_eq!(drained.current().inflight_requests(), 0);
+    assert_eq!(drained.high_water().queued_callbacks(), 1);
+
+    engine.shutdown().expect("Engine must stop");
+}
+
+#[test]
 fn cancel_complete_race_has_exactly_one_terminal_winner() {
     let (engine, controller) =
         testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");

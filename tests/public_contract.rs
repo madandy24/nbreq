@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use nbreq::{
-    Client, DetachedCallbacks, Engine, EngineConfig, ErrorKind, PendingRequest, RequestHandle,
-    ResponseReader, StreamRequest, UploadBody, UploadSender,
+    Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, PendingRequest,
+    RequestHandle, ResourceMetrics, ResponseReader, StreamRequest, UploadBody, UploadSender,
 };
 
 fn assert_send<T: Send>() {}
@@ -19,6 +19,8 @@ fn public_thread_traits_match_the_contract() {
     assert_send::<UploadBody>();
     assert_send::<UploadSender>();
     assert_send::<ResponseReader>();
+    assert_send_sync::<EngineMetrics>();
+    assert_send_sync::<ResourceMetrics>();
 }
 
 #[test]
@@ -28,6 +30,15 @@ fn clients_are_engine_issued_and_do_not_own_shutdown() {
     let clone = client.clone();
     drop(client);
     drop(clone);
+    engine.shutdown().expect("empty Engine must stop");
+}
+
+#[test]
+fn metrics_are_owner_observed_and_start_empty() {
+    let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
+    let metrics = engine.metrics();
+    assert_eq!(metrics, EngineMetrics::default());
+    assert_eq!(metrics.current(), ResourceMetrics::default());
     engine.shutdown().expect("empty Engine must stop");
 }
 

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
+use crate::metrics::Metrics;
 use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
@@ -76,7 +77,7 @@ impl Engine {
     #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
     pub(crate) fn with_backend(
         config: EngineConfig,
-        backend: Box<dyn Backend + Send>,
+        mut backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
         let streaming_supported = backend.supports_streaming();
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
@@ -87,12 +88,21 @@ impl Engine {
             ));
         }
 
+        let metrics = Arc::new(Metrics::default());
         let dispatcher = DispatcherOwner::new(
             id,
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
+            Arc::clone(&metrics),
         )?;
-        let shared = Shared::new(id, &config, dispatcher.domain(), streaming_supported);
+        let shared = Shared::new(
+            id,
+            &config,
+            dispatcher.domain(),
+            streaming_supported,
+            Arc::clone(&metrics),
+        );
+        backend.attach_metrics(metrics);
         let runtime = match config.run_mode() {
             RunMode::Spawned => {
                 let reactor_shared = Arc::clone(&shared);
@@ -176,13 +186,21 @@ impl Engine {
                 "Engine identity space is exhausted",
             ));
         }
+        let metrics = Arc::new(Metrics::default());
         let dispatcher = DispatcherOwner::new(
             id,
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
+            Arc::clone(&metrics),
         )?;
         let streaming_supported = factory.supports_streaming();
-        let shared = Shared::new(id, &config, dispatcher.domain(), streaming_supported);
+        let shared = Shared::new(
+            id,
+            &config,
+            dispatcher.domain(),
+            streaming_supported,
+            metrics,
+        );
         let reactor_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
@@ -229,6 +247,14 @@ impl Engine {
     #[must_use]
     pub fn client(&self) -> Client {
         Client::new(Arc::clone(&self.shared))
+    }
+
+    /// Returns a nonblocking, payload-free snapshot of this Engine's lifetime activity.
+    ///
+    /// Fields are loaded independently and may be cross-field inconsistent while work is moving.
+    #[must_use]
+    pub fn metrics(&self) -> crate::EngineMetrics {
+        self.shared.metrics_snapshot()
     }
 
     /// Cancels requests accepted before the cancellation barrier while keeping the Engine alive.

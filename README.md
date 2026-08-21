@@ -62,6 +62,13 @@ Engine configuration independently bounds accepted/inflight requests, queued com
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
 until it returns; blocking-only requests do not consume callback capacity.
 
+`Engine::metrics()` returns an owner-observed, nonblocking snapshot of saturating request and
+connection counters plus current and high-water bounded-resource pressure. It contains no URL,
+origin, header, body, address, certificate, or backend-native error data; fields may be slightly
+cross-field inconsistent while work is moving. Native connection counters describe capacity
+lifecycles beginning at DNS/connect reservation, matching the active cap rather than claiming that
+every reserved slot completed a TCP handshake.
+
 ## Native backend status
 
 The private `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
