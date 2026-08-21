@@ -6,7 +6,11 @@ use std::time::Instant;
 
 use crate::context;
 use crate::dispatch::{CallbackDomain, CallbackJob};
-use crate::{Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestId, RunMode};
+use crate::stream::{ResponseControl, ResponseSink, response_pair};
+use crate::{
+    Client, Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestHandle,
+    RequestId, ResponseReader, RunMode, StreamRequest,
+};
 
 pub(crate) type CompletionCallback = Box<dyn FnOnce(Completion) + Send + 'static>;
 type ExternalWaker = Arc<dyn Fn() -> Result<(), Error> + Send + Sync + 'static>;
@@ -20,6 +24,30 @@ pub(crate) enum LifecycleState {
 
 struct AdmissionPermit {
     inflight: Arc<AtomicUsize>,
+}
+
+struct BytePermit {
+    used: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl BytePermit {
+    fn try_acquire(used: &Arc<AtomicUsize>, limit: usize, bytes: usize) -> Option<Self> {
+        used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(bytes).filter(|next| *next <= limit)
+        })
+        .ok()?;
+        Some(Self {
+            used: Arc::clone(used),
+            bytes,
+        })
+    }
+}
+
+impl Drop for BytePermit {
+    fn drop(&mut self) {
+        self.used.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
 }
 
 impl Drop for AdmissionPermit {
@@ -173,10 +201,67 @@ impl RequestState {
     }
 }
 
-pub(crate) struct Submission {
-    pub(crate) request: Request,
-    pub(crate) state: Arc<RequestState>,
-    pub(crate) accepted_at: Instant,
+pub(crate) struct StreamRequestState {
+    id: RequestId,
+    control: ResponseControl,
+    permits: Mutex<Option<(AdmissionPermit, BytePermit)>>,
+}
+
+impl StreamRequestState {
+    fn new(
+        id: RequestId,
+        control: ResponseControl,
+        inflight_permit: AdmissionPermit,
+        queued_bytes_permit: BytePermit,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            control,
+            permits: Mutex::new(Some((inflight_permit, queued_bytes_permit))),
+        })
+    }
+
+    pub(crate) fn id(&self) -> RequestId {
+        self.id
+    }
+
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.control.is_terminal()
+    }
+
+    fn cancel(&self) -> bool {
+        let won = self.control.cancel();
+        if won {
+            self.release_permits();
+        }
+        won
+    }
+
+    fn fail(&self, error: Error) -> bool {
+        let won = self.control.fail(error);
+        if won {
+            self.release_permits();
+        }
+        won
+    }
+
+    fn release_permits(&self) {
+        drop(lock_unpoisoned(&self.permits).take());
+    }
+}
+
+pub(crate) enum Submission {
+    Buffered {
+        request: Request,
+        state: Arc<RequestState>,
+        accepted_at: Instant,
+    },
+    Stream {
+        request: StreamRequest,
+        state: Arc<StreamRequestState>,
+        response: ResponseSink,
+        accepted_at: Instant,
+    },
 }
 
 struct QueueState {
@@ -299,6 +384,7 @@ struct CoreState {
     lifecycle: LifecycleState,
     next_sequence: u64,
     requests: HashMap<RequestId, Arc<RequestState>>,
+    stream_requests: HashMap<RequestId, Arc<StreamRequestState>>,
 }
 
 pub(crate) struct AcceptedRequest {
@@ -316,7 +402,12 @@ pub(crate) struct Shared {
     inflight_limit: usize,
     callback_inflight: Arc<AtomicUsize>,
     callback_inflight_limit: usize,
+    streaming_supported: bool,
     max_request_body_bytes: usize,
+    max_response_body_bytes: usize,
+    max_stream_queue_bytes_per_request: usize,
+    stream_queued_bytes: Arc<AtomicUsize>,
+    max_stream_queued_bytes: usize,
     max_header_bytes: usize,
     max_header_count: usize,
     callback_activations: Mutex<usize>,
@@ -351,6 +442,7 @@ impl Shared {
         id: u64,
         config: &EngineConfig,
         callback_domain: Arc<CallbackDomain>,
+        streaming_supported: bool,
     ) -> Arc<Self> {
         let command_capacity = config.command_queue_capacity().get();
         let callback_capacity = config.callback_queue_capacity().get();
@@ -364,12 +456,18 @@ impl Shared {
                 lifecycle: LifecycleState::Running,
                 next_sequence: 1,
                 requests: HashMap::new(),
+                stream_requests: HashMap::new(),
             }),
             inflight: Arc::new(AtomicUsize::new(0)),
             inflight_limit: config.max_inflight_requests().get(),
             callback_inflight: Arc::new(AtomicUsize::new(0)),
             callback_inflight_limit: callback_capacity,
+            streaming_supported,
             max_request_body_bytes: config.max_request_body_bytes(),
+            max_response_body_bytes: config.max_response_body_bytes(),
+            max_stream_queue_bytes_per_request: config.max_stream_queue_bytes_per_request(),
+            stream_queued_bytes: Arc::new(AtomicUsize::new(0)),
+            max_stream_queued_bytes: config.max_stream_queued_bytes(),
             max_header_bytes: config.max_header_bytes(),
             max_header_count: config.max_header_count(),
             callback_activations: Mutex::new(0),
@@ -428,7 +526,7 @@ impl Shared {
         let state = RequestState::new(id, callback, inflight_permit, callback_permit);
         core.requests.insert(id, Arc::clone(&state));
 
-        let submission = Submission {
+        let submission = Submission::Buffered {
             request,
             state: Arc::clone(&state),
             accepted_at: Instant::now(),
@@ -460,6 +558,119 @@ impl Shared {
         Ok(AcceptedRequest { state })
     }
 
+    pub(crate) fn accept_stream(
+        self: &Arc<Self>,
+        request: StreamRequest,
+    ) -> Result<ResponseReader, Error> {
+        if !self.streaming_supported {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "the selected backend does not support streaming requests",
+            ));
+        }
+
+        let mut core = lock_unpoisoned(&self.core);
+        if core.lifecycle != LifecycleState::Running {
+            return Err(Error::new(
+                ErrorKind::EngineStopped,
+                "the owning Engine has stopped accepting work",
+            ));
+        }
+        if core.next_sequence == u64::MAX {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "request identity space is exhausted",
+            ));
+        }
+        request.validate()?;
+        self.validate_request_limits(request.request())?;
+        let response_window = self.max_stream_queue_bytes_per_request;
+        if response_window == 0 {
+            return Err(Error::limit(
+                LimitKind::StreamingQueueBytes,
+                "streaming is disabled by the Engine's zero-byte queue window",
+            ));
+        }
+        let upload_window = request.upload_queue_capacity();
+        if upload_window > response_window {
+            return Err(Error::limit(
+                LimitKind::StreamingQueueBytes,
+                format!(
+                    "streamed upload queue exceeds the configured {response_window} byte per-transfer limit"
+                ),
+            ));
+        }
+        let reserved_bytes = response_window.checked_add(upload_window).ok_or_else(|| {
+            Error::limit(
+                LimitKind::StreamingQueueBytes,
+                "streaming queue reservation overflowed",
+            )
+        })?;
+        let inflight_permit = AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::QueueFull,
+                    "the Engine's accepted/inflight request capacity is full",
+                )
+            })?;
+        let queued_bytes_permit = BytePermit::try_acquire(
+            &self.stream_queued_bytes,
+            self.max_stream_queued_bytes,
+            reserved_bytes,
+        )
+        .ok_or_else(|| {
+            Error::limit(
+                LimitKind::StreamingQueueBytes,
+                format!(
+                    "streaming queues exceed the Engine's configured {} byte aggregate budget",
+                    self.max_stream_queued_bytes
+                ),
+            )
+        })?;
+
+        let id = RequestId {
+            engine: self.id,
+            sequence: core.next_sequence,
+        };
+        core.next_sequence += 1;
+        let weak = Arc::downgrade(self);
+        let stream_waker: Arc<dyn Fn() + Send + Sync + 'static> = Arc::new(move || {
+            if let Some(shared) = weak.upgrade() {
+                shared.queue.wake();
+            }
+        });
+        request.bind_upload(
+            response_window,
+            self.max_request_body_bytes,
+            Arc::clone(&stream_waker),
+        )?;
+        let handle = RequestHandle::new(Client::new(Arc::clone(self)), id);
+        let (reader, response, control) = response_pair(
+            handle,
+            self.run_mode,
+            response_window,
+            self.max_response_body_bytes,
+            Some(stream_waker),
+        )?;
+        let state = StreamRequestState::new(id, control, inflight_permit, queued_bytes_permit);
+        core.stream_requests.insert(id, Arc::clone(&state));
+        let submission = Submission::Stream {
+            request,
+            state,
+            response,
+            accepted_at: Instant::now(),
+        };
+        if !self.queue.try_push(submission) {
+            core.stream_requests.remove(&id);
+            return Err(Error::new(
+                ErrorKind::QueueFull,
+                "the Engine's bounded command queue is full",
+            ));
+        }
+        drop(core);
+        Ok(reader)
+    }
+
     pub(crate) fn cancel(&self, request_id: RequestId) -> Result<(), Error> {
         if request_id.engine != self.id {
             return Err(Error::new(
@@ -467,44 +678,65 @@ impl Shared {
                 "request ID belongs to another Engine",
             ));
         }
-        let state = lock_unpoisoned(&self.core)
-            .requests
-            .get(&request_id)
-            .cloned();
+        let (state, stream_state) = {
+            let core = lock_unpoisoned(&self.core);
+            (
+                core.requests.get(&request_id).cloned(),
+                core.stream_requests.get(&request_id).cloned(),
+            )
+        };
         if let Some(state) = state {
             self.complete_state(&state, Completion::Cancelled);
+        } else if let Some(state) = stream_state {
+            self.cancel_stream_state(&state);
         }
         self.queue.wake();
         Ok(())
     }
 
     pub(crate) fn cancel_all(&self) {
-        let requests = {
+        let (requests, stream_requests) = {
             let core = lock_unpoisoned(&self.core);
             let barrier = core.next_sequence.saturating_sub(1);
-            core.requests
-                .iter()
-                .filter(|(id, _state)| id.sequence <= barrier)
-                .map(|(_id, state)| Arc::clone(state))
-                .collect::<Vec<_>>()
+            (
+                core.requests
+                    .iter()
+                    .filter(|(id, _state)| id.sequence <= barrier)
+                    .map(|(_id, state)| Arc::clone(state))
+                    .collect::<Vec<_>>(),
+                core.stream_requests
+                    .iter()
+                    .filter(|(id, _state)| id.sequence <= barrier)
+                    .map(|(_id, state)| Arc::clone(state))
+                    .collect::<Vec<_>>(),
+            )
         };
         for state in requests {
             self.complete_state(&state, Completion::Cancelled);
+        }
+        for state in stream_requests {
+            self.cancel_stream_state(&state);
         }
         self.queue.wake();
     }
 
     pub(crate) fn begin_shutdown(&self) {
-        let requests = {
+        let (requests, stream_requests) = {
             let mut core = lock_unpoisoned(&self.core);
             if core.lifecycle == LifecycleState::Running {
                 core.lifecycle = LifecycleState::ShuttingDown;
             }
             self.stopped.store(true, Ordering::Release);
-            core.requests.values().cloned().collect::<Vec<_>>()
+            (
+                core.requests.values().cloned().collect::<Vec<_>>(),
+                core.stream_requests.values().cloned().collect::<Vec<_>>(),
+            )
         };
         for state in requests {
             self.complete_state(&state, Completion::Cancelled);
+        }
+        for state in stream_requests {
+            self.cancel_stream_state(&state);
         }
         self.queue.wake();
     }
@@ -548,14 +780,36 @@ impl Shared {
         true
     }
 
+    pub(crate) fn finish_stream_state(&self, state: &Arc<StreamRequestState>) {
+        state.release_permits();
+        lock_unpoisoned(&self.core)
+            .stream_requests
+            .remove(&state.id());
+    }
+
+    fn cancel_stream_state(&self, state: &Arc<StreamRequestState>) -> bool {
+        let won = state.cancel();
+        if won {
+            self.finish_stream_state(state);
+        }
+        won
+    }
+
     pub(crate) fn fail_all(&self, error: Error) {
-        let requests = lock_unpoisoned(&self.core)
-            .requests
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let (requests, stream_requests) = {
+            let core = lock_unpoisoned(&self.core);
+            (
+                core.requests.values().cloned().collect::<Vec<_>>(),
+                core.stream_requests.values().cloned().collect::<Vec<_>>(),
+            )
+        };
         for state in requests {
             self.complete_state(&state, Completion::Failed(error.clone()));
+        }
+        for state in stream_requests {
+            if state.fail(error.clone()) {
+                self.finish_stream_state(&state);
+            }
         }
         self.queue.wake();
     }
@@ -607,7 +861,8 @@ impl Shared {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn active_count(&self) -> usize {
-        lock_unpoisoned(&self.core).requests.len()
+        let core = lock_unpoisoned(&self.core);
+        core.requests.len() + core.stream_requests.len()
     }
 
     #[cfg(test)]

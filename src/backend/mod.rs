@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "curl-pilot")]
 use crate::EngineConfig;
 use crate::registry::Shared;
-use crate::{Completion, Error, Request, RequestId, ShutdownError};
+use crate::stream::ResponseSink;
+use crate::{Completion, Error, Request, RequestId, ShutdownError, StreamRequest};
 use std::sync::Arc;
 
 #[cfg(feature = "curl-pilot")]
@@ -51,6 +52,18 @@ pub(crate) trait Backend {
         request: Request,
         accepted_at: Instant,
     ) -> Option<Completion>;
+    fn submit_stream(
+        &mut self,
+        _id: RequestId,
+        _request: StreamRequest,
+        mut response: ResponseSink,
+        _accepted_at: Instant,
+    ) {
+        response.fail(Error::new(
+            crate::ErrorKind::Unsupported,
+            "this backend does not support streaming requests",
+        ));
+    }
     fn cancel(&mut self, id: RequestId);
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error>;
     fn shutdown(&mut self) -> Result<(), ShutdownError>;
@@ -62,11 +75,19 @@ pub(crate) trait Backend {
     fn wants_poll_without_requests(&self) -> bool {
         false
     }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
 }
 
 #[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
 pub(crate) trait BackendFactory: Send {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
 }
 
 #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
@@ -76,7 +97,7 @@ pub(crate) fn scaffold() -> Box<dyn Backend + Send> {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn held() -> Box<dyn Backend + Send> {
-    Box::new(scaffold::HeldBackend)
+    Box::new(scaffold::HeldBackend::default())
 }
 
 #[cfg(feature = "curl-pilot")]

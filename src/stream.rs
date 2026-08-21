@@ -330,6 +330,7 @@ impl UploadSender {
         self.terminated = true;
         drop(state);
         self.shared.changed.notify_all();
+        self.shared.wake_engine();
         result
     }
 
@@ -374,6 +375,7 @@ impl Drop for UploadSender {
         }
         drop(state);
         self.shared.changed.notify_all();
+        self.shared.wake_engine();
     }
 }
 
@@ -818,6 +820,40 @@ pub(crate) struct ResponseSink {
     terminal: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct ResponseControl {
+    shared: Arc<ResponseShared>,
+}
+
+impl ResponseControl {
+    pub(crate) fn is_terminal(&self) -> bool {
+        lock_unpoisoned(&self.shared.state).terminal.is_some()
+    }
+
+    pub(crate) fn fail(&self, error: Error) -> bool {
+        self.commit_terminal(StreamTerminal::Failed(error))
+    }
+
+    pub(crate) fn cancel(&self) -> bool {
+        self.commit_terminal(StreamTerminal::Cancelled)
+    }
+
+    fn commit_terminal(&self, terminal: StreamTerminal) -> bool {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.terminal.is_some() {
+            return false;
+        }
+        state.queue.clear();
+        state.queued_bytes = 0;
+        state.terminal = Some(terminal);
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.shared.changed.notify_all();
+        self.shared.wake_transport();
+        true
+    }
+}
+
 #[allow(dead_code)]
 impl ResponseSink {
     pub(crate) fn publish_head(&mut self, head: ResponseHead, no_body: bool) -> bool {
@@ -976,7 +1012,7 @@ pub(crate) fn response_pair(
     queue_capacity: usize,
     total_limit: usize,
     transport_waker: Option<StreamWaker>,
-) -> Result<(ResponseReader, ResponseSink), Error> {
+) -> Result<(ResponseReader, ResponseSink, ResponseControl), Error> {
     if queue_capacity == 0 {
         return Err(Error::limit(
             LimitKind::StreamingQueueBytes,
@@ -1012,9 +1048,10 @@ pub(crate) fn response_pair(
             not_sync: PhantomData,
         },
         ResponseSink {
-            shared,
+            shared: Arc::clone(&shared),
             terminal: false,
         },
+        ResponseControl { shared },
     ))
 }
 
@@ -1120,6 +1157,33 @@ impl StreamRequest {
             validate_stream_body_request(&self.request, body)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn request(&self) -> &Request {
+        &self.request
+    }
+
+    pub(crate) fn upload_queue_capacity(&self) -> usize {
+        self.stream_body
+            .as_ref()
+            .map_or(0, UploadBody::queue_capacity)
+    }
+
+    pub(crate) fn bind_upload(
+        &self,
+        max_queue_capacity: usize,
+        total_limit: usize,
+        engine_waker: StreamWaker,
+    ) -> Result<(), Error> {
+        if let Some(body) = &self.stream_body {
+            body.bind(max_queue_capacity, total_limit, engine_waker)?;
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Consumed when the native wire pump lands after registry submission.
+    pub(crate) fn into_parts(self) -> (Request, Option<UploadBody>) {
+        (self.request, self.stream_body)
     }
 }
 
@@ -1302,6 +1366,14 @@ struct UploadShared {
     engine_waker: Mutex<Option<StreamWaker>>,
     framing: UploadFraming,
     queue_capacity: usize,
+}
+
+impl UploadShared {
+    fn wake_engine(&self) {
+        if let Some(waker) = lock_unpoisoned(&self.engine_waker).clone() {
+            waker();
+        }
+    }
 }
 
 struct UploadState {
@@ -1574,6 +1646,29 @@ mod tests {
         assert_eq!(error.into_chunk(), b"new");
     }
 
+    #[test]
+    fn finish_and_abandon_wake_a_bound_engine() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker: StreamWaker = {
+            let wakes = Arc::clone(&wakes);
+            Arc::new(move || {
+                wakes.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        let (body, sender) = UploadBody::chunked(8).expect("valid chunked pair");
+        body.bind(8, 16, Arc::clone(&waker))
+            .expect("body must bind");
+        sender.finish().expect("chunked sender must finish");
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+
+        let (body, sender) = UploadBody::chunked(8).expect("valid chunked pair");
+        body.bind(8, 16, waker).expect("body must bind");
+        drop(sender);
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    }
+
     fn synthetic_response_pair(
         run_mode: RunMode,
         queue_capacity: usize,
@@ -1601,7 +1696,7 @@ mod tests {
             .expect("synthetic request must submit");
         let handle = pending.handle();
         drop(pending);
-        let (reader, sink) =
+        let (reader, sink, _control) =
             response_pair(handle.clone(), run_mode, queue_capacity, total_limit, None)
                 .expect("synthetic response pair must construct");
         (engine, controller, handle, reader, sink)

@@ -231,6 +231,35 @@ and formatting also pass. This is still deliberately not a submission or wire-st
 Next, registry acceptance and native decoding must own ResponseSink directly; adapting the existing
 buffered Completion would violate the frozen memory and terminal model.
 
+## WP9.4d distinct stream admission and command seam — Windows slice
+
+`Client::submit_stream` now enters a separate registry and reactor command lane. Buffered
+`RequestState`, `PendingRequest`, callback activation, and `Completion` are unchanged. The stream
+registry retains only Engine admission, a cloneable terminal control, and byte-budget permits; the
+reactor receives the unique `ResponseSink` and `StreamRequest`. Cancellation by ID, `cancel_all`,
+shutdown, and reactor panic commit directly into the reader state and release both permits without
+waiting for a later transport poll.
+
+Backends advertise streaming capability before acceptance. The scaffold and curl therefore return
+`Unsupported` with no request identity, queue command, or admission side effect. The deterministic
+held backend proves accepted stream cancellation and shutdown without manufacturing a buffered
+completion. Native capability remains false until its decoder and upload pump actually own the
+sink/body; the public method's existence is not a native wire-streaming claim.
+
+Engine configuration now has a 256 KiB maximum per-direction stream queue window and a 16 MiB
+aggregate reserved-byte budget by default. Acceptance reserves the full unread-response window plus
+any streamed-upload window, clamps the latter, binds the producer to the Engine wake path and total
+request ceiling, and releases the reservation at the exact terminal winner. A strict two-request
+test proves aggregate refusal and immediate recovery after cancellation. Producer finish and
+abandonment now wake a bound Engine just like `try_push`, closing the empty-queue lost-wake hole.
+
+The Windows gate passes 144 native/test-support unit tests, 4 adversarial tests, 4 public-contract
+tests, and 6 doctests; the default suite, warning-denied all-feature clippy, all-feature compilation,
+and formatting pass. Curl's locally generated Schannel fixtures were flaky in one combined test run
+and are not evidence for this native-only slice; no curl code changed. Next is native ownership of
+the stream command, direct incremental head/body delivery, response-window read pausing/splitting,
+and fixed/chunked upload pumping.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

@@ -5,12 +5,13 @@ use std::time::Instant;
 
 use crate::backend::BackendFactory;
 use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
-use crate::registry::{RequestState, Shared};
+use crate::registry::{RequestState, Shared, StreamRequestState, Submission};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
 pub(crate) struct ReactorCore<B: Backend + ?Sized> {
     backend: Box<B>,
     active: HashMap<RequestId, Arc<RequestState>>,
+    active_streams: HashMap<RequestId, Arc<StreamRequestState>>,
 }
 
 impl<B: Backend + ?Sized> ReactorCore<B> {
@@ -18,6 +19,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         Self {
             backend,
             active: HashMap::new(),
+            active_streams: HashMap::new(),
         }
     }
 
@@ -32,24 +34,45 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         let submissions = shared.queue.drain();
         let mut progressed = !submissions.is_empty();
         for submission in submissions {
-            let id = submission.state.id();
-            if submission.state.is_terminal() {
-                continue;
-            }
-            match self
-                .backend
-                .submit(id, submission.request, submission.accepted_at)
-            {
-                Some(completion) => {
-                    shared.complete_state(&submission.state, completion);
+            match submission {
+                Submission::Buffered {
+                    request,
+                    state,
+                    accepted_at,
+                } => {
+                    let id = state.id();
+                    if state.is_terminal() {
+                        continue;
+                    }
+                    match self.backend.submit(id, request, accepted_at) {
+                        Some(completion) => {
+                            shared.complete_state(&state, completion);
+                        }
+                        None => {
+                            self.active.insert(id, state);
+                        }
+                    }
                 }
-                None => {
-                    self.active.insert(id, submission.state);
+                Submission::Stream {
+                    request,
+                    state,
+                    mut response,
+                    accepted_at,
+                } => {
+                    let id = state.id();
+                    if state.is_terminal() {
+                        response.cancel();
+                        continue;
+                    }
+                    self.backend
+                        .submit_stream(id, request, response, accepted_at);
+                    self.active_streams.insert(id, state);
                 }
             }
         }
 
         progressed |= self.reap_cancelled();
+        progressed |= self.reap_terminal_streams(shared);
         let completions = self.backend.poll(deadline)?;
         if let Some(error) = shared.queue.take_external_wake_failure() {
             return Err(error);
@@ -57,6 +80,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         progressed |= !completions.is_empty();
         self.commit_backend_completions(shared, completions);
         progressed |= self.reap_cancelled();
+        progressed |= self.reap_terminal_streams(shared);
 
         if progressed {
             Ok(DriveStatus::Progress)
@@ -70,20 +94,40 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
     pub(crate) fn shutdown(&mut self, shared: &Arc<Shared>) -> Result<(), ShutdownError> {
         shared.queue.set_external_waker(None);
         for submission in shared.queue.drain() {
-            if !submission.state.is_terminal() {
-                shared.complete_state(&submission.state, crate::Completion::Cancelled);
+            match submission {
+                Submission::Buffered { state, .. } => {
+                    if !state.is_terminal() {
+                        shared.complete_state(&state, crate::Completion::Cancelled);
+                    }
+                }
+                Submission::Stream {
+                    state,
+                    mut response,
+                    ..
+                } => {
+                    response.cancel();
+                    shared.finish_stream_state(&state);
+                }
             }
         }
         self.reap_cancelled();
+        self.reap_terminal_streams(shared);
         for id in self.active.keys().copied().collect::<Vec<_>>() {
             self.backend.cancel(id);
         }
         self.active.clear();
+        for id in self.active_streams.keys().copied().collect::<Vec<_>>() {
+            self.backend.cancel(id);
+        }
+        self.active_streams.clear();
         self.backend.shutdown()
     }
 
     pub(crate) fn transport_wait(&self) -> Option<std::time::Duration> {
-        if self.active.is_empty() && !self.backend.wants_poll_without_requests() {
+        if self.active.is_empty()
+            && self.active_streams.is_empty()
+            && !self.backend.wants_poll_without_requests()
+        {
             return None;
         }
         match self.backend.poll_mode() {
@@ -116,6 +160,22 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                 shared.complete_state(&state, completion);
             }
         }
+    }
+
+    fn reap_terminal_streams(&mut self, shared: &Arc<Shared>) -> bool {
+        let terminal = self
+            .active_streams
+            .iter()
+            .filter(|(_id, state)| state.is_terminal())
+            .map(|(id, _state)| *id)
+            .collect::<Vec<_>>();
+        for id in &terminal {
+            self.backend.cancel(*id);
+            if let Some(state) = self.active_streams.remove(id) {
+                shared.finish_stream_state(&state);
+            }
+        }
+        !terminal.is_empty()
     }
 }
 

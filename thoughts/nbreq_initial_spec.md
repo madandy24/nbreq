@@ -607,10 +607,12 @@ without changing the reactor ownership model.
 Streaming has two independent resource controls. Each transfer has a small bounded flow-control
 window; a full response window pauses that connection before another socket or `read_tls` operation
 without stalling the Engine. TLS may consume at most one documented record beyond the nominal
-window. An Engine-wide queued-byte budget covers the reserved/occupied windows of all accepted
-upload bodies and unread response bodies. Pre-submission upload bytes are caller-owned; acceptance
-binds the channel to this Engine budget and may reject it. Separately, the existing request and
-response body limits remain the Engine-owned total-byte ceilings, defaulting to 16 MiB. A
+window. The initial default is a 256 KiB maximum window for each upload or response direction. An
+Engine-wide queued-byte budget, initially 16 MiB, conservatively reserves the accepted upload and
+response windows so their aggregate can never grow beyond it. Pre-submission upload bytes are
+caller-owned; acceptance binds the channel to this Engine budget and may reject it. Both values are
+Engine construction settings; zero disables streaming admission. Separately, the existing request
+and response body limits remain the Engine-owned total-byte ceilings, defaulting to 16 MiB. A
 `StreamRequest` may select a smaller clamp but a cloneable Client cannot raise the Engine ceiling;
 large or long-lived streams require explicit Engine configuration.
 

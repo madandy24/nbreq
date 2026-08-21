@@ -78,6 +78,7 @@ impl Engine {
         config: EngineConfig,
         backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
+        let streaming_supported = backend.supports_streaming();
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
             return Err(Error::new(
@@ -91,7 +92,7 @@ impl Engine {
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
         )?;
-        let shared = Shared::new(id, &config, dispatcher.domain());
+        let shared = Shared::new(id, &config, dispatcher.domain(), streaming_supported);
         let runtime = match config.run_mode() {
             RunMode::Spawned => {
                 let reactor_shared = Arc::clone(&shared);
@@ -180,7 +181,8 @@ impl Engine {
             config.callback_queue_capacity().get(),
             config.callback_dispatch(),
         )?;
-        let shared = Shared::new(id, &config, dispatcher.domain());
+        let streaming_supported = factory.supports_streaming();
+        let shared = Shared::new(id, &config, dispatcher.domain(), streaming_supported);
         let reactor_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
@@ -537,6 +539,20 @@ impl EngineBuilder {
     #[must_use]
     pub fn max_response_body_bytes(mut self, bytes: usize) -> Self {
         self.config = self.config.with_max_response_body_bytes(bytes);
+        self
+    }
+
+    /// Selects the maximum per-request streaming upload or response queue window.
+    #[must_use]
+    pub fn max_stream_queue_bytes_per_request(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_stream_queue_bytes_per_request(bytes);
+        self
+    }
+
+    /// Selects the Engine-wide reserved streaming queue budget.
+    #[must_use]
+    pub fn max_stream_queued_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_stream_queued_bytes(bytes);
         self
     }
 

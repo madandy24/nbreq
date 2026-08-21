@@ -31,11 +31,15 @@ pub struct EngineConfig {
     callback_queue_capacity: NonZeroUsize,
     max_request_body_bytes: usize,
     max_response_body_bytes: usize,
+    max_stream_queue_bytes_per_request: usize,
+    max_stream_queued_bytes: usize,
     max_header_bytes: usize,
     max_header_count: usize,
 }
 
 const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const DEFAULT_STREAM_QUEUE_LIMIT: usize = 256 * 1024;
+const DEFAULT_STREAM_QUEUED_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_HEADER_BYTES_LIMIT: usize = 64 * 1024;
 const DEFAULT_HEADER_COUNT_LIMIT: usize = 256;
 
@@ -51,6 +55,8 @@ impl EngineConfig {
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
+            max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
         }
@@ -67,6 +73,8 @@ impl EngineConfig {
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
+            max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
         }
@@ -112,6 +120,22 @@ impl EngineConfig {
     #[must_use]
     pub fn with_max_response_body_bytes(mut self, bytes: usize) -> Self {
         self.max_response_body_bytes = bytes;
+        self
+    }
+
+    /// Selects the maximum upload or unread-response flow-control window for one streaming
+    /// request. Zero disables streaming admission.
+    #[must_use]
+    pub fn with_max_stream_queue_bytes_per_request(mut self, bytes: usize) -> Self {
+        self.max_stream_queue_bytes_per_request = bytes;
+        self
+    }
+
+    /// Selects the Engine-wide reserved streaming queue budget. Zero disables streaming
+    /// admission.
+    #[must_use]
+    pub fn with_max_stream_queued_bytes(mut self, bytes: usize) -> Self {
+        self.max_stream_queued_bytes = bytes;
         self
     }
 
@@ -169,6 +193,18 @@ impl EngineConfig {
     #[must_use]
     pub fn max_response_body_bytes(&self) -> usize {
         self.max_response_body_bytes
+    }
+
+    /// Returns the maximum per-request streaming flow-control window.
+    #[must_use]
+    pub fn max_stream_queue_bytes_per_request(&self) -> usize {
+        self.max_stream_queue_bytes_per_request
+    }
+
+    /// Returns the Engine-wide reserved streaming queue budget.
+    #[must_use]
+    pub fn max_stream_queued_bytes(&self) -> usize {
+        self.max_stream_queued_bytes
     }
 
     /// Returns the maximum cumulative request/response header bytes.

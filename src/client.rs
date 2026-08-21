@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::registry::{CompletionCallback, RequestState, Shared};
-use crate::{Completion, Error, ExecuteError, Request, RequestId, Response};
+use crate::{
+    Completion, Error, ExecuteError, Request, RequestId, Response, ResponseReader, StreamRequest,
+};
 
 /// Cheap cloneable command handle issued by an [`Engine`](crate::Engine).
 ///
@@ -38,6 +40,14 @@ impl Client {
             handle,
             state: accepted.state,
         })
+    }
+
+    /// Submits a request whose response is consumed through one unique reader.
+    ///
+    /// Streaming is currently available only on the private native proving backend. Curl and the
+    /// non-networking scaffold return `Unsupported` without accepting the request.
+    pub fn submit_stream(&self, request: StreamRequest) -> Result<ResponseReader, Error> {
+        self.shared.accept_stream(request)
     }
 
     /// Submits a request and blocks on its direct terminal-state waiter.
@@ -214,5 +224,87 @@ mod tests {
             .cancel()
             .expect("same-Engine cancellation remains harmless after stop");
         second.shutdown().expect("second Engine must stop");
+    }
+
+    #[test]
+    fn distinct_stream_submission_is_cancelled_without_a_completion_adapter() {
+        let (engine, controller) = testing::engine(EngineConfig::spawned())
+            .expect("stream-capable held Engine must construct");
+        let mut reader = engine
+            .client()
+            .submit_stream(
+                crate::StreamRequest::get("http://example.test/")
+                    .build()
+                    .expect("stream request must build"),
+            )
+            .expect("stream request must be accepted");
+        assert_eq!(controller.active_requests(), 1);
+        reader
+            .handle()
+            .cancel()
+            .expect("stream cancel must succeed");
+        assert!(matches!(
+            reader.try_head(),
+            Err(crate::StreamError::Cancelled)
+        ));
+        assert_eq!(controller.active_requests(), 0);
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
+    fn aggregate_stream_queue_reservations_are_strict_and_release_on_cancel() {
+        let config = EngineConfig::spawned()
+            .with_max_stream_queue_bytes_per_request(8)
+            .with_max_stream_queued_bytes(8);
+        let (engine, _controller) =
+            testing::engine(config).expect("bounded held Engine must construct");
+        let client = engine.client();
+        let first = client
+            .submit_stream(
+                crate::StreamRequest::get("http://example.test/one")
+                    .build()
+                    .expect("first stream request must build"),
+            )
+            .expect("one response window must fit");
+        let error = client
+            .submit_stream(
+                crate::StreamRequest::get("http://example.test/two")
+                    .build()
+                    .expect("second stream request must build"),
+            )
+            .expect_err("a second reserved response window must exceed the budget");
+        assert_eq!(error.kind(), ErrorKind::Limit);
+        assert_eq!(
+            error.limit_kind(),
+            Some(crate::LimitKind::StreamingQueueBytes)
+        );
+        first.handle().cancel().expect("first stream must cancel");
+        let second = client
+            .submit_stream(
+                crate::StreamRequest::get("http://example.test/two")
+                    .build()
+                    .expect("second stream request must rebuild"),
+            )
+            .expect("cancel must release the aggregate reservation");
+        second.handle().cancel().expect("second stream must cancel");
+        engine.shutdown().expect("held Engine must stop");
+    }
+
+    #[test]
+    fn non_streaming_backend_rejects_before_acceptance() {
+        let engine =
+            crate::Engine::with_backend(EngineConfig::manual(), crate::backend::scaffold())
+                .expect("scaffold Engine must construct");
+        let error = engine
+            .client()
+            .submit_stream(
+                crate::StreamRequest::get("http://example.test/")
+                    .build()
+                    .expect("stream request must build"),
+            )
+            .expect_err("scaffold must reject streaming");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(engine.shared_for_testing().active_count(), 0);
+        engine.shutdown().expect("scaffold Engine must stop");
     }
 }
