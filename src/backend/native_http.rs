@@ -6907,7 +6907,11 @@ mod tests {
                 let (mut stream, _) = listener.accept().expect("upload stop must accept");
                 read_request_head(&mut stream, "upload stop request head");
                 head_tx.send(()).expect("upload stop head must signal");
-                assert_socket_closed(&mut stream, &mut [0_u8; 1024], "upload stop");
+                // Cancellation closes the socket promptly, but bytes already accepted by the
+                // kernel before the terminal winner may still reach the peer first. Drain those
+                // bounded in-flight bytes and require the close rather than pretending cancel can
+                // recall a completed socket write.
+                drain_until_socket_closed(&mut stream, "upload stop");
             });
             let (body, mut sender) =
                 UploadBody::fixed(BODY_BYTES as u64, 1024).expect("upload stop pair");
