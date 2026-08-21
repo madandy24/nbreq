@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::metrics::Metrics;
 use crate::{
     Error, ErrorKind, Header, LimitKind, Method, Request, RequestBuilder, RequestHandle,
     RequestOptions, Response, RunMode, TlsVerification,
@@ -936,13 +937,6 @@ impl ResponseControl {
         lock_unpoisoned(&self.shared.state).terminal.is_some()
     }
 
-    pub(crate) fn outcome(&self) -> Option<StreamOutcome> {
-        lock_unpoisoned(&self.shared.state)
-            .terminal
-            .as_ref()
-            .map(StreamOutcome::from)
-    }
-
     pub(crate) fn fail(&self, error: Error) -> bool {
         self.commit_terminal(StreamTerminal::Failed(error))
     }
@@ -958,7 +952,9 @@ impl ResponseControl {
         }
         state.queue.clear();
         state.queued_bytes = 0;
+        let outcome = StreamOutcome::from(&terminal);
         state.terminal = Some(terminal);
+        self.shared.record_terminal(outcome);
         state.generation = state.generation.wrapping_add(1);
         drop(state);
         self.shared.changed.notify_all();
@@ -978,6 +974,7 @@ impl ResponseSink {
         state.no_body = no_body;
         if no_body {
             state.terminal = Some(StreamTerminal::Complete);
+            self.shared.record_terminal(StreamOutcome::Completed);
             self.terminal = true;
         }
         state.generation = state.generation.wrapping_add(1);
@@ -1044,7 +1041,9 @@ impl ResponseSink {
             state.queue.clear();
             state.queued_bytes = 0;
         }
+        let outcome = StreamOutcome::from(&terminal);
         state.terminal = Some(terminal);
+        self.shared.record_terminal(outcome);
         state.generation = state.generation.wrapping_add(1);
         self.terminal = true;
         drop(state);
@@ -1090,12 +1089,19 @@ struct ResponseShared {
     transport_waker: Option<StreamWaker>,
     queue_capacity: usize,
     total_limit: usize,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl ResponseShared {
     fn wake_transport(&self) {
         if let Some(waker) = &self.transport_waker {
             waker();
+        }
+    }
+
+    fn record_terminal(&self, outcome: StreamOutcome) {
+        if let Some(metrics) = &self.metrics {
+            metrics.stream_terminal(outcome);
         }
     }
 }
@@ -1142,6 +1148,7 @@ pub(crate) fn response_pair(
     queue_capacity: usize,
     total_limit: usize,
     transport_waker: Option<StreamWaker>,
+    metrics: Option<Arc<Metrics>>,
 ) -> Result<(ResponseReader, ResponseSink, ResponseControl), Error> {
     if queue_capacity == 0 {
         return Err(Error::limit(
@@ -1164,6 +1171,7 @@ pub(crate) fn response_pair(
         transport_waker,
         queue_capacity,
         total_limit,
+        metrics,
     });
     Ok((
         ResponseReader {
@@ -1850,9 +1858,15 @@ mod tests {
             .expect("synthetic request must submit");
         let handle = pending.handle();
         drop(pending);
-        let (reader, sink, _control) =
-            response_pair(handle.clone(), run_mode, queue_capacity, total_limit, None)
-                .expect("synthetic response pair must construct");
+        let (reader, sink, _control) = response_pair(
+            handle.clone(),
+            run_mode,
+            queue_capacity,
+            total_limit,
+            None,
+            None,
+        )
+        .expect("synthetic response pair must construct");
         (engine, controller, handle, reader, sink)
     }
 

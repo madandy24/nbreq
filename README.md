@@ -68,6 +68,9 @@ origin, header, body, address, certificate, or backend-native error data; fields
 cross-field inconsistent while work is moving. Native connection counters describe capacity
 lifecycles beginning at DNS/connect reservation, matching the active cap rather than claiming that
 every reserved slot completed a TCP handshake.
+When a buffered waiter or streaming reader observes a terminal result, its matching outcome counter
+has already advanced; this ordering is part of the canonical terminal commit rather than eventual
+reactor bookkeeping.
 
 ## Native backend status
 

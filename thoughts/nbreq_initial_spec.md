@@ -564,6 +564,10 @@ later explicit privacy and cost decision rather than appearing accidentally in t
 Native opened/closed counters follow the same capacity lifecycle as the active gauge: the lifecycle
 begins when DNS/connect capacity is reserved and can therefore close before a TCP handshake. Reuse
 counts only a successful lease of an already-clean idle connection.
+The canonical terminal commit advances its outcome counter before waking a buffered waiter,
+streaming reader, or callback. A caller observing that terminal result therefore never sees the
+corresponding outcome counter lag, although unrelated fields remain an approximate cross-field
+snapshot.
 
 Initial native milestones may disable reuse until single-request correctness is established.
 

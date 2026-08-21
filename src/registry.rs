@@ -82,6 +82,7 @@ pub(crate) struct RequestState {
     id: RequestId,
     inner: Mutex<RequestInner>,
     changed: Condvar,
+    metrics: Arc<Metrics>,
 }
 
 impl fmt::Debug for RequestState {
@@ -100,6 +101,7 @@ impl RequestState {
         callback: Option<CompletionCallback>,
         inflight_permit: AdmissionPermit,
         callback_permit: Option<AdmissionPermit>,
+        metrics: Arc<Metrics>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -111,6 +113,7 @@ impl RequestState {
                 callback_permit,
             }),
             changed: Condvar::new(),
+            metrics,
         })
     }
 
@@ -161,6 +164,7 @@ impl RequestState {
             return (false, None);
         }
 
+        self.metrics.request_terminal(&completion);
         inner.completion = Some(completion);
         self.changed.notify_all();
         let job = Self::take_terminal_job(self.id, &mut inner);
@@ -535,7 +539,13 @@ impl Shared {
             sequence: core.next_sequence,
         };
         core.next_sequence += 1;
-        let state = RequestState::new(id, callback, inflight_permit, callback_permit);
+        let state = RequestState::new(
+            id,
+            callback,
+            inflight_permit,
+            callback_permit,
+            Arc::clone(&self.metrics),
+        );
         core.requests.insert(id, Arc::clone(&state));
 
         let submission = Submission::Buffered {
@@ -668,6 +678,7 @@ impl Shared {
             response_window,
             self.max_response_body_bytes,
             Some(stream_waker),
+            Some(Arc::clone(&self.metrics)),
         )?;
         let state = StreamRequestState::new(id, control, inflight_permit, queued_bytes_permit);
         core.stream_requests.insert(id, Arc::clone(&state));
@@ -790,13 +801,11 @@ impl Shared {
     }
 
     pub(crate) fn complete_state(&self, state: &Arc<RequestState>, completion: Completion) -> bool {
-        let terminal = completion.clone();
         let (won, job) = state.commit(completion);
         if !won {
             return false;
         }
         lock_unpoisoned(&self.core).requests.remove(&state.id());
-        self.metrics.request_terminal(&terminal);
         if let Some(job) = job {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
@@ -809,13 +818,7 @@ impl Shared {
             .stream_requests
             .remove(&state.id())
             .is_some();
-        if removed {
-            if let Some(outcome) = state.control.outcome() {
-                self.metrics.stream_terminal(outcome);
-            } else {
-                debug_assert!(false, "nonterminal stream request left the registry");
-            }
-        }
+        debug_assert!(!removed || state.control.is_terminal());
     }
 
     fn cancel_stream_state(&self, state: &Arc<StreamRequestState>) -> bool {

@@ -3959,6 +3959,7 @@ mod tests {
             queue_capacity,
             LIMITS.body_bytes,
             None,
+            None,
         )
         .expect("synthetic response pair must construct");
         (
@@ -6785,6 +6786,7 @@ mod tests {
                 };
                 assert_eq!(error.kind(), ErrorKind::Transport);
                 assert_eq!(error.transport_stage(), Some(TransportStage::Http));
+                assert_eq!(engine.metrics().requests_failed(), 1);
             } else {
                 assert_eq!(
                     reader.wait_head().expect("204 head must publish").status(),
@@ -6792,6 +6794,7 @@ mod tests {
                 );
                 assert!(reader.is_eof());
                 assert_eq!(reader.read(&mut [0_u8; 1]).expect("204 must be EOF"), None);
+                assert_eq!(engine.metrics().requests_completed(), 1);
             }
             engine.shutdown().expect("stream rule Engine must stop");
             server.join().expect("stream rule fixture must join");

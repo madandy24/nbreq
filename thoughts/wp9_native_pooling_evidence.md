@@ -501,6 +501,16 @@ all-target/all-feature clippy, formatting, all-feature documentation, request te
 retention, stream reservation release, one-socket reuse, and capacity-wait high-water tests pass.
 Exact-source Ubuntu repetition remains required before this metrics slice is accepted there.
 
+The first exact Ubuntu archive, commit `1daedb4` with SHA-256
+`30DFF252528DE7A1D00862CEF78E016326F951B319F94EC99E5C87784863B09C`, exposed a real ordering race:
+the buffered canonical completion woke `execute()` before the registry incremented the completed
+counter, so an immediate snapshot could report two accepted but only one completed request. The
+correction moves buffered accounting inside `RequestState::commit` and streamed accounting inside
+the shared response terminal commit, after winning arbitration and before publishing/waking the
+terminal state. Immediate buffered reuse and streamed 204/malformed-result assertions now guard
+both paths. The first Ubuntu run stopped at that failed native unit test; no later gate from that
+archive is claimed.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
