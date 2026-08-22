@@ -21,6 +21,8 @@ mod native_dns_config;
 #[cfg(feature = "native")]
 mod native_http;
 #[cfg(all(fuzzing, feature = "native", feature = "test-support"))]
+pub(crate) use native_dns::fuzz_dns_response;
+#[cfg(all(fuzzing, feature = "native", feature = "test-support"))]
 pub(crate) use native_http::{fuzz_response_decoder, fuzz_streaming_response_decoder};
 #[cfg(feature = "native")]
 mod native_tls;

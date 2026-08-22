@@ -576,6 +576,23 @@ WP10 will run at least one hour of exact-source coverage-guided parser/state wor
 host while parity work continues. WP11 retains multi-hour/day live lifecycle soak across realistic
 requests, interruption, restart, memory, thread, and socket stability.
 
+## WP9.5e DNS response policy campaign — Windows slice
+
+The third isolated target bounds arbitrary input at the native resolver's 4 KiB packet ceiling,
+feeds it through Hickory wire decoding and NBReq's real expected-ID/question/type, truncation,
+rcode, negative-TTL, CNAME-hop, address-family, and answer-TTL policy, then repeats the parse to
+guard against hidden retained state. Result invariants require nonempty correctly typed address
+answers, bounded TTLs, non-root canonical targets, and nonempty portable failures.
+
+Five reviewed textual-hex seeds decode to synthetic A, AAAA, CNAME-to-A, NXDOMAIN, and truncated
+responses and are required by the stable suite to reach an expected response result. Arbitrary raw
+packet bytes remain the normal generated path. The Windows 61-second campaign completes 98,646
+executions at roughly 1,617 executions/second, reaches 1,307 coverage points and 2,532 features,
+retains 290 corpus entries (about 25 KiB), and produces no crash artifact.
+
+This accepts the first Windows DNS wire/policy campaign. It does not cover UDP/TCP socket event
+sequences, resolver retry/cache state, another operating system, or the longer WP10 thrash tier.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

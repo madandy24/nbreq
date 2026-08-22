@@ -4,3 +4,5 @@
 !/corpus/native_response_decoder/*.seed
 /corpus/native_streaming_response_decoder/*
 !/corpus/native_streaming_response_decoder/*.seed
+/corpus/native_dns_response/*
+!/corpus/native_dns_response/*.seed

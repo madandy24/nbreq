@@ -30,3 +30,8 @@ pub fn native_streaming_response_decoder(data: &[u8]) {
         .shutdown()
         .expect("streaming decoder harness Engine must stop");
 }
+
+/// Exercises the bounded native DNS response parser and its NBReq answer-policy invariants.
+pub fn native_dns_response(data: &[u8]) {
+    crate::backend::fuzz_dns_response(data);
+}

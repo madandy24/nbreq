@@ -1097,6 +1097,7 @@ fn drive_tcp(
     Ok(TcpDrive::Pending)
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum ParsedAnswer {
     Answer(ResolveAnswer),
     Canonical(Name),
@@ -1195,6 +1196,93 @@ fn parse_answer(
     })))
 }
 
+#[cfg(any(test, fuzzing))]
+pub(crate) fn fuzz_dns_response(data: &[u8]) {
+    let Some((bytes, expected_id, expected_name, expected_type)) = fuzz_dns_input(data) else {
+        return;
+    };
+    let first = parse_answer(&bytes, expected_id, &expected_name, expected_type);
+    let second = parse_answer(&bytes, expected_id, &expected_name, expected_type);
+    assert_eq!(first, second, "native DNS parsing retained hidden state");
+
+    match &first {
+        Some(Ok(ParsedAnswer::Answer(answer))) => {
+            assert!(!answer.addresses.is_empty());
+            assert!(answer.addresses.iter().all(|address| matches!(
+                (expected_type, address),
+                (RecordType::A, IpAddr::V4(_)) | (RecordType::AAAA, IpAddr::V6(_))
+            )));
+            assert!(answer.ttl <= Duration::from_secs(u64::from(u32::MAX)));
+        }
+        Some(Ok(ParsedAnswer::Canonical(name))) => assert!(!name.is_root()),
+        Some(Ok(ParsedAnswer::NoRecords(ttl))) => {
+            assert!(ttl.is_none_or(|ttl| ttl <= Duration::from_secs(u64::from(u32::MAX))));
+        }
+        Some(Ok(ParsedAnswer::Negative(failure, ttl))) => {
+            assert!(!failure.message.is_empty());
+            assert!(ttl.is_none_or(|ttl| ttl <= Duration::from_secs(u64::from(u32::MAX))));
+        }
+        Some(Err(failure)) => assert!(!failure.message.is_empty()),
+        Some(Ok(ParsedAnswer::Truncated)) | None => {}
+    }
+}
+
+#[cfg(any(test, fuzzing))]
+fn fuzz_dns_input(data: &[u8]) -> Option<(Vec<u8>, u16, Name, RecordType)> {
+    const HEX_CASES: [(&[u8], u16, &str, RecordType); 3] = [
+        (b"HEX:A:expected:", 0x1234, "expected.test.", RecordType::A),
+        (b"HEX:AAAA:ipv6:", 0x1235, "ipv6.test.", RecordType::AAAA),
+        (b"HEX:A:alias:", 0x1236, "alias.test.", RecordType::A),
+    ];
+    for (prefix, id, name, record_type) in HEX_CASES {
+        if let Some(hex) = data.strip_prefix(prefix) {
+            let name = Name::from_ascii(name).ok()?;
+            return Some((decode_dns_fuzz_hex(hex), id, name, record_type));
+        }
+    }
+    if data.len() < 4 {
+        return None;
+    }
+    let expected_id = u16::from_be_bytes([data[0], data[1]]);
+    let expected_type = if data[2] & 1 == 0 {
+        RecordType::A
+    } else {
+        RecordType::AAAA
+    };
+    let name = match data[3] % 3 {
+        0 => "expected.test.",
+        1 => "alias.test.",
+        _ => "ipv6.test.",
+    };
+    Some((
+        data[4..].iter().copied().take(DNS_PACKET_LIMIT).collect(),
+        expected_id,
+        Name::from_ascii(name).ok()?,
+        expected_type,
+    ))
+}
+
+#[cfg(any(test, fuzzing))]
+fn decode_dns_fuzz_hex(hex: &[u8]) -> Vec<u8> {
+    fn nibble(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let mut decoded = Vec::with_capacity((hex.len() / 2).min(DNS_PACKET_LIMIT));
+    for pair in hex.chunks_exact(2).take(DNS_PACKET_LIMIT) {
+        let (Some(high), Some(low)) = (nibble(pair[0]), nibble(pair[1])) else {
+            break;
+        };
+        decoded.push((high << 4) | low);
+    }
+    decoded
+}
+
 fn send_result(results: &Sender<ResolveResult>, waker: &NativeWaker, result: ResolveResult) {
     if results.send(result).is_ok() {
         let _wake_result = waker.wake();
@@ -1244,6 +1332,25 @@ mod tests {
     use super::*;
     use crate::backend::native::NativeReactor;
     use crate::backend::native_tls::TLS_FLIGHT_LIMIT;
+
+    #[test]
+    fn checked_in_dns_fuzz_seeds_reach_the_policy_parser() {
+        for seed in [
+            include_bytes!("../../fuzz/corpus/native_dns_response/a.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_dns_response/aaaa.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_dns_response/cname.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_dns_response/nxdomain.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_dns_response/truncated.seed").as_slice(),
+        ] {
+            let (bytes, id, name, record_type) =
+                fuzz_dns_input(seed).expect("DNS fuzz seed must decode");
+            assert!(
+                parse_answer(&bytes, id, &name, record_type).is_some(),
+                "DNS fuzz seed must reach an expected response result"
+            );
+            fuzz_dns_response(seed);
+        }
+    }
     use crate::{
         Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, StreamRequest,
         TlsVerification, TransportStage, UploadBody,
