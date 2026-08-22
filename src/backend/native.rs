@@ -19,6 +19,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 const WAKE_TOKEN: Token = Token(0);
 const FIRST_SOCKET_TOKEN: usize = 1;
 const READ_CHUNK: usize = 16 * 1024;
+const DEADLINE_COMPACTION_SLACK: usize = 64;
 pub(super) const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -305,6 +306,7 @@ impl NativeReactor {
         if let Some(when) = deadline {
             self.deadlines.push(Reverse(DeadlineEntry { when, id }));
         }
+        self.maybe_compact_deadlines();
         Ok(())
     }
 
@@ -334,6 +336,7 @@ impl NativeReactor {
         if let Some(when) = deadline {
             self.deadlines.push(Reverse(DeadlineEntry { when, id }));
         }
+        self.maybe_compact_deadlines();
         self.reregister(id)
     }
 
@@ -739,7 +742,42 @@ impl NativeReactor {
         }
         self.tokens.remove(&connection.token);
         self.free_slots.push(id.index);
+        self.maybe_compact_deadlines();
         Some(())
+    }
+
+    fn maybe_compact_deadlines(&mut self) {
+        let live_deadlines = self
+            .slots
+            .iter()
+            .filter(|slot| {
+                slot.connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.deadline.is_some())
+            })
+            .count();
+        let retained_limit = live_deadlines
+            .saturating_mul(2)
+            .saturating_add(DEADLINE_COMPACTION_SLACK);
+        if self.deadlines.len() <= retained_limit {
+            return;
+        }
+        self.deadlines = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let connection = slot.connection.as_ref()?;
+                let when = connection.deadline?;
+                Some(Reverse(DeadlineEntry {
+                    when,
+                    id: SlotId {
+                        index: u32::try_from(index).ok()?,
+                        generation: slot.generation,
+                    },
+                }))
+            })
+            .collect();
     }
 
     fn nearest_deadline(&mut self) -> Option<Instant> {
@@ -1491,6 +1529,36 @@ mod tests {
         assert_eq!(reactor.active_count(), 1);
         assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
+        server.join().expect("server must join");
+    }
+
+    #[test]
+    fn stale_deadline_entries_stay_bounded_before_their_future_expiry() {
+        let (listener, address) = listener();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("server must accept");
+        });
+        let mut reactor = NativeReactor::new(8).expect("reactor must construct");
+        let id = reactor
+            .connect(address, None, 32, 32)
+            .expect("connect must start");
+        let base = Instant::now() + Duration::from_secs(60);
+        for offset in 0..10_000_u64 {
+            reactor
+                .set_deadline(id, Some(base + Duration::from_nanos(offset)))
+                .expect("live deadline must update");
+        }
+        assert!(
+            reactor.deadlines.len() <= DEADLINE_COMPACTION_SLACK + 2,
+            "stale deadline heap grew to {} entries",
+            reactor.deadlines.len()
+        );
+        assert!(reactor.cancel(id));
+        assert!(
+            reactor.deadlines.len() <= DEADLINE_COMPACTION_SLACK,
+            "closed-slot deadlines remained unbounded"
+        );
+        reactor.shutdown();
         server.join().expect("server must join");
     }
 

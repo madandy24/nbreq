@@ -722,6 +722,47 @@ inside the noisy range of the earlier loopback samples, so no speedup is claimed
 clippy, formatting, and all-feature compilation pass. These changes do not retain scratch memory
 per connection, reserve a declared body eagerly, alter limits, or change native selection.
 
+## WP9.5m exact-source Ubuntu comparison and deadline-retention correction
+
+Exact commit `4453bf2`, packaged as a 474,881-byte archive with SHA-256
+`207DEAD110C1F92BC6FFE0C163DFA0C36C93FACE643C4920C6A30CA2A44AC68B`, compiles under
+Rust/Cargo 1.85.0 on Ubuntu 20.04.6 and passes 182 native unit tests, 5 contract tests, 6
+doctests, the 65-unit default suite, warning-denied all-feature clippy, formatting, and offline
+all-feature compilation.
+
+Five 10,000-request/128-byte samples put native at 27.1 thousand requests/second median and curl
+at 20.2 thousand, making native about 34% faster in that narrow run. Three
+1,000-request/64-KiB samples put native at 2.69 thousand requests/second and curl at 7.54
+thousand, making native about 64% slower. Every run uses exactly one connection and completes the
+exact warm-up plus workload count. The reversal from the Windows results is useful evidence that
+these loopback rankings are platform- and workload-dependent, not a basis for a general speed
+claim.
+
+Five hundred cancellations per backend and stall point remain prompt. Native peer-close
+median/p95/max is 0.011/0.017/0.229 ms for stalled heads and 0.013/0.021/0.192 ms for stalled
+bodies; curl is 0.013/0.023/0.407 ms and 0.019/0.027/0.319 ms. Every canonical terminal is below
+0.2 ms. This preserves the important result: neither comparative backend approaches the 100 ms
+cancellation gate under controlled loopback pressure.
+
+The allocator region then exposed a real lifecycle edge rather than a response-buffer leak.
+Updated request deadlines were lazily invalidated in a `BinaryHeap` and normally discarded only
+when they reached the top. A fast reused connection with long future deadlines could therefore
+retain one stale entry per completed request until the deadline window arrived: about 393 KiB
+after 10,000 tiny requests and 24 KiB after 1,000 large requests on this host. Allocation and
+deallocation counts still matched, and consuming Engine shutdown released the entries, but memory
+before shutdown was incorrectly proportional to recent request history.
+
+The reactor now compacts stale deadline entries whenever the heap exceeds twice the number of live
+deadlines plus a fixed 64-entry slack. It rebuilds exclusively from current generation-checked
+slots, so retained scheduling memory is proportional to live connections while preserving the
+existing stale-safe deadline semantics. A 10,000-update regression with deadlines 60 seconds in
+the future keeps the heap within the bound and proves cancellation removes the live owner. On
+Windows, the optimized comparison reports 32 transient workload bytes after 10,000 tiny requests
+and zero after 1,000 large requests, with the same small idle owner baseline and complete release
+at shutdown. The complete 184-native-unit/default/contract/doctest, warning-denied all-feature
+clippy, formatting, and all-feature compilation gates pass. Exact-source Ubuntu repetition of the
+corrected commit remains the final acceptance step for this correction.
+
 ## Future performance and follow-up register
 
 Performance work remains subordinate to bounded memory, exact framing, cancellation, contamination
@@ -754,6 +795,8 @@ than by the loopback ranking alone. Useful candidates are:
 
 WP10 should first establish parity and realistic profiles, then take only changes whose benchmark
 gain survives cross-platform testing and whose adversarial lifecycle suite remains unchanged.
+The comparison has already paid for one such non-throughput improvement: stale deadline storage is
+now explicitly bounded by live ownership rather than historical request count.
 
 ## Accepted boundary and later work
 
