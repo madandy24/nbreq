@@ -9,11 +9,18 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
-nbreq = { path = "..", features = ["native"] }
+nbreq = { path = "..", features = ["native", "test-support"] }
 
 [[bin]]
 name = "native_response_decoder"
 path = "fuzz_targets/native_response_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_streaming_response_decoder"
+path = "fuzz_targets/native_streaming_response_decoder.rs"
 test = false
 doc = false
 bench = false

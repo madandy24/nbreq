@@ -11,8 +11,13 @@ matching `VC\\Tools\\MSVC\\...\\bin\\Hostx64\\x64` directory is added to that se
 Run the buffered native response parser/state-machine target from the repository root:
 
 ```text
-cargo +nightly fuzz run native_response_decoder fuzz/corpus/native_response_decoder -- \\
-  -max_len=65536 -timeout=10
+cargo +nightly fuzz run native_response_decoder fuzz/corpus/native_response_decoder -- -max_len=65536 -timeout=10
+```
+
+Run the streaming decoder/backpressure state machine similarly:
+
+```text
+cargo +nightly fuzz run native_streaming_response_decoder fuzz/corpus/native_streaming_response_decoder -- -max_len=65536 -timeout=10
 ```
 
 The first six input bytes select bounded limits and fragmentation. The remainder is passed to the

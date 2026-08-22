@@ -2,3 +2,5 @@
 /artifacts/
 /corpus/native_response_decoder/*
 !/corpus/native_response_decoder/*.seed
+/corpus/native_streaming_response_decoder/*
+!/corpus/native_streaming_response_decoder/*.seed
