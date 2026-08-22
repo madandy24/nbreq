@@ -656,11 +656,27 @@ NBReq test executable. The three planned WP9.5 bounded pressure slices are there
 Windows and exact-source Ubuntu. Comparative measurements and the explicit synchronous-verifier
 limitation remain open; native selection is unchanged.
 
+## WP9.5j synchronous verifier head-of-line measurement — Windows slice
+
+Certificate verification remains synchronous on the native HTTP owner. A test-only wrapper around
+the real WebPKI verifier pauses its first certificate check behind an explicit gate; it does not
+replace or bypass certificate, hostname, or handshake-signature verification. After the HTTPS
+handshake enters that gate, an unrelated cleartext request is accepted on the same Engine and must
+remain pending throughout a 75 ms observation interval. Releasing the verifier then lets both the
+verified HTTPS response and unrelated HTTP response complete normally.
+
+This deterministic test proves the architectural limitation without relying on a slow external
+certificate store or a scheduler-sensitive sleep. Twenty-five consecutive repetitions pass, as
+does the complete 182-native-unit, 5-contract, 6-doctest gate plus warning-denied native clippy and
+formatting. Pooling reduces handshake frequency, but one slow platform-verifier callback can still
+stall every request on that Engine until it returns. The callback itself remains uninterruptible;
+separate Engines are the isolation boundary for independent traffic.
+
 ## Accepted boundary and later work
 
-- Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
-  concurrency in WP9.5. Pooling reduces handshake frequency but does not make an OS callback
-  interruptible.
+- The synchronous platform-verifier head-of-line limitation is measured and retained. Pooling
+  reduces handshake frequency but does not make an OS callback interruptible; separate Engines
+  remain the isolation boundary.
 - Fixed/chunked `UploadBody` pumping, blocking producer wakeups, buffered-upload response
   streaming, direct reader delivery, and bounded cleartext/TLS backpressure are accepted on
   Windows and exact-source Ubuntu 20.04. The one-shot HTTPS body ceiling was removed by WP9.4a.

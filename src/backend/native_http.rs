@@ -1471,6 +1471,26 @@ impl NativeHttpFactory {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn new_with_nameserver_and_verification_gate(
+        config: &EngineConfig,
+        nameserver: SocketAddr,
+        root_der: Vec<u8>,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
+            resolver: Some(ResolverConfig::injected(nameserver)),
+            tls: Some(NativeTlsConfigs::with_test_root_and_verification_gate(
+                root_der.into(),
+                entered,
+                release,
+            )?),
+        })
+    }
+
     pub(super) fn into_backend(self) -> Result<Box<dyn Backend + Send>, Error> {
         Ok(Box::new(NativeHttpBackend::new(
             self.limits,

@@ -2510,6 +2510,134 @@ mod tests {
     }
 
     #[test]
+    fn synchronous_certificate_verification_blocks_unrelated_owner_work() {
+        const OBSERVATION: Duration = Duration::from_millis(75);
+
+        let key = KeyPair::generate().expect("HTTPS fixture key must generate");
+        let params = CertificateParams::new(vec!["slow-verify.test".to_owned()])
+            .expect("HTTPS fixture parameters must build");
+        let certificate = params
+            .self_signed(&key)
+            .expect("HTTPS fixture certificate must sign");
+        let certificate_der = certificate.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let server_config = Arc::new(
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("HTTPS fixture versions must configure")
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate_der.clone()], private_key)
+                .expect("HTTPS fixture identity must configure"),
+        );
+        let tls_listener = TcpListener::bind("127.0.0.1:0").expect("HTTPS fixture must bind");
+        let tls_address = tls_listener.local_addr().expect("HTTPS fixture address");
+        let tls_server = thread::spawn(move || {
+            let (stream, _) = tls_listener.accept().expect("HTTPS fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("HTTPS fixture read timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .expect("HTTPS fixture write timeout");
+            let connection =
+                ServerConnection::new(server_config).expect("HTTPS server state must build");
+            let mut tls = StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = tls.read(&mut buffer).expect("HTTPS request must read");
+                assert_ne!(read, 0, "HTTPS request ended before its head");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntls")
+                        .expect("HTTPS response must write");
+                    tls.flush().expect("HTTPS response must flush");
+                    return;
+                }
+            }
+        });
+
+        let plain_listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
+        let plain_address = plain_listener.local_addr().expect("HTTP fixture address");
+        let plain_server = thread::spawn(move || {
+            let (mut stream, _) = plain_listener.accept().expect("HTTP fixture must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("HTTP fixture read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("HTTP request must read");
+                assert_ne!(read, 0, "HTTP request ended before its head");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nplain")
+                        .expect("HTTP response must write");
+                    return;
+                }
+            }
+        });
+
+        let dns = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+        let (entered_tx, entered_rx) = test_channel::channel();
+        let (release_tx, release_rx) = test_channel::channel();
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http::NativeHttpFactory::new_with_nameserver_and_verification_gate(
+            &config,
+            dns.address,
+            certificate_der.as_ref().to_vec(),
+            entered_tx,
+            release_rx,
+        )
+        .expect("gated native HTTPS factory must construct");
+        let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+            .expect("gated native HTTPS Engine must construct");
+        let client = engine.client();
+        let tls_pending = client
+            .submit(
+                Request::get(format!("https://slow-verify.test:{}/", tls_address.port()))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("HTTPS request must build"),
+            )
+            .expect("HTTPS request must submit");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("certificate verifier must enter");
+
+        let plain_pending = client
+            .submit(
+                Request::get(format!("http://{plain_address}/"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("HTTP request must build"),
+            )
+            .expect("unrelated HTTP request must submit");
+        let plain_pending = match plain_pending.wait_for(OBSERVATION) {
+            crate::WaitOutcome::TimedOut(pending) => pending,
+            crate::WaitOutcome::Completed(completion) => {
+                panic!("unrelated owner work escaped gated verification: {completion:?}")
+            }
+        };
+
+        release_tx
+            .send(())
+            .expect("certificate verifier must release");
+        let Completion::Completed(tls_response) = tls_pending.wait() else {
+            panic!("HTTPS request must complete after verifier release")
+        };
+        assert_eq!(tls_response.body(), b"tls");
+        let Completion::Completed(plain_response) = plain_pending.wait() else {
+            panic!("unrelated HTTP request must complete after verifier release")
+        };
+        assert_eq!(plain_response.body(), b"plain");
+        engine.shutdown().expect("gated HTTPS Engine must stop");
+        tls_server.join().expect("HTTPS fixture must join");
+        plain_server.join().expect("HTTP fixture must join");
+    }
+
+    #[test]
     fn public_stream_reader_drains_bounded_tls_plaintext_through_dns_and_https() {
         let key = KeyPair::generate().expect("stream HTTPS key must generate");
         let params = CertificateParams::new(vec!["stream.test".to_owned()])

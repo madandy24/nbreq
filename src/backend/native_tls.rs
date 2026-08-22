@@ -9,6 +9,15 @@ use std::fmt;
 use std::io::{self, Cursor, Read, Write};
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::mpsc::{Receiver, Sender};
+#[cfg(test)]
+use std::time::Duration;
+
 use rustls::client::ClientConnection;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{
@@ -56,6 +65,38 @@ impl NativeTlsConfigs {
             .with_safe_default_protocol_versions()
             .map_err(|error| tls_config_error("protocol versions", error))?
             .with_root_certificates(roots)
+            .with_no_client_auth();
+        Self::from_verified(provider, verified)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_root_and_verification_gate(
+        root: CertificateDer<'static>,
+        entered: Sender<()>,
+        release: Receiver<()>,
+    ) -> Result<Self, Error> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(root)
+            .map_err(|error| tls_config_error("test trust root", error))?;
+        let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::clone(&provider),
+        )
+        .build()
+        .map_err(|error| tls_config_error("test verifier", error))?;
+        let verifier = Arc::new(GatedFirstVerification {
+            inner: verifier,
+            entered,
+            release: Mutex::new(release),
+            first: AtomicBool::new(true),
+        });
+        let verified = ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .map_err(|error| tls_config_error("protocol versions", error))?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
         Self::from_verified(provider, verified)
     }
@@ -523,6 +564,60 @@ impl ServerCertVerifier for NoCertificateVerification {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.algorithms.supported_schemes()
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct GatedFirstVerification {
+    inner: Arc<dyn ServerCertVerifier>,
+    entered: Sender<()>,
+    release: Mutex<Receiver<()>>,
+    first: AtomicBool,
+}
+
+#[cfg(test)]
+impl ServerCertVerifier for GatedFirstVerification {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if self.first.swap(false, Ordering::AcqRel) {
+            let _ignored = self.entered.send(());
+            let _ignored = self
+                .release
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .recv_timeout(Duration::from_secs(2));
+        }
+        self.inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }
 
