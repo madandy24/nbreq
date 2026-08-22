@@ -44,6 +44,7 @@ resolv-conf = { version = "=0.7.6", optional = true, default-features = false }
 rcgen = "=0.13.2"
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 socket2 = "=0.6.5"
+stats_alloc = "=0.1.10"
 
 [patch.crates-io]
 curl = { path = "vendor/curl" }
@@ -61,3 +62,11 @@ unwrap_used = "deny"
 [[example]]
 name = "native_platform_https"
 required-features = ["native", "test-support"]
+
+[[example]]
+name = "wp9_compare"
+required-features = ["native", "curl-pilot", "test-support"]
+
+[[example]]
+name = "wp9_cancel_compare"
+required-features = ["native", "curl-pilot", "test-support"]

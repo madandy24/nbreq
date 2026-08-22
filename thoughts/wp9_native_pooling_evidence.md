@@ -672,6 +672,37 @@ formatting. Pooling reduces handshake frequency, but one slow platform-verifier 
 stall every request on that Engine until it returns. The callback itself remains uninterruptible;
 separate Engines are the isolation boundary for independent traffic.
 
+## WP9.5k native/curl comparative harnesses — Windows slice
+
+Two release-mode examples select the private native or curl proving backend explicitly; neither
+uses or changes `Engine::new`. The throughput harness warms one local HTTP/1.1 connection, then
+runs sequential buffered GETs through a fixed-allocation keep-alive server. It reports elapsed
+throughput, server-observed connection/request counts, native pool counters, and an instrumented
+Rust global allocator region. The cancellation harness establishes an exact stalled-header or
+partial-body barrier, individually cancels the request, and records both canonical terminal and
+peer-observed socket-close latency.
+
+On the Windows development host with Rust 1.97.1, six 10,000-request/128-byte samples put native at
+17.9–23.3 thousand requests/second (22.4 thousand median) and curl at 23.4–26.2 thousand (25.1
+thousand median). Four 1,000-request/64 KiB samples put native at 3.76–4.19 thousand
+requests/second (3.91 thousand median) and curl at 5.19–5.37 thousand (5.30 thousand median).
+Every run serves the warm-up plus the complete workload over exactly one server connection;
+native reports exactly one open and one reuse per measured request.
+
+The Rust allocator sees exact zero workload-byte retention for both backends. For 128-byte
+responses, native performs 37 allocations and 7 reallocations per request versus roughly 26.9 and
+zero for curl; the measured idle lifecycle retains about 26 KiB versus 3.8 KiB before shutdown.
+After shutdown both reach the same 1,892-byte fixture baseline. These numbers are deliberately
+labelled Rust-observed: curl's C allocator is invisible, so byte totals and idle footprint are not
+whole-process comparisons and cannot support a total-memory claim.
+
+Five hundred trials per backend and stall type stay far inside the 100 ms cancellation gate.
+Native peer-close median/p95/max is 0.039/0.139/0.319 ms for headers and 0.031/0.105/0.283 ms for
+body; curl is 0.028/0.102/0.393 ms and 0.033/0.099/0.194 ms respectively. Canonical terminal
+latency is at most 0.071 ms across all 2,000 trials. This is a controlled loopback baseline, not a
+production or cross-network performance claim. Exact-source Ubuntu compilation and comparison
+remain before the comparative slice is accepted cross-platform.
+
 ## Accepted boundary and later work
 
 - The synchronous platform-verifier head-of-line limitation is measured and retained. Pooling
