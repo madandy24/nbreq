@@ -722,7 +722,7 @@ inside the noisy range of the earlier loopback samples, so no speedup is claimed
 clippy, formatting, and all-feature compilation pass. These changes do not retain scratch memory
 per connection, reserve a declared body eagerly, alter limits, or change native selection.
 
-## WP9.5m exact-source Ubuntu comparison and deadline-retention correction
+## WP9.5m exact-source Ubuntu comparison and deadline-retention correction accepted
 
 Exact commit `4453bf2`, packaged as a 474,881-byte archive with SHA-256
 `207DEAD110C1F92BC6FFE0C163DFA0C36C93FACE643C4920C6A30CA2A44AC68B`, compiles under
@@ -760,8 +760,19 @@ the future keeps the heap within the bound and proves cancellation removes the l
 Windows, the optimized comparison reports 32 transient workload bytes after 10,000 tiny requests
 and zero after 1,000 large requests, with the same small idle owner baseline and complete release
 at shutdown. The complete 184-native-unit/default/contract/doctest, warning-denied all-feature
-clippy, formatting, and all-feature compilation gates pass. Exact-source Ubuntu repetition of the
-corrected commit remains the final acceptance step for this correction.
+clippy, formatting, and all-feature compilation gates pass.
+
+Corrected commit `95b61a6`, packaged as a 480,507-byte archive with SHA-256
+`AD5F860FC76C3CE786B5E132EECDF9D661607A820C9D687E5C15CED6F37E8D78`, matches on Ubuntu
+20.04.6 and passes that same complete Rust/Cargo 1.85 gate. Twenty-five consecutive repetitions of
+the 10,000-future-deadline regression pass. The exact native comparison now retains only 1,344
+workload bytes after 10,000 tiny requests and 1,152 after 1,000 large requests, rather than 393 KiB
+and 24 KiB; both are small constant residue rather than request-count growth. The idle Engine
+region is about 18 KiB and consuming shutdown returns to the 2,004-byte fixture baseline. The
+process-name check finds no surviving NBReq test or comparison executable. The production limits,
+metrics, bounded pressure, parser campaigns, comparison, cancellation, and allocator/lifecycle
+evidence required by WP9.5 are accepted; longer state-machine thrash and realistic soak move to
+their scheduled WP10/WP11 tiers.
 
 ## Future performance and follow-up register
 
@@ -808,4 +819,5 @@ now explicitly bounded by live ownership rather than historical request count.
   Windows and exact-source Ubuntu 20.04. The one-shot HTTPS body ceiling was removed by WP9.4a.
   Public limits and metrics plus the first buffered, streaming, DNS, and bounded mixed-interruption
   campaigns and bounded pressure are accepted on Windows and exact-source Ubuntu. Longer state
-  work and comparative measurements remain WP9.5/WP10.
+  work and realistic comparative profiles remain WP10 follow-up rather than a WP9 correctness
+  blocker.
