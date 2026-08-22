@@ -593,6 +593,22 @@ retains 290 corpus entries (about 25 KiB), and produces no crash artifact.
 This accepts the first Windows DNS wire/policy campaign. It does not cover UDP/TCP socket event
 sequences, resolver retry/cache state, another operating system, or the longer WP10 thrash tier.
 
+## WP9.5f bounded mixed-interruption pressure — Windows slice
+
+A spawned native Engine accepts 64 requests at once behind a four-connection global and per-origin
+ceiling with idle retention disabled. Six requests in each group of eight complete normally, one
+peer closes before any response, and one peer holds the request until its individual handle is
+cancelled. Every stalled request must first reach the peer, so cancellation exercises live owned
+sockets rather than queued-work shortcuts. A sixty-fifth clean request must then complete through
+the same Engine.
+
+The fixture requires exactly 49 completed, eight failed-at-receive, and eight cancelled terminal
+outcomes; zero current connections and waiters; an exact four-connection high-water mark; observed
+capacity pressure; and matching 65 open/close lifecycles. Fifty consecutive Windows repetitions
+pass, followed by the complete 179-native-unit, 5-contract, 6-doctest and 65-default-unit suites,
+warning-denied native clippy, and formatting. This accepts the first bounded mixed-interruption
+pressure slice. Exact-source Ubuntu repetition and wider streaming/resolver pressure remain open.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
@@ -601,5 +617,6 @@ sequences, resolver retry/cache state, another operating system, or the longer W
 - Fixed/chunked `UploadBody` pumping, blocking producer wakeups, buffered-upload response
   streaming, direct reader delivery, and bounded cleartext/TLS backpressure are accepted on
   Windows and exact-source Ubuntu 20.04. The one-shot HTTPS body ceiling was removed by WP9.4a.
-  Public limits and metrics plus the first buffered/streaming parser campaigns are accepted.
-  DNS/state-machine coverage, pressure runs, and supported-platform evidence remain WP9.5/WP10.
+  Public limits and metrics plus the first buffered, streaming, DNS, and bounded mixed-interruption
+  campaigns are accepted on Windows. Cross-platform pressure, longer state work, and comparative
+  measurements remain WP9.5/WP10.

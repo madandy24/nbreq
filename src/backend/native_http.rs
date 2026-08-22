@@ -7557,6 +7557,168 @@ mod tests {
     }
 
     #[test]
+    fn capped_connection_pressure_survives_mixed_peer_interruptions() {
+        const BATCH: usize = 64;
+        const STALLED: usize = BATCH / 8;
+        const INTERRUPTED: usize = BATCH / 8;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("pressure fixture must bind");
+        let address = listener.local_addr().expect("pressure fixture address");
+        let (stalled_tx, stalled_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut handlers = Vec::with_capacity(BATCH + 1);
+            for _ in 0..=BATCH {
+                let (mut stream, _) = listener.accept().expect("pressure fixture must accept");
+                let stalled_tx = stalled_tx.clone();
+                handlers.push(thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .expect("pressure socket timeout must configure");
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 512];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream.read(&mut buffer).expect("pressure request must read");
+                        assert_ne!(read, 0, "pressure client closed before its request head");
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    let first_line_end = request
+                        .windows(2)
+                        .position(|window| window == b"\r\n")
+                        .expect("pressure request must have a first line");
+                    let first_line = std::str::from_utf8(&request[..first_line_end])
+                        .expect("pressure request line must be UTF-8");
+                    let path = first_line
+                        .split_ascii_whitespace()
+                        .nth(1)
+                        .expect("pressure request must have a target");
+                    if path == "/health" {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                            )
+                            .expect("health response must write");
+                        return;
+                    }
+                    let index = path
+                        .strip_prefix('/')
+                        .expect("pressure target must be origin-form")
+                        .parse::<usize>()
+                        .expect("pressure target must contain its index");
+                    match index % 8 {
+                        0 => {
+                            stalled_tx
+                                .send(index)
+                                .expect("stalled pressure request must signal");
+                            assert_socket_closed(
+                                &mut stream,
+                                &mut buffer,
+                                "cancelled pressure request",
+                            );
+                        }
+                        1 => {
+                            stream
+                                .shutdown(std::net::Shutdown::Both)
+                                .expect("interrupted pressure socket must close");
+                        }
+                        _ => {
+                            stream
+                                .write_all(
+                                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                                )
+                                .expect("pressure response must write");
+                        }
+                    }
+                }));
+            }
+            for handler in handlers {
+                handler
+                    .join()
+                    .expect("pressure connection handler must join");
+            }
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_connections(std::num::NonZeroUsize::new(4).expect("four is non-zero"))
+            .with_max_connections_per_origin(
+                std::num::NonZeroUsize::new(4).expect("four is non-zero"),
+            )
+            .with_max_idle_connections(0)
+            .with_max_idle_connections_per_origin(0);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("pressure Engine must construct");
+        let client = engine.client();
+        let mut pending = Vec::with_capacity(BATCH);
+        let mut handles = Vec::with_capacity(BATCH);
+        for index in 0..BATCH {
+            let request = client
+                .submit(
+                    Request::get(format!("http://{address}/{index}"))
+                        .total_timeout(Duration::from_secs(5))
+                        .build()
+                        .expect("pressure request must build"),
+                )
+                .expect("pressure request must submit");
+            handles.push(request.handle());
+            pending.push(request);
+        }
+        for _ in 0..STALLED {
+            let index = stalled_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("every stalled request must reach the peer");
+            handles[index]
+                .cancel()
+                .expect("stalled pressure request must cancel");
+        }
+
+        let mut completed = 0;
+        let mut failed = 0;
+        let mut cancelled = 0;
+        for request in pending {
+            match request.wait() {
+                Completion::Completed(response) => {
+                    assert_eq!(response.status(), 200);
+                    assert_eq!(response.body(), b"ok");
+                    completed += 1;
+                }
+                Completion::Failed(error) => {
+                    assert_eq!(error.kind(), ErrorKind::Transport);
+                    assert_eq!(error.transport_stage(), Some(TransportStage::Receive));
+                    failed += 1;
+                }
+                Completion::Cancelled => cancelled += 1,
+            }
+        }
+        assert_eq!(completed, BATCH - STALLED - INTERRUPTED);
+        assert_eq!(failed, INTERRUPTED);
+        assert_eq!(cancelled, STALLED);
+
+        let health = client
+            .execute(
+                Request::get(format!("http://{address}/health"))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("health request must build"),
+            )
+            .expect("owner must remain healthy after mixed interruptions");
+        assert_eq!(health.body(), b"ok");
+
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), (BATCH + 1) as u64);
+        assert_eq!(metrics.requests_completed(), (completed + 1) as u64);
+        assert_eq!(metrics.requests_failed(), failed as u64);
+        assert_eq!(metrics.requests_cancelled(), cancelled as u64);
+        assert_eq!(metrics.current().active_connections(), 0);
+        assert_eq!(metrics.current().connection_waiters(), 0);
+        assert_eq!(metrics.high_water().active_connections(), 4);
+        assert!(metrics.high_water().connection_waiters() > 0);
+        assert_eq!(metrics.connections_opened(), (BATCH + 1) as u64);
+        assert_eq!(metrics.connections_closed(), (BATCH + 1) as u64);
+        engine.shutdown().expect("pressure Engine must stop");
+        server.join().expect("pressure fixture must join");
+    }
+
+    #[test]
     fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
         let config = EngineConfig::spawned();
         let engine =
