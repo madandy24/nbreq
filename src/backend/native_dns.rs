@@ -2206,6 +2206,211 @@ mod tests {
     }
 
     #[test]
+    fn resolver_pressure_cancels_live_queries_without_starving_healthy_peers() {
+        const BATCH: usize = 64;
+        const CANCELLED: usize = BATCH / 4;
+
+        let nameserver =
+            StdUdpSocket::bind("127.0.0.1:0").expect("resolver pressure nameserver must bind");
+        nameserver
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .expect("resolver pressure nameserver timeout");
+        let nameserver_address = nameserver
+            .local_addr()
+            .expect("resolver pressure nameserver address");
+        let (silent_tx, silent_rx) = test_channel::channel();
+        let (stop_tx, stop_rx) = test_channel::channel();
+        let dns_thread = thread::spawn(move || {
+            let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+            let mut signalled = std::collections::HashSet::new();
+            loop {
+                if stop_rx.try_recv().is_ok() {
+                    return signalled.len();
+                }
+                let (length, peer) = match nameserver.recv_from(&mut buffer) {
+                    Ok(received) => received,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => panic!("resolver pressure DNS receive failed: {error}"),
+                };
+                let request = Message::from_vec(&buffer[..length])
+                    .expect("resolver pressure query must parse");
+                let query = request
+                    .query()
+                    .expect("resolver pressure query must exist")
+                    .clone();
+                let name = query.name().to_utf8();
+                let index = name.strip_prefix("pressure-").and_then(|name| {
+                    name.split_once('.')
+                        .and_then(|(index, _)| index.parse::<usize>().ok())
+                });
+                if index.is_some_and(|index| index % 4 == 0) {
+                    let index = index.expect("silent pressure index must exist");
+                    if signalled.insert(index) {
+                        silent_tx
+                            .send(index)
+                            .expect("silent resolver query must signal");
+                    }
+                    continue;
+                }
+                let mut response = Message::new();
+                response
+                    .set_id(request.id())
+                    .set_message_type(MessageType::Response)
+                    .set_recursion_available(true)
+                    .add_query(query.clone())
+                    .add_answer(Record::from_rdata(
+                        query.name().clone(),
+                        60,
+                        RData::A(A(Ipv4Addr::LOCALHOST)),
+                    ));
+                nameserver
+                    .send_to(
+                        &response
+                            .to_vec()
+                            .expect("resolver pressure reply must encode"),
+                        peer,
+                    )
+                    .expect("resolver pressure reply must send");
+            }
+        });
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("resolver pressure HTTP server must bind");
+        let http_address = listener
+            .local_addr()
+            .expect("resolver pressure HTTP address");
+        let http_thread = thread::spawn(move || {
+            let mut handlers = Vec::with_capacity(BATCH - CANCELLED + 1);
+            for _ in 0..BATCH - CANCELLED + 1 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("resolver pressure HTTP server must accept");
+                handlers.push(thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .expect("resolver pressure HTTP timeout");
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 512];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream
+                            .read(&mut buffer)
+                            .expect("resolver pressure HTTP request must read");
+                        assert_ne!(read, 0, "resolver pressure request closed before its head");
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .expect("resolver pressure HTTP response must write");
+                }));
+            }
+            for handler in handlers {
+                handler
+                    .join()
+                    .expect("resolver pressure HTTP handler must join");
+            }
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_connections(std::num::NonZeroUsize::new(8).expect("eight is non-zero"))
+            .with_max_connections_per_origin(
+                std::num::NonZeroUsize::new(1).expect("one is non-zero"),
+            )
+            .with_max_idle_connections(0)
+            .with_max_idle_connections_per_origin(0);
+        let engine = crate::testing::native_http_engine_with_nameserver(config, nameserver_address)
+            .expect("resolver pressure Engine must construct");
+        let client = engine.client();
+        let mut pending = Vec::with_capacity(BATCH);
+        let mut handles = Vec::with_capacity(BATCH);
+        for index in 0..BATCH {
+            let request = client
+                .submit(
+                    Request::get(format!(
+                        "http://pressure-{index}.test:{}/request",
+                        http_address.port()
+                    ))
+                    .total_timeout(Duration::from_secs(5))
+                    .build()
+                    .expect("resolver pressure request must build"),
+                )
+                .expect("resolver pressure request must submit");
+            handles.push(request.handle());
+            pending.push(request);
+        }
+        for _ in 0..CANCELLED {
+            let index = silent_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("every silent DNS request must reach the nameserver");
+            handles[index]
+                .cancel()
+                .expect("live silent DNS request must cancel");
+        }
+
+        let mut completed = 0;
+        let mut cancelled = 0;
+        for request in pending {
+            match request.wait() {
+                Completion::Completed(response) => {
+                    assert_eq!(response.body(), b"ok");
+                    completed += 1;
+                }
+                Completion::Cancelled => cancelled += 1,
+                Completion::Failed(error) => {
+                    panic!("resolver pressure request failed unexpectedly: {error}")
+                }
+            }
+        }
+        assert_eq!(completed, BATCH - CANCELLED);
+        assert_eq!(cancelled, CANCELLED);
+
+        let health = client
+            .execute(
+                Request::get(format!(
+                    "http://health.test:{}/after-cancel",
+                    http_address.port()
+                ))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("resolver pressure health request must build"),
+            )
+            .expect("resolver and HTTP owner must remain healthy after cancellation pressure");
+        assert_eq!(health.body(), b"ok");
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), (BATCH + 1) as u64);
+        assert_eq!(metrics.requests_completed(), (completed + 1) as u64);
+        assert_eq!(metrics.requests_cancelled(), cancelled as u64);
+        assert_eq!(metrics.requests_failed(), 0);
+        assert_eq!(metrics.high_water().active_connections(), 8);
+        assert!(metrics.high_water().connection_waiters() > 0);
+        assert_eq!(metrics.current().active_connections(), 0);
+        assert_eq!(metrics.current().connection_waiters(), 0);
+        assert_eq!(metrics.connections_opened(), (BATCH + 1) as u64);
+        assert_eq!(metrics.connections_closed(), (BATCH + 1) as u64);
+        engine
+            .shutdown()
+            .expect("resolver pressure Engine must shut down");
+        stop_tx
+            .send(())
+            .expect("resolver pressure nameserver must stop");
+        assert_eq!(
+            dns_thread.join().expect("resolver pressure DNS must join"),
+            CANCELLED
+        );
+        http_thread
+            .join()
+            .expect("resolver pressure HTTP server must join");
+    }
+
+    #[test]
     fn resolved_https_verifies_hostname_and_preserves_explicit_bypass() {
         let key = KeyPair::generate().expect("HTTPS fixture key must generate");
         let params = CertificateParams::new(vec!["resolved.test".to_owned()])

@@ -623,6 +623,23 @@ repetitions pass, followed by the complete 180-native-unit, 5-contract, 6-doctes
 65-default-unit suites, warning-denied native clippy, and formatting. This accepts aggregate
 stream-reader pressure on Windows; producer/resolver pressure and exact-source Ubuntu remain open.
 
+## WP9.5h resolver and connection-cap pressure — Windows slice
+
+One Engine accepts 64 distinct-host requests behind an eight-connection global ceiling and a
+one-connection-per-origin ceiling. The controlled nameserver answers 48 hosts and deliberately
+holds 16 selected A queries. Each held query must reach the nameserver before its individual
+request is cancelled, releasing capacity for the oldest eligible waiter. The 48 healthy requests
+complete against one loopback HTTP server, after which a newly resolved health request must also
+complete through the same resolver and HTTP owner.
+
+The fixture requires exactly 65 accepted, 49 completed, 16 cancelled, and zero failed outcomes;
+an exact eight-connection high-water mark; observed capacity waiters; zero final connections and
+waiters; matching 65 open/close lifecycles; and joined resolver/server threads. Twenty-five
+consecutive Windows repetitions pass, followed by the complete 181-native-unit, 5-contract,
+6-doctest and 65-default-unit suites, warning-denied native clippy, and formatting. This closes the
+planned local buffered, streamed-reader, and resolver pressure slices; exact-source Ubuntu remains
+the platform gate before comparative measurements.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
