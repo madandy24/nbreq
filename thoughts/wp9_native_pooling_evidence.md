@@ -703,6 +703,58 @@ latency is at most 0.071 ms across all 2,000 trials. This is a controlled loopba
 production or cross-network performance claim. Exact-source Ubuntu compilation and comparison
 remain before the comparative slice is accepted cross-platform.
 
+## WP9.5l low-risk allocator cleanup — Windows slice
+
+The comparison harness exposed two fixed per-response allocations rather than a lifecycle defect.
+The socket reactor allocated and zeroed a fresh 16 KiB read scratch buffer for every readable
+event, even though one owner processes readiness serially. That buffer is now a fixed stack scratch
+array. The response parser also allocated the complete configured 256-header `httparse` slot array
+for every ordinary head. It now parses up to 32 fields from stack slots and retries with the full
+configured bounded count only when the response actually exceeds that fast path. A 40-header
+regression proves the fallback still honours a larger configured count, while 39 fails with the
+same portable response-header-count limit.
+
+For the 10,000-request/128-byte harness, Rust-observed allocated bytes fall from 28,506 to 3,930
+per request and allocation calls fall from 37 to 35; the same exact 24,576 bytes and two calls per
+request disappear from the 64 KiB case. Workload byte retention remains zero. Throughput remains
+inside the noisy range of the earlier loopback samples, so no speedup is claimed. The complete
+183-native-unit, 5-contract, 6-doctest and 65-default-unit suites, warning-denied all-feature
+clippy, formatting, and all-feature compilation pass. These changes do not retain scratch memory
+per connection, reserve a declared body eagerly, alter limits, or change native selection.
+
+## Future performance and follow-up register
+
+Performance work remains subordinate to bounded memory, exact framing, cancellation, contamination
+rules, and joined shutdown. Follow-up should be driven by profiles on both Windows and Linux rather
+than by the loopback ranking alone. Useful candidates are:
+
+- teach buffered and streaming decoders to consume verified body spans in bulk instead of one byte
+  at a time, while preserving exact terminal boundaries, chunk/trailer validation, and reader holes;
+- reduce reactor-to-TLS-to-decoder copying and let owned chunks move where possible, without
+  exposing pooled connection storage or allowing bytes from one request to reach another;
+- choose a bounded growth policy for known fixed response bodies. Reserving an entire advertised
+  `Content-Length` is explicitly unsafe without an aggregate buffered-body reservation, because
+  many peers could announce large bodies and then stall;
+- profile request-target parsing, request serialization, per-request maps/queues, and response
+  header/value copies before considering reusable owner-scoped scratch. Reuse must clear all
+  request identity, credentials, framing, and terminal state;
+- profile rustls plaintext/ciphertext batching and streamed upload/download paths separately from
+  cleartext. Do not enlarge TLS or socket windows merely to improve a benchmark;
+- measure concurrent multi-origin traffic, connection-cap fairness, TLS handshake/reuse, redirects,
+  uploads, slow consumers, latency, loss, and real GDS request mixes rather than only sequential
+  loopback GETs;
+- add whole-process RSS/private-byte and idle CPU measurements so curl's C allocations and both
+  backends' system-library costs are visible; retain the Rust allocator harness for attribution;
+- revisit the 50 ms safety polls only with a replacement that preserves lost-wake recovery and
+  bounded shutdown. Likewise, moving platform verification off-owner is an architectural project
+  requiring owned worker cancellation/join semantics, not a casual optimization; and
+- keep HTTP/2, compression, proxy support, adaptive DNS/Happy Eyeballs, and cross-Engine shared
+  pools as separately justified features. None is required merely to close the measured HTTP/1.1
+  performance gap.
+
+WP10 should first establish parity and realistic profiles, then take only changes whose benchmark
+gain survives cross-platform testing and whose adversarial lifecycle suite remains unchanged.
+
 ## Accepted boundary and later work
 
 - The synchronous platform-verifier head-of-line limitation is measured and retained. Pooling

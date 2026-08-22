@@ -27,6 +27,7 @@ use crate::{
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
+const STACK_RESPONSE_HEADER_SLOTS: usize = 32;
 #[derive(Clone, Copy)]
 struct ConnectionLimits {
     global: usize,
@@ -1102,35 +1103,29 @@ fn parse_response_head(
     response_to_head: bool,
     limits: HttpLimits,
 ) -> Result<ParsedHead, Error> {
-    let mut slots = vec![httparse::EMPTY_HEADER; limits.header_count];
-    let mut parsed = httparse::Response::new(&mut slots);
-    let consumed = match parsed.parse(bytes) {
-        Ok(httparse::Status::Complete(consumed)) => consumed,
-        Ok(httparse::Status::Partial) => {
-            return Err(http_error("HTTP response head ended prematurely"));
+    let stack_count = limits.header_count.min(STACK_RESPONSE_HEADER_SLOTS);
+    let mut stack_slots = [httparse::EMPTY_HEADER; STACK_RESPONSE_HEADER_SLOTS];
+    let parsed = match parse_response_parts(bytes, &mut stack_slots[..stack_count]) {
+        Ok(parsed) => parsed,
+        Err(ResponseHeadParseError::TooManyHeaders) if stack_count < limits.header_count => {
+            let mut configured_slots = vec![httparse::EMPTY_HEADER; limits.header_count];
+            parse_response_parts(bytes, &mut configured_slots).map_err(|error| match error {
+                ResponseHeadParseError::TooManyHeaders => {
+                    response_header_count_limit(limits.header_count)
+                }
+                ResponseHeadParseError::Invalid(error) => error,
+            })?
         }
-        Err(httparse::Error::TooManyHeaders) => {
+        Err(ResponseHeadParseError::TooManyHeaders) => {
             return Err(response_header_count_limit(limits.header_count));
         }
-        Err(error) => {
-            return Err(http_error(format!(
-                "HTTP response head is malformed: {error}"
-            )));
-        }
+        Err(ResponseHeadParseError::Invalid(error)) => return Err(error),
     };
-    if consumed != bytes.len() {
-        return Err(http_error("HTTP response head has trailing bytes"));
-    }
-    let version = parsed
-        .version
-        .ok_or_else(|| http_error("HTTP response has no version"))?;
-    if !matches!(version, 0 | 1) {
-        return Err(http_error("HTTP response version is unsupported"));
-    }
-    let status = parsed
-        .code
-        .filter(|status| (100..=599).contains(status))
-        .ok_or_else(|| http_error("HTTP response status is invalid"))?;
+    let ParsedResponseParts {
+        version,
+        status,
+        headers,
+    } = parsed;
     if (100..200).contains(&status) {
         if status == 101 {
             return Err(Error::new(
@@ -1140,12 +1135,6 @@ fn parse_response_head(
         }
         return Ok(ParsedHead::Informational);
     }
-
-    let headers = parsed
-        .headers
-        .iter()
-        .map(|header| Header::new(header.name, header.value.to_vec()))
-        .collect::<Vec<_>>();
     let content_length = response_content_length(&headers)?;
     let transfer_encoding = response_transfer_encoding(&headers)?;
     if transfer_encoding && content_length.is_some() {
@@ -1171,6 +1160,73 @@ fn parse_response_head(
         headers,
         framing,
         permits_reuse,
+    })
+}
+
+struct ParsedResponseParts {
+    version: u8,
+    status: u16,
+    headers: Vec<Header>,
+}
+
+enum ResponseHeadParseError {
+    TooManyHeaders,
+    Invalid(Error),
+}
+
+fn parse_response_parts<'bytes>(
+    bytes: &'bytes [u8],
+    slots: &mut [httparse::Header<'bytes>],
+) -> Result<ParsedResponseParts, ResponseHeadParseError> {
+    let mut parsed = httparse::Response::new(slots);
+    let consumed = match parsed.parse(bytes) {
+        Ok(httparse::Status::Complete(consumed)) => consumed,
+        Ok(httparse::Status::Partial) => {
+            return Err(ResponseHeadParseError::Invalid(http_error(
+                "HTTP response head ended prematurely",
+            )));
+        }
+        Err(httparse::Error::TooManyHeaders) => {
+            return Err(ResponseHeadParseError::TooManyHeaders);
+        }
+        Err(error) => {
+            return Err(ResponseHeadParseError::Invalid(http_error(format!(
+                "HTTP response head is malformed: {error}"
+            ))));
+        }
+    };
+    if consumed != bytes.len() {
+        return Err(ResponseHeadParseError::Invalid(http_error(
+            "HTTP response head has trailing bytes",
+        )));
+    }
+    let version = parsed.version.ok_or_else(|| {
+        ResponseHeadParseError::Invalid(http_error("HTTP response has no version"))
+    })?;
+    if !matches!(version, 0 | 1) {
+        return Err(ResponseHeadParseError::Invalid(http_error(
+            "HTTP response version is unsupported",
+        )));
+    }
+    let status = parsed
+        .code
+        .filter(|status| (100..=599).contains(status))
+        .ok_or_else(|| {
+            ResponseHeadParseError::Invalid(http_error("HTTP response status is invalid"))
+        })?;
+    let headers = if (100..200).contains(&status) {
+        Vec::new()
+    } else {
+        parsed
+            .headers
+            .iter()
+            .map(|header| Header::new(header.name, header.value.to_vec()))
+            .collect()
+    };
+    Ok(ParsedResponseParts {
+        version,
+        status,
+        headers,
     })
 }
 
@@ -5031,6 +5087,42 @@ mod tests {
             .expect_err("oversize head must fail while receiving it");
         assert_eq!(error.limit_kind(), Some(LimitKind::ResponseHeaderBytes));
         assert_eq!(decoder.scratch.len(), limits.header_bytes);
+    }
+
+    #[test]
+    fn response_head_uses_stack_slots_then_honours_larger_configured_count() {
+        let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n".to_vec();
+        for index in 1..40 {
+            wire.extend_from_slice(format!("X-{index}: value\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"\r\n");
+        let limits = HttpLimits {
+            body_bytes: 1,
+            header_bytes: 4096,
+            header_count: 40,
+        };
+        let ParsedHead::Final {
+            headers, framing, ..
+        } = parse_response_head(&wire, false, limits)
+            .expect("configured headers beyond the stack fast path must parse")
+        else {
+            panic!("response must have a final head")
+        };
+        assert_eq!(headers.len(), 40);
+        assert!(matches!(framing, BodyFraming::Fixed(0)));
+
+        let error = match parse_response_head(
+            &wire,
+            false,
+            HttpLimits {
+                header_count: 39,
+                ..limits
+            },
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the configured header-count limit must still fail closed"),
+        };
+        assert_eq!(error.limit_kind(), Some(LimitKind::ResponseHeaderCount));
     }
 
     #[test]

@@ -802,6 +802,24 @@ The core crate remains safe Rust wherever practical. Necessary OS and FFI unsafe
 - Metrics identify request IDs, stages, byte counts, durations, cancellation, timeout, pool reuse, and queue pressure without payloads.
 - Faults in one request do not corrupt other request state.
 
+### Performance policy
+
+NBReq targets reasonable, predictable performance rather than parity with every optimization in
+libcurl. Bounded memory, exact framing, prompt cancellation, request isolation, and joined Engine
+shutdown take precedence over benchmark wins. Measurements must distinguish Rust-allocator traffic
+from whole-process memory because foreign backends may allocate outside Rust, and must include
+realistic concurrency, TLS, upload/download, slow-consumer, interruption, and idle cases in addition
+to sequential loopback throughput.
+
+Low-risk removal of fixed temporary allocations is welcome when it preserves limits and ownership.
+Deeper work—bulk decoding, fewer wire/plaintext/body copies, reusable owner scratch, eager body
+capacity, verifier offload, or altered safety-poll timing—requires profiling and the unchanged
+adversarial lifecycle suite. In particular, NBReq does not reserve an entire peer-declared
+`Content-Length` without an aggregate buffered-body reservation, and it does not trade lost-wake
+recovery or bounded shutdown for idle CPU or throughput. The implementation plan maintains the
+measured follow-up register; these opportunities do not block a release whose observed performance
+is acceptable for its consumers.
+
 ## 24. Compatibility targets
 
 Initial supported environments proposed for discussion:

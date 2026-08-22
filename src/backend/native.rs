@@ -558,7 +558,9 @@ impl NativeReactor {
     }
 
     fn read_ready(&mut self, id: SlotId, output: &mut Vec<NativeEvent>) {
-        let mut buffer = vec![0_u8; READ_CHUNK];
+        // One owner processes readiness serially, so a fixed stack scratch buffer avoids a fresh
+        // 16 KiB heap allocation for every readable event without retaining memory per socket.
+        let mut buffer = [0_u8; READ_CHUNK];
         let bounded = self
             .connection_mut(id)
             .is_some_and(|connection| connection.read_allowance.is_some());
