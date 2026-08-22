@@ -609,6 +609,20 @@ pass, followed by the complete 179-native-unit, 5-contract, 6-doctest and 65-def
 warning-denied native clippy, and formatting. This accepts the first bounded mixed-interruption
 pressure slice. Exact-source Ubuntu repetition and wider streaming/resolver pressure remain open.
 
+## WP9.5g aggregate streaming-window pressure — Windows slice
+
+Eight simultaneous streamed responses each reserve a 64-byte reader window beneath an exact
+512-byte Engine aggregate budget. Every response publishes its head and fills its window before
+the consumer proceeds. Two full readers are cancelled, their reservations admit two replacement
+streams immediately, and the other six plus both replacements drain 4 KiB bodies to EOF.
+
+The fixture requires exactly ten accepted, eight completed, two cancelled, and zero failed
+outcomes; a 512-byte reservation high-water mark; prompt eventual release to zero after the owner
+reaps terminal streams; and no remaining active socket. Twenty-five consecutive Windows
+repetitions pass, followed by the complete 180-native-unit, 5-contract, 6-doctest and
+65-default-unit suites, warning-denied native clippy, and formatting. This accepts aggregate
+stream-reader pressure on Windows; producer/resolver pressure and exact-source Ubuntu remain open.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled

@@ -7019,6 +7019,157 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_stream_pressure_releases_windows_after_cancel_and_drain() {
+        const INITIAL: usize = 8;
+        const REPLACEMENTS: usize = 2;
+        const WINDOW: usize = 64;
+        const BODY: usize = 4096;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("stream pressure must bind");
+        let address = listener.local_addr().expect("stream pressure address");
+        let server = thread::spawn(move || {
+            let mut handlers = Vec::with_capacity(INITIAL + REPLACEMENTS);
+            for _ in 0..INITIAL + REPLACEMENTS {
+                let (mut stream, _) = listener.accept().expect("stream pressure must accept");
+                handlers.push(thread::spawn(move || {
+                    read_request_head(&mut stream, "stream pressure request head");
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {BODY}\r\nConnection: close\r\n\r\n"
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .expect("stream pressure head must write");
+                    stream
+                        .write_all(&vec![b'x'; BODY])
+                        .expect("stream pressure body must write");
+                }));
+            }
+            for handler in handlers {
+                handler.join().expect("stream pressure handler must join");
+            }
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_connections(
+                std::num::NonZeroUsize::new(INITIAL).expect("initial count is non-zero"),
+            )
+            .with_max_connections_per_origin(
+                std::num::NonZeroUsize::new(INITIAL).expect("initial count is non-zero"),
+            )
+            .with_max_idle_connections(0)
+            .with_max_idle_connections_per_origin(0)
+            .with_max_stream_queue_bytes_per_request(WINDOW)
+            .with_max_stream_queued_bytes(INITIAL * WINDOW);
+        let engine =
+            Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+                .expect("stream pressure Engine must construct");
+        let client = engine.client();
+        let mut readers = Vec::with_capacity(INITIAL);
+        for index in 0..INITIAL {
+            readers.push(
+                client
+                    .submit_stream(
+                        StreamRequest::get(format!("http://{address}/initial-{index}"))
+                            .total_timeout(Duration::from_secs(5))
+                            .build()
+                            .expect("stream pressure request must build"),
+                    )
+                    .expect("stream pressure request must submit"),
+            );
+        }
+        for reader in &mut readers {
+            assert_eq!(
+                reader
+                    .wait_head()
+                    .expect("every stream pressure head must arrive")
+                    .status(),
+                200
+            );
+        }
+        let fill_deadline = Instant::now() + Duration::from_secs(2);
+        while readers
+            .iter()
+            .any(|reader| reader.queued_bytes_for_test() != WINDOW)
+        {
+            assert!(
+                Instant::now() < fill_deadline,
+                "every response window must reach its exact bounded full state"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(
+            engine.metrics().current().reserved_stream_queue_bytes(),
+            INITIAL * WINDOW
+        );
+
+        for index in [0, INITIAL / 2] {
+            readers[index]
+                .handle()
+                .cancel()
+                .expect("selected full stream must cancel");
+        }
+        for index in [0, INITIAL / 2] {
+            assert!(matches!(
+                readers[index].try_read(&mut [0_u8; 1]),
+                Err(crate::StreamError::Cancelled)
+            ));
+        }
+
+        let mut replacements = Vec::with_capacity(REPLACEMENTS);
+        for index in 0..REPLACEMENTS {
+            replacements.push(
+                client
+                    .submit_stream(
+                        StreamRequest::get(format!("http://{address}/replacement-{index}"))
+                            .total_timeout(Duration::from_secs(5))
+                            .build()
+                            .expect("replacement stream must build"),
+                    )
+                    .expect("cancelled reservations must admit replacement streams"),
+            );
+        }
+
+        for (index, reader) in readers.into_iter().enumerate() {
+            if index == 0 || index == INITIAL / 2 {
+                continue;
+            }
+            let response = reader
+                .collect()
+                .expect("surviving full stream must drain to completion");
+            assert_eq!(response.body().len(), BODY);
+            assert!(response.body().iter().all(|byte| *byte == b'x'));
+        }
+        for reader in replacements {
+            let response = reader
+                .collect()
+                .expect("replacement stream must drain to completion");
+            assert_eq!(response.body().len(), BODY);
+        }
+
+        let release_deadline = Instant::now() + Duration::from_secs(1);
+        while engine.metrics().current().reserved_stream_queue_bytes() != 0 {
+            assert!(
+                Instant::now() < release_deadline,
+                "terminal stream reservations must be reaped promptly"
+            );
+            thread::yield_now();
+        }
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), (INITIAL + REPLACEMENTS) as u64);
+        assert_eq!(metrics.requests_completed(), INITIAL as u64);
+        assert_eq!(metrics.requests_cancelled(), REPLACEMENTS as u64);
+        assert_eq!(metrics.requests_failed(), 0);
+        assert_eq!(metrics.current().reserved_stream_queue_bytes(), 0);
+        assert_eq!(
+            metrics.high_water().reserved_stream_queue_bytes(),
+            INITIAL * WINDOW
+        );
+        assert_eq!(metrics.current().active_connections(), 0);
+        engine.shutdown().expect("stream pressure Engine must stop");
+        server.join().expect("stream pressure fixture must join");
+    }
+
+    #[test]
     fn buffered_stream_request_discards_redirect_body_and_publishes_only_final_response() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("stream redirect must bind");
         let address = listener.local_addr().expect("stream redirect address");
