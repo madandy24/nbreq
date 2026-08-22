@@ -640,6 +640,22 @@ consecutive Windows repetitions pass, followed by the complete 181-native-unit, 
 planned local buffered, streamed-reader, and resolver pressure slices; exact-source Ubuntu remains
 the platform gate before comparative measurements.
 
+## WP9.5i pressure accepted on exact-source Ubuntu 20.04
+
+Exact commit `234e07b`, packaged as a 466,537-byte archive with SHA-256
+`FCB19C17476A654AA55B58EEE6731BBC4B61951E34A2ADCD3279EFCCCF6B017D`, matches after copying to
+Ubuntu 20.04.6. A fresh extraction under Rust/Cargo 1.85.0 passes 181 native unit tests, 5 public
+contract tests, and 6 doctests; the default suite passes 65 unit tests, 5 public contract tests,
+and 6 doctests. Warning-denied native/test-support clippy, formatting, and offline all-feature
+compilation pass.
+
+Twenty-five consecutive triples of the bounded mixed-interruption, aggregate streaming-window,
+and resolver/connection-cap pressure tests pass. The first post-run process command accidentally
+matched its own command line; a corrected self-excluding process-name check reports no surviving
+NBReq test executable. The three planned WP9.5 bounded pressure slices are therefore accepted on
+Windows and exact-source Ubuntu. Comparative measurements and the explicit synchronous-verifier
+limitation remain open; native selection is unchanged.
+
 ## Accepted boundary and later work
 
 - Retain the synchronous platform-verifier head-of-line limitation and measure it with pooled
@@ -649,5 +665,5 @@ the platform gate before comparative measurements.
   streaming, direct reader delivery, and bounded cleartext/TLS backpressure are accepted on
   Windows and exact-source Ubuntu 20.04. The one-shot HTTPS body ceiling was removed by WP9.4a.
   Public limits and metrics plus the first buffered, streaming, DNS, and bounded mixed-interruption
-  campaigns are accepted on Windows. Cross-platform pressure, longer state work, and comparative
-  measurements remain WP9.5/WP10.
+  campaigns and bounded pressure are accepted on Windows and exact-source Ubuntu. Longer state
+  work and comparative measurements remain WP9.5/WP10.
