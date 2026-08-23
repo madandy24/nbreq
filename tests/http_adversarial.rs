@@ -1,16 +1,17 @@
-#![cfg(any(
-    feature = "curl-pilot",
-    all(feature = "native", feature = "test-support")
-))]
+#![cfg(any(feature = "curl-pilot", feature = "native"))]
 
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use nbreq::{Engine, EngineConfig, ErrorKind, ExecuteError, Request, TransportStage};
+use nbreq::{
+    Completion, Engine, EngineConfig, ErrorKind, ExecuteError, HttpBackend, LimitKind, Request,
+    TimeoutKind, TransportStage,
+};
 use socket2::SockRef;
 
 #[derive(Clone, Copy)]
@@ -18,13 +19,20 @@ enum Script {
     Bytes(&'static [u8]),
     Fragmented(&'static [u8]),
     ResetDuringUpload,
-    #[cfg(feature = "curl-pilot")]
     TwoKeepAliveResponses,
+    StallAfterHead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerEvent {
+    RequestSeen,
+    PeerClosed,
 }
 
 struct ScriptedServer {
     address: SocketAddr,
     stopping: Arc<AtomicBool>,
+    events: Receiver<ServerEvent>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -37,6 +45,7 @@ impl ScriptedServer {
         let address = listener.local_addr().expect("lab listener address");
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
+        let (event_sender, events) = mpsc::channel();
         let worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
             while !worker_stopping.load(Ordering::Acquire) && Instant::now() < deadline {
@@ -66,10 +75,12 @@ impl ScriptedServer {
                         match script {
                             Script::Bytes(response) => {
                                 read_request_head(&mut stream);
+                                let _ = event_sender.send(ServerEvent::RequestSeen);
                                 stream.write_all(response).expect("lab response must write");
                             }
                             Script::Fragmented(response) => {
                                 read_request_head(&mut stream);
+                                let _ = event_sender.send(ServerEvent::RequestSeen);
                                 for byte in response {
                                     stream
                                         .write_all(std::slice::from_ref(byte))
@@ -87,6 +98,7 @@ impl ScriptedServer {
                                     .set_linger(Some(Duration::ZERO))
                                     .expect("abortive close must configure");
                                 let body_bytes = read_request_head(&mut stream);
+                                let _ = event_sender.send(ServerEvent::RequestSeen);
                                 if body_bytes == 0 {
                                     let mut body_byte = [0_u8; 1];
                                     stream
@@ -94,13 +106,13 @@ impl ScriptedServer {
                                         .expect("lab server must observe upload data before reset");
                                 }
                             }
-                            #[cfg(feature = "curl-pilot")]
                             Script::TwoKeepAliveResponses => {
                                 for (body, connection) in [
                                     (b"one".as_slice(), "keep-alive"),
                                     (b"two".as_slice(), "close"),
                                 ] {
                                     read_request_head(&mut stream);
+                                    let _ = event_sender.send(ServerEvent::RequestSeen);
                                     let head = format!(
                                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
                                         body.len()
@@ -113,6 +125,18 @@ impl ScriptedServer {
                                         .expect("keep-alive response body must write");
                                     stream.flush().expect("keep-alive response must flush");
                                 }
+                            }
+                            Script::StallAfterHead => {
+                                read_request_head(&mut stream);
+                                stream
+                                    .write_all(
+                                        b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n",
+                                    )
+                                    .expect("stalled response head must write");
+                                stream.flush().expect("stalled response head must flush");
+                                let _ = event_sender.send(ServerEvent::RequestSeen);
+                                wait_for_peer_close(&mut stream, &worker_stopping);
+                                let _ = event_sender.send(ServerEvent::PeerClosed);
                             }
                         }
                         return;
@@ -130,12 +154,36 @@ impl ScriptedServer {
         Self {
             address,
             stopping,
+            events,
             worker: Some(worker),
         }
     }
 
     fn url(&self) -> String {
         format!("http://{}/", self.address)
+    }
+
+    fn wait_for_request(&self) {
+        self.wait_for_event(ServerEvent::RequestSeen, "request arrival");
+    }
+
+    fn wait_for_peer_close(&self) {
+        self.wait_for_event(ServerEvent::PeerClosed, "peer close");
+    }
+
+    fn wait_for_event(&self, expected: ServerEvent, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "timed out waiting for {description}");
+            let event = self
+                .events
+                .recv_timeout(remaining)
+                .unwrap_or_else(|error| panic!("failed waiting for {description}: {error}"));
+            if event == expected {
+                return;
+            }
+        }
     }
 }
 
@@ -148,6 +196,40 @@ impl Drop for ScriptedServer {
                 joined.expect("lab server must join");
             }
         }
+    }
+}
+
+fn wait_for_peer_close(stream: &mut TcpStream, stopping: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut buffer = [0_u8; 64];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    IoErrorKind::ConnectionReset
+                        | IoErrorKind::ConnectionAborted
+                        | IoErrorKind::BrokenPipe
+                ) =>
+            {
+                return;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    IoErrorKind::WouldBlock | IoErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("failed while waiting for client close: {error}"),
+        }
+        if stopping.load(Ordering::Acquire) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client did not close the stalled connection"
+        );
     }
 }
 
@@ -166,24 +248,36 @@ fn read_request_head(stream: &mut TcpStream) -> usize {
     }
 }
 
-fn test_engine(config: EngineConfig) -> Engine {
-    #[cfg(feature = "curl-pilot")]
+fn test_backends() -> Vec<(&'static str, HttpBackend)> {
+    #[cfg(all(feature = "native", feature = "curl-pilot"))]
     {
-        Engine::new(config).expect("curl lab Engine must construct")
+        vec![("native", HttpBackend::Native), ("curl", HttpBackend::Curl)]
     }
-    #[cfg(all(
-        not(feature = "curl-pilot"),
-        feature = "native",
-        feature = "test-support"
-    ))]
+    #[cfg(all(feature = "native", not(feature = "curl-pilot")))]
     {
-        nbreq::testing::native_http_engine(config).expect("native lab Engine must construct")
+        vec![("native", HttpBackend::Native)]
+    }
+    #[cfg(all(feature = "curl-pilot", not(feature = "native")))]
+    {
+        vec![("curl", HttpBackend::Curl)]
     }
 }
 
-fn execute(script: Script) -> Result<nbreq::Response, ExecuteError> {
+fn test_engine(config: EngineConfig, backend: HttpBackend) -> Engine {
+    Engine::builder()
+        .config(config)
+        .http_backend(backend)
+        .build()
+        .expect("selected lab Engine must construct")
+}
+
+fn execute(
+    backend: HttpBackend,
+    config: EngineConfig,
+    script: Script,
+) -> Result<nbreq::Response, ExecuteError> {
     let server = ScriptedServer::start(script);
-    let engine = test_engine(EngineConfig::spawned());
+    let engine = test_engine(config, backend);
     let result = engine.client().execute(
         Request::get(server.url())
             .total_timeout(Duration::from_secs(2))
@@ -194,132 +288,341 @@ fn execute(script: Script) -> Result<nbreq::Response, ExecuteError> {
     result
 }
 
-fn assert_transport(case: &str, script: Script, expected: TransportStage) {
-    match execute(script).expect_err("adversarial response must fail") {
+fn assert_transport(
+    backend_name: &str,
+    backend: HttpBackend,
+    case: &str,
+    script: Script,
+    expected: TransportStage,
+) {
+    match execute(backend, EngineConfig::spawned(), script)
+        .expect_err("adversarial response must fail")
+    {
         ExecuteError::Failed(error) => {
-            assert_eq!(error.kind(), ErrorKind::Transport, "{case}: {error}");
-            assert_eq!(error.transport_stage(), Some(expected), "{case}: {error}");
+            assert_eq!(
+                error.kind(),
+                ErrorKind::Transport,
+                "{backend_name}/{case}: {error}"
+            );
+            assert_eq!(
+                error.transport_stage(),
+                Some(expected),
+                "{backend_name}/{case}: {error}"
+            );
         }
-        other => panic!("{case}: expected terminal transport failure, got {other:?}"),
+        other => {
+            panic!("{backend_name}/{case}: expected terminal transport failure, got {other:?}")
+        }
     }
 }
 
 #[test]
 fn fragmented_and_chunked_responses_complete_through_the_public_api() {
-    let fragmented = execute(Script::Fragmented(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
-    ))
-    .expect("fragmented response must complete");
-    assert_eq!(fragmented.status(), 200);
-    assert_eq!(fragmented.body(), b"hello");
+    for (backend_name, backend) in test_backends() {
+        let fragmented = execute(
+            backend,
+            EngineConfig::spawned(),
+            Script::Fragmented(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{backend_name}: fragmented response failed: {error}"));
+        assert_eq!(fragmented.status(), 200, "{backend_name}");
+        assert_eq!(fragmented.body(), b"hello", "{backend_name}");
 
-    let chunked = execute(Script::Bytes(
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5;lab=yes\r\nhello\r\n0\r\nX-Lab-Trailer: yes\r\n\r\n",
-    ))
-    .expect("chunk extension and trailer response must complete");
-    assert_eq!(chunked.status(), 200);
-    assert_eq!(chunked.body(), b"hello");
+        let chunked = execute(
+            backend,
+            EngineConfig::spawned(),
+            Script::Bytes(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5;lab=yes\r\nhello\r\n0\r\nX-Lab-Trailer: yes\r\n\r\n",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{backend_name}: chunked response failed: {error}"));
+        assert_eq!(chunked.status(), 200, "{backend_name}");
+        assert_eq!(chunked.body(), b"hello", "{backend_name}");
 
-    let repeated_length = execute(Script::Bytes(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
-    ))
-    .expect("identical repeated content lengths must complete");
-    assert_eq!(repeated_length.body(), b"hello");
+        let repeated_length = execute(
+            backend,
+            EngineConfig::spawned(),
+            Script::Bytes(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+            ),
+        )
+        .unwrap_or_else(|error| {
+            panic!("{backend_name}: identical repeated lengths failed: {error}")
+        });
+        assert_eq!(repeated_length.body(), b"hello", "{backend_name}");
+    }
 }
 
 #[test]
-#[cfg(feature = "curl-pilot")]
 fn sequential_requests_reuse_one_http11_connection() {
-    let server = ScriptedServer::start(Script::TwoKeepAliveResponses);
-    let engine = test_engine(EngineConfig::spawned());
-    let client = engine.client();
-    for expected in [b"one".as_slice(), b"two".as_slice()] {
-        let response = client
-            .execute(
-                Request::get(server.url())
-                    .total_timeout(Duration::from_secs(2))
-                    .build()
-                    .expect("reuse request must build"),
-            )
-            .expect("reused request must complete");
-        assert_eq!(response.body(), expected);
+    for (backend_name, backend) in test_backends() {
+        let server = ScriptedServer::start(Script::TwoKeepAliveResponses);
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let client = engine.client();
+        for expected in [b"one".as_slice(), b"two".as_slice()] {
+            let response = client
+                .execute(
+                    Request::get(server.url())
+                        .total_timeout(Duration::from_secs(2))
+                        .build()
+                        .expect("reuse request must build"),
+                )
+                .unwrap_or_else(|error| panic!("{backend_name}: reuse failed: {error}"));
+            assert_eq!(response.body(), expected, "{backend_name}");
+        }
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: lab Engine failed to stop: {error}"));
     }
-    engine.shutdown().expect("lab Engine must stop");
 }
 
 #[test]
 fn malformed_status_headers_lengths_and_chunks_map_to_http() {
-    for (case, response) in [
-        ("invalid status line", &b"NOT-HTTP\r\n\r\n"[..]),
-        (
-            "invalid header name",
-            &b"HTTP/1.1 200 OK\r\nBad Header: value\r\nContent-Length: 0\r\n\r\n"[..],
-        ),
-        (
-            "invalid header value",
-            &b"HTTP/1.1 200 OK\r\nX-Lab: value\x01bad\r\nContent-Length: 0\r\n\r\n"[..],
-        ),
-        (
-            "conflicting content lengths",
-            &b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx"[..],
-        ),
-        (
-            "transfer encoding with content length",
-            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n1\r\nx\r\n0\r\n\r\n"[..],
-        ),
-        (
-            "invalid chunk size",
-            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n"[..],
-        ),
-    ] {
-        assert_transport(case, Script::Bytes(response), TransportStage::Http);
+    for (backend_name, backend) in test_backends() {
+        for (case, response) in [
+            ("invalid status line", &b"NOT-HTTP\r\n\r\n"[..]),
+            (
+                "invalid header name",
+                &b"HTTP/1.1 200 OK\r\nBad Header: value\r\nContent-Length: 0\r\n\r\n"[..],
+            ),
+            (
+                "invalid header value",
+                &b"HTTP/1.1 200 OK\r\nX-Lab: value\x01bad\r\nContent-Length: 0\r\n\r\n"[..],
+            ),
+            (
+                "conflicting content lengths",
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx"[..],
+            ),
+            (
+                "transfer encoding with content length",
+                &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n1\r\nx\r\n0\r\n\r\n"[..],
+            ),
+            (
+                "invalid chunk size",
+                &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n"[..],
+            ),
+        ] {
+            assert_transport(
+                backend_name,
+                backend,
+                case,
+                Script::Bytes(response),
+                TransportStage::Http,
+            );
+        }
     }
 }
 
 #[test]
 fn premature_eof_and_empty_response_map_to_receive() {
-    assert_transport(
-        "short fixed-length body",
-        Script::Bytes(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort"),
-        TransportStage::Receive,
-    );
-    assert_transport(
-        "empty response",
-        Script::Bytes(b""),
-        TransportStage::Receive,
-    );
-    assert_transport(
-        "short chunk body",
-        Script::Bytes(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhi"),
-        TransportStage::Http,
-    );
+    for (backend_name, backend) in test_backends() {
+        assert_transport(
+            backend_name,
+            backend,
+            "short fixed-length body",
+            Script::Bytes(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort"),
+            TransportStage::Receive,
+        );
+        assert_transport(
+            backend_name,
+            backend,
+            "empty response",
+            Script::Bytes(b""),
+            TransportStage::Receive,
+        );
+        assert_transport(
+            backend_name,
+            backend,
+            "short chunk body",
+            Script::Bytes(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhi"),
+            TransportStage::Http,
+        );
+    }
 }
 
 #[test]
 fn abortive_close_during_a_large_upload_maps_to_send() {
     const UPLOAD_BYTES: usize = 64 * 1024 * 1024;
-    let engine = test_engine(EngineConfig::spawned().with_max_request_body_bytes(UPLOAD_BYTES));
-    let client = engine.client();
-    for trial in 0..10 {
-        let server = ScriptedServer::start(Script::ResetDuringUpload);
-        let result = client.execute(
-            Request::post(server.url())
-                .body(vec![b'x'; UPLOAD_BYTES])
-                .total_timeout(Duration::from_secs(5))
-                .build()
-                .expect("large upload must build"),
+    for (backend_name, backend) in test_backends() {
+        let engine = test_engine(
+            EngineConfig::spawned().with_max_request_body_bytes(UPLOAD_BYTES),
+            backend,
         );
-        match result.expect_err("abortive upload close must fail") {
-            ExecuteError::Failed(error) => {
-                assert_eq!(error.kind(), ErrorKind::Transport, "trial {trial}: {error}");
-                assert_eq!(
-                    error.transport_stage(),
-                    Some(TransportStage::Send),
-                    "trial {trial}: {error}"
-                );
+        let client = engine.client();
+        for trial in 0..10 {
+            let server = ScriptedServer::start(Script::ResetDuringUpload);
+            let result = client.execute(
+                Request::post(server.url())
+                    .body(vec![b'x'; UPLOAD_BYTES])
+                    .total_timeout(Duration::from_secs(5))
+                    .build()
+                    .expect("large upload must build"),
+            );
+            match result.expect_err("abortive upload close must fail") {
+                ExecuteError::Failed(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::Transport,
+                        "{backend_name}/trial {trial}: {error}"
+                    );
+                    assert_eq!(
+                        error.transport_stage(),
+                        Some(TransportStage::Send),
+                        "{backend_name}/trial {trial}: {error}"
+                    );
+                }
+                other => panic!(
+                    "{backend_name}/trial {trial}: expected terminal send failure, got {other:?}"
+                ),
             }
-            other => panic!("trial {trial}: expected terminal send failure, got {other:?}"),
+        }
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: lab Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
+fn response_body_header_byte_and_header_count_limits_match() {
+    for (backend_name, backend) in test_backends() {
+        for (case, config, response, expected) in [
+            (
+                "body bytes",
+                EngineConfig::spawned().with_max_response_body_bytes(4),
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"[..],
+                LimitKind::ResponseBodyBytes,
+            ),
+            (
+                "header bytes",
+                EngineConfig::spawned().with_max_header_bytes(128),
+                &b"HTTP/1.1 200 OK\r\nX-Lab: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+                LimitKind::ResponseHeaderBytes,
+            ),
+            (
+                "header count",
+                EngineConfig::spawned().with_max_header_count(4),
+                &b"HTTP/1.1 200 OK\r\nX-1: a\r\nX-2: b\r\nX-3: c\r\nX-4: d\r\nX-5: e\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+                LimitKind::ResponseHeaderCount,
+            ),
+        ] {
+            match execute(backend, config, Script::Bytes(response))
+                .expect_err("oversize response must fail")
+            {
+                ExecuteError::Failed(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::Limit,
+                        "{backend_name}/{case}: {error}"
+                    );
+                    assert_eq!(
+                        error.limit_kind(),
+                        Some(expected),
+                        "{backend_name}/{case}: {error}"
+                    );
+                }
+                other => panic!(
+                    "{backend_name}/{case}: expected terminal limit failure, got {other:?}"
+                ),
+            }
         }
     }
-    engine.shutdown().expect("lab Engine must stop");
+}
+
+#[test]
+fn total_and_inactivity_timeouts_close_the_stalled_socket() {
+    for (backend_name, backend) in test_backends() {
+        for timeout_kind in [TimeoutKind::Total, TimeoutKind::Inactivity] {
+            let server = ScriptedServer::start(Script::StallAfterHead);
+            let engine = test_engine(EngineConfig::spawned(), backend);
+            let mut request = Request::get(server.url()).total_timeout(Duration::from_secs(2));
+            request = match timeout_kind {
+                TimeoutKind::Total => request.total_timeout(Duration::from_millis(150)),
+                TimeoutKind::Inactivity => request.inactivity_timeout(Duration::from_millis(150)),
+                _ => unreachable!("the parity fixture only selects portable request clocks"),
+            };
+            let result = engine
+                .client()
+                .execute(request.build().expect("timeout request must build"));
+            match result.expect_err("stalled response must time out") {
+                ExecuteError::Failed(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::Timeout,
+                        "{backend_name}/{timeout_kind:?}: {error}"
+                    );
+                    assert_eq!(
+                        error.timeout_kind(),
+                        Some(timeout_kind),
+                        "{backend_name}/{timeout_kind:?}: {error}"
+                    );
+                }
+                other => panic!(
+                    "{backend_name}/{timeout_kind:?}: expected timeout failure, got {other:?}"
+                ),
+            }
+            server.wait_for_request();
+            server.wait_for_peer_close();
+            engine.shutdown().unwrap_or_else(|error| {
+                panic!("{backend_name}/{timeout_kind:?}: Engine failed to stop: {error}")
+            });
+        }
+    }
+}
+
+#[test]
+fn individual_cancel_closes_the_socket_and_commits_cancelled() {
+    for (backend_name, backend) in test_backends() {
+        let server = ScriptedServer::start(Script::StallAfterHead);
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let pending = engine
+            .client()
+            .submit(
+                Request::get(server.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cancel request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: cancel request rejected: {error}"));
+        server.wait_for_request();
+        pending
+            .handle()
+            .cancel()
+            .unwrap_or_else(|error| panic!("{backend_name}: cancel failed: {error}"));
+        assert!(
+            matches!(pending.wait(), Completion::Cancelled),
+            "{backend_name}: cancellation must win"
+        );
+        server.wait_for_peer_close();
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
+fn consuming_shutdown_closes_the_socket_and_releases_the_waiter() {
+    for (backend_name, backend) in test_backends() {
+        let server = ScriptedServer::start(Script::StallAfterHead);
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let pending = engine
+            .client()
+            .submit(
+                Request::get(server.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("shutdown request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: shutdown request rejected: {error}"));
+        server.wait_for_request();
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+        assert!(
+            matches!(pending.wait(), Completion::Cancelled),
+            "{backend_name}: shutdown must cancel the accepted request"
+        );
+        server.wait_for_peer_close();
+    }
 }
