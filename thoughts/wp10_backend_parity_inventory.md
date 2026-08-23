@@ -1,9 +1,9 @@
 # WP10 backend parity inventory
 
-Status: P10-01 implementation and platform evidence complete, 2026-08-23; review pending. Explicit
-backend construction, conservative curl pool bounds, and connection-metrics availability pass
-their Windows and exact-source Ubuntu gates. Ordinary backend selection is deliberately unchanged.
-This does not alter the accepted GDS package or remove curl/ureq rollback.
+Status: P10-01 accepted, 2026-08-23; P10-02 shared black-box parity is active. Explicit backend
+construction, conservative curl pool bounds, and connection-metrics availability pass their
+Windows and exact-source Ubuntu gates. Ordinary backend selection is deliberately unchanged. This
+does not alter the accepted GDS package or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -46,11 +46,11 @@ Differences have four dispositions:
 | TCP implementation | NBReq mio owner with generation-checked slots | libcurl Multi/easy owner | **Internal difference.** Portable cancellation/close behavior matters; a raw TCP facade is post-WP11. |
 | TLS | rustls with platform verification; explicit no-verify keeps handshake signatures | pinned libcurl platform TLS; same explicit compatibility policy | **Required policy parity; environment-specific mechanics.** Generated and platform-store fixtures remain named gates. |
 | HTTP connection reuse | Bounded NBReq owner pool with no transparent replay | libcurl connection cache | **Required observable safety**, not identical algorithms. Contamination, framing, cancellation, and redirect rules must agree. |
-| Active/idle pool settings | All five public settings are enforced | Total/host active limits and a conservative total idle cache are configured; zero/floored-subsecond idle policy disables reuse | **P10-01 implemented.** The curl policy is an upper bound and may retain fewer connections than native. Exact-source Ubuntu proof remains. |
+| Active/idle pool settings | All five public settings are enforced | Total/host active limits and a conservative total idle cache are configured; zero/floored-subsecond idle policy disables reuse | **P10-01 accepted on Windows and exact-source Ubuntu.** The curl policy is an upper bound and may retain fewer connections than native. |
 | Request lifecycle metrics | Backend-neutral accepted/completed/failed/cancelled and queue gauges | Same registry counters | **Required parity** and shared tests. |
 | Connection/pool metrics | Native records opened/reused/closed/evicted and active/idle/waiter gauges and reports availability | Fields remain zero and `connection_metrics_available()` is false | **P10-01 implemented.** Request/lifecycle metrics remain available on every backend; no curl connection activity is invented. |
 | Body/header/event limits | Request limits enforced before admission; native enforces response and stream bounds | Request limits are shared; curl receives response body/header bounds | **Required black-box parity**, including `LimitKind` and permit release. Streaming bounds are irrelevant after curl's pre-admission `Unsupported`. |
-| Connection limits | Native enforces total/per-origin active and idle bounds | Curl Multi enforces total/host active maxima and `min(global idle, per-origin idle)` cached connections | **P10-01 implemented conservatively.** A peer-visible transition test proves the active-plus-idle total bound on Windows; Ubuntu remains. |
+| Connection limits | Native enforces total/per-origin active and idle bounds | Curl Multi enforces total/host active maxima and `min(global idle, per-origin idle)` cached connections | **P10-01 accepted conservatively.** Peer-visible transition tests prove the active-plus-idle total bound on Windows and exact-source Ubuntu. |
 | Connect/inactivity/total time | Owner clocks cover DNS/TCP/TLS/HTTP; total begins at acceptance | Total includes acceptance/redirect time; monotonic inactivity collector; connect maps through libcurl | **Required outcome audit.** `TimeoutKind::Unknown` remains an honest curl fallback; prompt curl DNS/connect cancellation is not claimed. |
 | Redirects | Shared conservative `redirected_request` policy | Same shared policy, with libcurl auto-follow disabled | **Required parity:** method/body replay, hop limit, credential stripping, and HTTPS downgrade refusal. |
 | Request headers | Binary values accepted by the native serializer after portable validation | Non-UTF-8 values return `Unsupported` at submission | **Explicit curl limitation**, already documented; must remain deterministic before network work. |
@@ -99,9 +99,9 @@ in the Windows evidence procedure. Reopen only if the exact current binary fails
 accepted context; legacy Wine 5 rejecting the generated custom root remains a separate, correctly
 named platform limitation.
 
-## 6. P10-01 recommended construction/capability freeze
+## 6. P10-01 accepted construction/capability freeze
 
-This is the proposed public shape for review before implementation:
+This is the accepted public shape. It does not authorize the later default switch:
 
 - Add a backend-neutral public `HttpBackend` enum whose `Native` and `Curl` variants exist in the
   API under every feature combination. Cargo features control compiled availability only; asking
@@ -251,5 +251,5 @@ The combined all-feature test reproduces only the three already classified restr
 Schannel fixture failures; the immediately preceding curl-only suite passes all three.
 
 The same public selection/metrics and curl-limit gates pass in the complete exact-source Ubuntu
-run recorded above. P10-01 is ready for review and closes when review accepts the public freeze. It
-does not authorize the ordinary native/default-feature switch.
+run recorded above. Review accepted P10-01 and closed the slice. It does not authorize the ordinary
+native/default-feature switch; P10-02 shared black-box parity is next.

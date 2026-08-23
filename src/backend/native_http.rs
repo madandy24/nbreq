@@ -1451,9 +1451,8 @@ fn resolved_redirect_target_from_headers(
     Ok(Some(target.into()))
 }
 
-/// Private cleartext factory used to prove HTTP framing over the accepted reactor. Ordinary
-/// `Engine::new` does not select it while DNS, TLS, redirects, and the remaining parity gates are
-/// incomplete.
+/// Native HTTP factory with the accepted DNS, TCP, TLS, redirect, pooling, and streaming owners.
+/// Ordinary `Engine::new` does not select it until WP10's separately reviewed default-switch gate.
 #[allow(dead_code)]
 pub(super) struct NativeHttpFactory {
     limits: HttpLimits,
