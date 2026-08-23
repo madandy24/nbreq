@@ -386,3 +386,34 @@ The next contract review must keep two decisions separate:
 
 Call these P10-06 (explicit native consumer rollout) and P10-07 (ordinary native/default-feature
 switch). Neither is authorized merely by closing P10-03.
+
+## 17. P10-06 GDS implementation checkpoint
+
+GDS commits `aac6b85` and `0c0588d` add the first explicitly selected native consumer path without
+changing NBReq ordinary construction or GDS's ureq default. The Rust crate now has a default-off
+`nbreq-native` feature and constructs `HttpBackend::Native` explicitly through the existing
+`NbreqDpHttpClient` facade. One `DpSysContext` still owns the unique Engine; WebRPC still receives
+individual cancellable waiters; ureq and curl remain separate rollback choices. Feature presence
+alone selects nothing.
+
+The Delphi boundary assigns stable backend code 2 and persisted value `nbreq-native`. Startup
+requires both the `nbreq_native_compiled` marker and the public `dphttp_select_backend` export,
+and rejects unknown, unavailable, or late selection rather than falling back. The existing
+`/nbreqcurlpilottest` override remains curl-only. Native does not enter curl's adjacent-DLL load and
+pin checks. Both NBReq adapters retain GDS's explicit no-verify compatibility policy; this does not
+change NBReq's verified default.
+
+The dependency lock aligns the GDS facade and NBReq on URL 2.5.8. Because GDS's serial-port graph
+keeps the older `quote` family, GDS enables the compatible `zerovec` 0.11.4 `alloc` feature
+explicitly instead of forcing an unrelated derive upgrade. Default and native full test runs each
+pass every HTTP/integration test and stop only at the same three unrelated `dscat` injected-signal
+fixtures (1,046/1,053 passed respectively, with ten ignored). The focused native and curl NBReq
+sets each pass 8/8. Offline native and curl checks and formatting pass. The actual
+`stable-i686-pc-windows-msvc` native DLL build completes successfully, and Delphi 7 compiles the
+host selector with zero errors.
+
+This is an implementation/build checkpoint, not a live canary. P10-06 still requires an
+authenticated self-contained native package, Windows 10 and Wine deployment, real gateway
+poll/POST traffic, individual in-flight poll cancellation and join, normal process shutdown, and
+persisted `DSHTTPBACKEND=ureq` restart rollback. The curl package and its process-lifetime rules
+remain untouched. P10-07 remains unauthorized.
