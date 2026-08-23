@@ -1,9 +1,11 @@
 use std::time::Instant;
 
+#[cfg(feature = "native")]
+use nbreq::EngineBuilder;
 use nbreq::{
-    Client, DetachedCallbacks, Engine, EngineBuilder, EngineConfig, EngineMetrics, ErrorKind,
-    HttpBackend, PendingRequest, RequestHandle, ResourceMetrics, ResponseReader, StreamRequest,
-    UploadBody, UploadSender,
+    Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
+    PendingRequest, RequestHandle, ResourceMetrics, ResponseReader, StreamRequest, UploadBody,
+    UploadSender,
 };
 
 fn assert_send<T: Send>() {}

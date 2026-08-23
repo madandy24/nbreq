@@ -1160,6 +1160,11 @@ fn parse_answer(
         for answer in message.answers() {
             if accepted_names.contains(answer.name()) {
                 if let RData::CNAME(canonical) = answer.data() {
+                    if canonical.0.is_root() {
+                        return Some(Err(ResolveFailure::new(
+                            "the DNS CNAME target is the root name",
+                        )));
+                    }
                     if accepted_names.insert(canonical.0.clone()) {
                         ttl = ttl.min(answer.ttl());
                         canonical_target = Some(canonical.0.clone());
@@ -1340,6 +1345,7 @@ mod tests {
             include_bytes!("../../fuzz/corpus/native_dns_response/aaaa.seed").as_slice(),
             include_bytes!("../../fuzz/corpus/native_dns_response/cname.seed").as_slice(),
             include_bytes!("../../fuzz/corpus/native_dns_response/nxdomain.seed").as_slice(),
+            include_bytes!("../../fuzz/corpus/native_dns_response/root-cname.seed").as_slice(),
             include_bytes!("../../fuzz/corpus/native_dns_response/truncated.seed").as_slice(),
         ] {
             let (bytes, id, name, record_type) =
@@ -1531,6 +1537,27 @@ mod tests {
             panic!("AAAA response must resolve");
         };
         assert_eq!(answer.addresses, vec![IpAddr::V6(ipv6)]);
+    }
+
+    #[test]
+    fn parser_rejects_a_root_cname_target() {
+        let alias = fqdn("alias.test");
+        let mut response = Message::new();
+        response
+            .set_id(43)
+            .set_message_type(MessageType::Response)
+            .add_query(Query::query(alias.clone(), RecordType::A))
+            .add_answer(Record::from_rdata(
+                alias.clone(),
+                30,
+                RData::CNAME(CNAME(Name::root())),
+            ));
+        let wire = response.to_vec().expect("root-CNAME response must encode");
+
+        let Some(Err(failure)) = parse_answer(&wire, 43, &alias, RecordType::A) else {
+            panic!("a root CNAME target must fail before resolver follow-up");
+        };
+        assert_eq!(failure.message, "the DNS CNAME target is the root name");
     }
 
     #[test]
