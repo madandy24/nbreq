@@ -121,10 +121,11 @@ Multiple Engines are permitted and form independent cancellation and resource do
 
 Every Engine is constructed independently from configuration, for example `Engine::new(config)` or an equivalent builder. Engines do not spawn child/linked Engines. If immutable TLS/provider configuration is reusable, callers clone that configuration into another independent construction; unavoidable process-global backend initialization remains private implementation state rather than Engine ancestry.
 
-During the curl pilot, enabling the crate's `curl-pilot` feature makes that same ordinary
-constructor select the private spawned curl backend. It does not introduce a curl-specific public
-Engine type or constructor and does not change how Clients are issued. No-feature builds retain the
-non-networking lifecycle scaffold; the future native feature replaces only the private backend.
+The ordinary default build and constructor select the native backend. Enabling `curl-pilot` only
+compiles the reference backend; callers select it explicitly through the backend-neutral builder,
+and Cargo feature unification never changes ordinary construction. A no-default-feature build
+compiles but ordinary network construction returns `Unsupported`; the non-networking lifecycle
+scaffold remains internal test support rather than a third public runtime.
 
 ### 6.2 One terminal outcome
 
@@ -736,7 +737,7 @@ Lifecycle references: <https://docs.rs/curl/latest/curl/fn.init.html>, <https://
 
 Curl may internally use IPv6 racing or Happy Eyeballs even before the native backend implements the same connection strategy. This is an allowed backend implementation difference, not a portable scheduling guarantee, provided address-family correctness, cancellation, timeout classification, and externally observable request semantics pass the shared contract.
 
-The Rust-native backend will be accepted when it passes the same black-box contract suite. Both backends may coexist behind Cargo features during development. Feature-implicit curl selection is accepted only for the private pilot. Before public crate release, Cargo features determine which backends are available while Engine configuration explicitly selects the backend (or an unambiguous documented default); dependency feature unification must not silently change which transport `Engine::new(config)` constructs.
+The Rust-native backend must pass the same black-box contract suite. Both backends may coexist behind Cargo features. Cargo features determine which backends are available; the unambiguous ordinary default is native and curl selection is explicit. Dependency feature unification must not silently change which transport `Engine::new(config)` constructs.
 
 Mutating requests must never be sent to both backends merely to compare results. Backend differential tests use controlled test servers, recorded fixtures, or idempotent synthetic requests.
 

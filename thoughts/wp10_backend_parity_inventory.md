@@ -3,8 +3,10 @@
 Status: P10-01, P10-02, P10-03, and P10-05 accepted, 2026-08-23; P10-04 CI automation is deferred
 until a public repository exists. Explicit backend construction, conservative curl pool bounds,
 connection-metrics availability, shared black-box parity, the cross-platform verification entry
-point, and the scheduled Ubuntu campaign pass their gates. Ordinary backend selection is
-deliberately unchanged. This does not alter the accepted GDS package or remove curl/ureq rollback.
+point, and the scheduled Ubuntu campaign pass their gates. P10-06's explicit native GDS rollout is
+accepted; P10-07 now has a Windows implementation checkpoint for native ordinary/default
+selection. Exact-source Ubuntu, ordinary-account Windows, and a separate GDS smoke/rollback remain.
+This does not alter the accepted GDS package or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -37,7 +39,7 @@ Differences have four dispositions:
 
 | Area | Native | Curl pilot | WP10 disposition |
 |---|---|---|---|
-| Ordinary `Engine::new` | Does not yet select native; `HttpBackend::Native` is available explicitly when compiled | Still selected implicitly by `curl-pilot`, and also available as explicit `HttpBackend::Curl` | **Partially closed.** Explicit feature-invariant selection now fails unavailable implementations at construction. The separately gated native/default-feature switch remains. |
+| Ordinary `Engine::new` | Selects native in the default build; `HttpBackend::Native` is also available explicitly | Available only as explicit `HttpBackend::Curl`; compiling the feature does not change ordinary selection | **P10-07 implemented on Windows.** Default native, feature-unification immunity, and no-default `Unsupported` behavior are public-contract tested; platform acceptance remains. |
 | Spawned mode | Supported | Supported | **Required parity** for acceptance, wakeup, cancellation, terminal arbitration, panic containment, callbacks, and consuming shutdown. |
 | Manual mode | Supported through the same native state machines | Construction returns `WrongMode` | **Explicit curl limitation.** Do not add an unsafe binding wrapper merely for symmetry. |
 | Buffered HTTP | Supported | Supported | **Required black-box parity** for request wire policy, responses, redirects, limits, timeout/error kinds, cancellation, and shutdown. |
@@ -477,3 +479,28 @@ P10-06 is accepted. P10-07 is now the active, separate default-switch gate: a pl
 unification selection; and a no-default-feature build fails ordinary network construction as
 unsupported rather than exposing scaffold as a third runtime. The accepted GDS package and
 ureq/curl rollback remain available while that change is reviewed.
+
+## 19. P10-07 native-default implementation checkpoint
+
+Before changing defaults, NBReq `9378e46` closes P10-06's one Wine carry-forward: every clone of
+the Mio waker shares a switchable state, and the first-registration AFD fallback drops and disables
+that waker before `WSAPoll` takes ownership. Wake calls then become harmless no-ops instead of
+posting unread IOCP completions; the existing 50 ms safety bound remains the fallback's progress
+mechanism. A regression exercises 20,000 calls through pre-existing clones after the switch.
+
+NBReq `733c294` makes `native` the Cargo default and makes `Engine::new` plus an unqualified builder
+select native. Curl is available only through explicit `HttpBackend::Curl`, even when Cargo feature
+unification compiles both implementations. A no-default build and a curl-only build both compile;
+ordinary construction returns `Unsupported` without native rather than exposing the lifecycle
+scaffold. Public-contract tests cover all three cases. The verification runner adds a distinct
+curl-only stage, so its ordinary run now contains 22 stages.
+
+Windows passes the 188-unit default-native suite plus 16 shared adversarial tests, 7 public-contract
+tests, and 6 doctests. Curl-only passes 83 units plus the same 16 shared tests, 5 contracts, and 6
+doctests. Default-native plus curl passes 207 units, 16 shared tests, 9 contracts, and 6 doctests;
+warning-denied all-feature lint, documentation, formatting, and minimal-feature compilation pass.
+The restricted-token full runner reaches the already-classified three Schannel fixtures; its one
+additional streaming-fixture race was a dishonest peer-response gate and is corrected without a
+product change. Ordinary-account Windows must still run all 22 stages. Exact-source Ubuntu/Rust
+1.85 and one separate GDS native smoke plus same-package ureq rollback remain before acceptance;
+neither proof may replace the accepted P10-06 package.
