@@ -10,8 +10,13 @@ use std::time::{Duration, Instant};
 
 use nbreq::{
     Completion, Engine, EngineConfig, ErrorKind, ExecuteError, HttpBackend, LimitKind, Request,
-    TimeoutKind, TransportStage,
+    TimeoutKind, TlsVerification, TransportStage,
 };
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use socket2::SockRef;
 
 #[derive(Clone, Copy)]
@@ -346,6 +351,115 @@ impl Drop for RedirectServer {
     }
 }
 
+struct TlsIdentity {
+    chain: Vec<CertificateDer<'static>>,
+    key: Vec<u8>,
+}
+
+impl TlsIdentity {
+    fn localhost() -> Self {
+        let key = KeyPair::generate().expect("test TLS key must generate");
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()])
+            .expect("test TLS parameters must build");
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let cert = params
+            .self_signed(&key)
+            .expect("test TLS certificate must sign");
+        Self {
+            chain: vec![cert.der().clone()],
+            key: key.serialize_der(),
+        }
+    }
+}
+
+struct TlsServer {
+    address: SocketAddr,
+    stopping: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl TlsServer {
+    fn start(identity: &TlsIdentity) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS listener must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("TLS listener must become nonblocking");
+        let address = listener.local_addr().expect("TLS listener address");
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions must configure")
+            .with_no_client_auth()
+            .with_single_cert(
+                identity.chain.clone(),
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key.clone())),
+            )
+            .expect("TLS identity must configure");
+        let config = Arc::new(config);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = Arc::clone(&stopping);
+        let worker = thread::spawn(move || {
+            while !worker_stopping.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if worker_stopping.load(Ordering::Acquire) {
+                            return;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("TLS stream must become blocking");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("TLS read timeout must configure");
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(2)))
+                            .expect("TLS write timeout must configure");
+                        let connection = ServerConnection::new(Arc::clone(&config))
+                            .expect("TLS server connection must construct");
+                        let mut stream = StreamOwned::new(connection, stream);
+                        if read_request_result(&mut stream).is_ok() {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecure",
+                            );
+                            let _ = stream.flush();
+                        }
+                    }
+                    Err(error) if error.kind() == IoErrorKind::WouldBlock => thread::yield_now(),
+                    Err(error) => panic!("TLS listener failed: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            stopping,
+            worker: Some(worker),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("https://localhost:{}/", self.address.port())
+    }
+}
+
+impl Drop for TlsServer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            let joined = worker.join();
+            if !thread::panicking() {
+                joined.expect("TLS server must join");
+            }
+        }
+    }
+}
+
 struct ObservedRequest {
     method: String,
     path: String,
@@ -525,6 +639,24 @@ fn read_request_head(stream: &mut TcpStream) -> usize {
     }
 }
 
+fn read_request_result(stream: &mut impl Read) -> std::io::Result<()> {
+    let mut received = Vec::new();
+    let mut buffer = [0_u8; 512];
+    loop {
+        if received.windows(4).any(|window| window == b"\r\n\r\n") {
+            return Ok(());
+        }
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                IoErrorKind::UnexpectedEof,
+                "client closed before sending a request head",
+            ));
+        }
+        received.extend_from_slice(&buffer[..read]);
+    }
+}
+
 fn test_backends() -> Vec<(&'static str, HttpBackend)> {
     #[cfg(all(feature = "native", feature = "curl-pilot"))]
     {
@@ -546,6 +678,18 @@ fn test_engine(config: EngineConfig, backend: HttpBackend) -> Engine {
         .http_backend(backend)
         .build()
         .expect("selected lab Engine must construct")
+}
+
+fn backend_has_tls(backend: HttpBackend) -> bool {
+    if backend == HttpBackend::Curl {
+        #[cfg(feature = "curl-pilot")]
+        {
+            return curl::Version::get().feature_ssl();
+        }
+        #[cfg(not(feature = "curl-pilot"))]
+        unreachable!("curl cannot be selected when its feature is absent");
+    }
+    true
 }
 
 fn execute(
@@ -911,6 +1055,63 @@ fn response_body_header_byte_and_header_count_limits_match() {
                 ),
             }
         }
+    }
+}
+
+#[test]
+fn explicit_no_verify_and_unknown_root_share_tls_outcomes() {
+    for (backend_name, backend) in test_backends() {
+        if !backend_has_tls(backend) {
+            eprintln!("skipping {backend_name}: selected curl implementation has no TLS support");
+            continue;
+        }
+        let identity = TlsIdentity::localhost();
+        let server = TlsServer::start(&identity);
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let client = engine.client();
+
+        let insecure = client
+            .execute(
+                Request::get(server.url())
+                    .connect_timeout(Duration::from_secs(1))
+                    .total_timeout(Duration::from_secs(2))
+                    .tls_verification(TlsVerification::DangerouslyDisableCertificateVerification)
+                    .build()
+                    .expect("no-verify request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: no-verify request failed: {error}"));
+        assert_eq!(insecure.status(), 200, "{backend_name}");
+        assert_eq!(insecure.body(), b"secure", "{backend_name}");
+
+        match client
+            .execute(
+                Request::get(server.url())
+                    .connect_timeout(Duration::from_secs(1))
+                    .total_timeout(Duration::from_secs(2))
+                    .tls_verification(TlsVerification::Verify)
+                    .build()
+                    .expect("unknown-root request must build"),
+            )
+            .expect_err("unknown-root request must fail")
+        {
+            ExecuteError::Failed(error) => {
+                assert_eq!(
+                    error.kind(),
+                    ErrorKind::Transport,
+                    "{backend_name}: {error}"
+                );
+                assert_eq!(
+                    error.transport_stage(),
+                    Some(TransportStage::Tls),
+                    "{backend_name}: {error}"
+                );
+            }
+            other => panic!("{backend_name}: expected TLS failure, got {other:?}"),
+        }
+
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
     }
 }
 
