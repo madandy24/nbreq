@@ -2,6 +2,7 @@
 
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -211,6 +212,7 @@ enum RedirectScenario {
     SameOriginCredentials,
     RedirectTo(String),
     InspectCredentials,
+    InspectWire,
     Loop,
 }
 
@@ -309,6 +311,21 @@ impl RedirectServer {
                     let body = format!(
                         "authorization={};cookie={}",
                         request.authorization, request.cookie
+                    );
+                    write_ok(&mut stream, body.as_bytes());
+                }
+                RedirectScenario::InspectWire => {
+                    let (mut stream, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut stream);
+                    let body = format!(
+                        "method={};path={};host={};length={};content-type={};expect={}",
+                        request.method,
+                        request.path,
+                        request.host,
+                        request.content_length,
+                        request.content_type,
+                        request.expect
                     );
                     write_ok(&mut stream, body.as_bytes());
                 }
@@ -466,6 +483,10 @@ struct ObservedRequest {
     body: Vec<u8>,
     authorization: bool,
     cookie: bool,
+    host: bool,
+    content_length: usize,
+    content_type: bool,
+    expect: bool,
 }
 
 fn accept_redirect_stream(
@@ -550,6 +571,15 @@ fn read_request(stream: &mut TcpStream) -> ObservedRequest {
     let cookie = headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("Cookie"));
+    let host = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Host"));
+    let content_type = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Content-Type"));
+    let expect = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Expect"));
     let mut body = received.split_off(head_end);
     while body.len() < content_length {
         let read = stream
@@ -565,6 +595,10 @@ fn read_request(stream: &mut TcpStream) -> ObservedRequest {
         body,
         authorization,
         cookie,
+        host,
+        content_length,
+        content_type,
+        expect,
     }
 }
 
@@ -1055,6 +1089,95 @@ fn response_body_header_byte_and_header_count_limits_match() {
                 ),
             }
         }
+    }
+}
+
+#[test]
+fn request_wire_policy_generates_only_host_and_length() {
+    for (backend_name, backend) in test_backends() {
+        let server = RedirectServer::start(RedirectScenario::InspectWire);
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let response = engine
+            .client()
+            .execute(
+                Request::post(format!("{}?q=1#ignored", server.url()))
+                    .body(b"payload".to_vec())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("wire-policy request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: wire-policy request failed: {error}"));
+        assert_eq!(
+            response.body(),
+            b"method=POST;path=/start?q=1;host=true;length=7;content-type=false;expect=false",
+            "{backend_name}"
+        );
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
+fn failed_limit_releases_admission_and_updates_portable_metrics() {
+    for (backend_name, backend) in test_backends() {
+        let engine = test_engine(
+            EngineConfig::spawned()
+                .with_max_inflight_requests(NonZeroUsize::new(1).expect("one is non-zero"))
+                .with_max_response_body_bytes(4),
+            backend,
+        );
+        let client = engine.client();
+
+        let oversized = ScriptedServer::start(Script::Bytes(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nlarge",
+        ));
+        match client
+            .execute(
+                Request::get(oversized.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("oversize request must build"),
+            )
+            .expect_err("response over the configured limit must fail")
+        {
+            ExecuteError::Failed(error) => {
+                assert_eq!(error.kind(), ErrorKind::Limit, "{backend_name}: {error}");
+                assert_eq!(
+                    error.limit_kind(),
+                    Some(LimitKind::ResponseBodyBytes),
+                    "{backend_name}: {error}"
+                );
+            }
+            other => panic!("{backend_name}: expected limit failure, got {other:?}"),
+        }
+
+        let within_limit = ScriptedServer::start(Script::Bytes(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nokay",
+        ));
+        let response = client
+            .execute(
+                Request::get(within_limit.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("recovery request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: recovery request failed: {error}"));
+        assert_eq!(response.body(), b"okay", "{backend_name}");
+
+        let metrics = engine.metrics();
+        assert_eq!(metrics.requests_accepted(), 2, "{backend_name}");
+        assert_eq!(metrics.requests_failed(), 1, "{backend_name}");
+        assert_eq!(metrics.requests_completed(), 1, "{backend_name}");
+        assert_eq!(metrics.current().inflight_requests(), 0, "{backend_name}");
+        assert_eq!(
+            metrics.high_water().inflight_requests(),
+            1,
+            "{backend_name}"
+        );
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
     }
 }
 
