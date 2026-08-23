@@ -1,7 +1,7 @@
 //! Cross-platform native readiness with a WinSock fallback for older Wine.
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use mio::event::Source;
@@ -15,13 +15,32 @@ const WINSOCK_SAFETY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub(super) struct NativeWaker {
-    inner: Arc<Waker>,
+    inner: Arc<Mutex<Option<Waker>>>,
 }
 
 impl NativeWaker {
     pub(super) fn wake(&self) -> io::Result<()> {
-        self.inner.wake()
+        match lock_unpoisoned(&self.inner).as_ref() {
+            Some(waker) => waker.wake(),
+            None => Ok(()),
+        }
     }
+
+    #[cfg(windows)]
+    fn disable_mio(&self) {
+        lock_unpoisoned(&self.inner).take();
+    }
+
+    #[cfg(all(test, windows))]
+    fn mio_is_enabled(&self) -> bool {
+        lock_unpoisoned(&self.inner).is_some()
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +86,7 @@ pub(super) struct PollReady {
 
 pub(super) struct NativePoll {
     implementation: PollImplementation,
+    waker: NativeWaker,
     registered: usize,
 }
 
@@ -83,7 +103,7 @@ impl NativePoll {
     pub(super) fn new(event_capacity: usize, wake_token: Token) -> io::Result<(Self, NativeWaker)> {
         let poll = Poll::new()?;
         let waker = NativeWaker {
-            inner: Arc::new(Waker::new(poll.registry(), wake_token)?),
+            inner: Arc::new(Mutex::new(Some(Waker::new(poll.registry(), wake_token)?))),
         };
         Ok((
             Self {
@@ -91,6 +111,7 @@ impl NativePoll {
                     poll,
                     events: Events::with_capacity(event_capacity.max(1)),
                 },
+                waker: waker.clone(),
                 registered: 0,
             },
             waker,
@@ -112,6 +133,10 @@ impl NativePoll {
                     }
                     #[cfg(windows)]
                     Err(error) if self.registered == 0 && afd_is_unavailable(&error) => {
+                        // Wait for any in-flight wake, then drop the completion-port waker before
+                        // dropping Mio's Poll. Every clone becomes a successful no-op so an old
+                        // Wine process cannot accumulate completions that nobody will drain.
+                        self.waker.disable_mio();
                         self.implementation = PollImplementation::WinSock;
                         self.registered = 1;
                         Ok(())
@@ -208,6 +233,7 @@ impl NativePoll {
     #[cfg(all(test, windows))]
     pub(super) fn force_winsock(&mut self) {
         debug_assert_eq!(self.registered, 0);
+        self.waker.disable_mio();
         self.implementation = PollImplementation::WinSock;
     }
 }
@@ -219,7 +245,8 @@ fn afd_is_unavailable(error: &io::Error) -> bool {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::afd_is_unavailable;
+    use super::{NativePoll, afd_is_unavailable};
+    use mio::Token;
     use std::io;
 
     #[test]
@@ -237,5 +264,20 @@ mod tests {
             io::ErrorKind::NotFound,
             "some unrelated path was not found",
         )));
+    }
+
+    #[test]
+    fn fallback_turns_every_existing_waker_clone_into_a_no_op() {
+        let (mut poll, waker) = NativePoll::new(4, Token(0)).expect("poll must construct");
+        let clone = waker.clone();
+        assert!(waker.mio_is_enabled());
+
+        poll.force_winsock();
+
+        assert!(!waker.mio_is_enabled());
+        for _ in 0..10_000 {
+            waker.wake().expect("disabled wake must be a no-op");
+            clone.wake().expect("existing clone must also be a no-op");
+        }
     }
 }
