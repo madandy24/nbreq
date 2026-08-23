@@ -2,7 +2,7 @@
 
 Status: architecture contract accepted for WP0; policy and proof details remain\
 Date: 2026-08-16\
-Working name: **NBReq** (name not yet accepted)\
+Project and proposed crate name: **NBReq** / `nbreq` (Non-Blocking Request)\
 Audience: library implementers, GDS integrators, DLL/FFI consumers, and reviewers
 
 ## 1. Product statement
@@ -858,7 +858,9 @@ The Rust-native public release is useful when it meets the same contract for the
 
 Accepted answers form the WP0 contract. Unresolved items below are policy, integration-audit, or proof work and do not block WP0.
 
-1. **Name and home:** `NBReq` remains the working name; the final public name remains open. The standalone repository/crate boundary beside GDS was accepted and established in WP0.
+1. **Name and home — accepted:** The project and proposed public crate name is NBReq / `nbreq`,
+   meaning Non-Blocking Request. The standalone repository/crate boundary beside GDS was accepted
+   and established in WP0; registry availability is rechecked immediately before publication.
 
 2. **Cancellation notification — accepted:** An explicitly cancelled accepted request receives exactly one `Cancelled` terminal callback. Silent disappearance would make ownership and cleanup harder.
 
@@ -890,7 +892,10 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 
 15. **Curl packaging — accepted for pilot:** Static linking is not required. Ship a pinned curl DLL and its audited dependencies beside GDS, using a controlled load location. Curl deployments are pilots with ureq configuration rollback retained; broad/full release may wait for native.
 
-16. **Licensing and publication — direction accepted:** Aim for a public crates.io library. Choose MIT, Apache-2.0, or the customary dual `MIT OR Apache-2.0` grant after confirming GDS compatibility and dependency notices; the exact choice remains open.
+16. **Licensing and publication — grant accepted:** Aim for a public crates.io library under the
+    customary dual `MIT OR Apache-2.0` grant. GDS authorship, ownership, and licensing authority
+    are confirmed; the displayed copyright holder, publication metadata, dependency notices, and
+    release gates remain.
 
 17. **Cancellation latency gate — provisional Windows value recorded:** The exact dynamic Windows package must release controlled slow-header and stalled-body sockets in less than 100 ms after cancellation; current 10-trial maxima are below 4 ms. The same 100 ms target is provisional for connect and for Windows 10, Wine, and Linux until named-stage measurements run there. Never leave “prompt” as the only acceptance language or silently weaken the gate when another platform is measured.
 
@@ -908,12 +913,13 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 
 The architecture is closed for WP0. The following may be settled during normal implementation/review without reopening Engine/Client ownership:
 
-- working name and initial repository location;
+- public crate-name availability immediately before publication;
 - final names and status detail for `shutdown_for`/`DetachedCallbacks`;
 - any HTTP scope beyond the accepted buffered curl/GDS pilot;
 - TLS trust-root policy beyond the accepted explicit GDS no-verify compatibility switch;
 - numeric cancellation latency gates from WP2;
-- exact MIT/Apache licensing grant and support promise.
+- displayed copyright holder, publication metadata, and support promise for the accepted
+  `MIT OR Apache-2.0` grant.
 
 Decisions already accepted in principle:
 
@@ -951,6 +957,9 @@ Decisions already accepted in principle:
 - curl is a dynamically packaged pilot backend, with pinned adjacent dependencies and ureq configuration rollback retained;
 - initial targets are Windows 10 x64, the Windows build under Ubuntu 20.04's default Wine, and native Ubuntu 20.04 x64;
 - verified TLS remains default while the current explicit GDS no-verify behaviour is preserved and tested;
-- the project aims for a public crates.io release; exact MIT/Apache licensing remains to be chosen;
+- the settled project and proposed crate name is NBReq / `nbreq`, meaning Non-Blocking Request;
+- the project aims for a public crates.io release under `MIT OR Apache-2.0`; GDS provenance and
+  licensing authority are settled, while the displayed copyright holder and publication metadata
+  remain release work;
 - curl runs an explicit HTTP/1.1 compatibility profile rather than inheriting backend defaults;
 - the portable initial time model is connect timeout, inactivity timeout, and total deadline.

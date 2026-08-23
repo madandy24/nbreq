@@ -2,7 +2,9 @@
 
 NBReq currently requires Rust 1.85 or later and uses Rust 2024 edition. The initial supported deployment targets are Windows 10 x64 or later, the Windows build under Ubuntu 20.04's default Wine, and native Linux x64 built against an Ubuntu 20.04 ABI baseline.
 
-Until the project chooses its final name and MIT/Apache licensing grant, the crate remains private and `publish = false`.
+The settled project and proposed crate name is NBReq / `nbreq` (Non-Blocking Request). The intended
+public grant is `MIT OR Apache-2.0`; the crate remains private and `publish = false` until the
+displayed copyright holder, publication metadata, and WP10/WP11 release gates are complete.
 
 ## Required checks
 
