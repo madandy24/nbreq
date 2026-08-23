@@ -437,6 +437,43 @@ joins in 1–3 ms and leaves no GDS process. Persisted ureq restart from the ide
 produces 28 responses and 28 matching successful POSTs with zero errors. Exact hashes and timings
 are recorded in `gds_native_p10_06_evidence.md`.
 
-The Windows half of P10-06 is accepted. The stock-Ubuntu-20.04/Wine-5 activation, cancellation,
-shutdown, and same-package rollback repetition remains before P10-06 closes. P10-07 remains
-unauthorized.
+The Windows half of P10-06 is accepted. The following platform close records the required
+stock-Ubuntu-20.04/Wine-5 repair and repetition.
+
+## 18. P10-06 stock-Wine close and acceptance
+
+The first exact Wine launch found a platform-specific readiness failure before HTTP initialization:
+Mio 1.0.4 could not open its private `\\Device\\Afd\\Mio` object under stock Wine 5. A standalone
+32-bit probe reproduced the same error, and the base `\\Device\\Afd` object was also absent. This
+is the old-Wine compatibility described by upstream Mio issue 1444, not a relaxation of native
+ownership or an excuse to replace the supported target.
+
+NBReq `6c3bde6` keeps Mio as the ordinary Windows and Unix poller and adds a narrow Windows-only
+fallback. Only the first socket-registration `NotFound` naming `\\Device\\Afd` changes that poll
+owner to documented `WSAPoll`; switching after any successful registration is forbidden. The
+fallback uses the same nonblocking sockets and owner state machines and caps waits at 50 ms because
+old Wine cannot use Mio's completion-port waker. NBReq proper remains `unsafe_code = "forbid"`;
+minimal WinSock FFI is isolated behind a safe API in the unpublished `nbreq-winpoll` workspace
+crate. The forced path proves connect/write/read/FIN/cancel on Windows, and the expanded ordinary-
+account verification runner passes all 21 stages in 64.583 seconds. A rebuilt x86 probe returns
+HTTP 200 with 559 bytes under stock Wine 5.
+
+GDS `7d4d243` adds fail-closed `/httpbackend {ureq|nbreq-curl-pilot|nbreq-native}` process-local
+selection without changing persisted settings or the runtime default. Authenticated archive
+`BB492B60E100C89B40D0772311C5D7A47D7364F24D3D1BC5BE0D2DC466E37C37` contains GDS `7d4d243`,
+NBReq `6c3bde6`, 11 verified files, required x86 exports/runtime data, and no libcurl. Every copied
+and extracted hash matches on Ubuntu 20.04.6/stock Wine 5.
+
+An unknown override fails before HTTP initialization. Native then starts twice from the same
+package, logs the exact process-local selection and explicit GDS no-verify policy, runs both real
+long-poll channels plus authenticated website traffic, cancels active polls, and joins its two
+WebRPC Drops in 7/2 ms at refresh and 4/1 ms at normal close. Both exact-name post-close checks find
+no process. The identical files then select ureq through the public override, return a green board
+and healthy website, and close with ureq's already-known detached-worker behavior; the final process
+check is clean. Exact hashes, log lines, and limitations are in `gds_native_p10_06_evidence.md`.
+
+P10-06 is accepted. P10-07 is now the active, separate default-switch gate: a plain
+`cargo add nbreq` must compile and select native; curl remains explicit and immune to feature-
+unification selection; and a no-default-feature build fails ordinary network construction as
+unsupported rather than exposing scaffold as a third runtime. The accepted GDS package and
+ureq/curl rollback remain available while that change is reviewed.

@@ -14,10 +14,11 @@ Run the cross-platform verification entry point before committing:
 cargo run --manifest-path tools/xtask/Cargo.toml -- verify
 ```
 
-It first checks its own formatting, tests, and warning-denied lint, then prints and runs the frozen
-NBReq formatting, compilation, warning-denied lint, default/minimal/native/curl/all-feature test,
-doctest, documentation, and named pressure-regression gates. It flushes each exact command before
-execution, reports elapsed time per stage, and stops at the first failure. Use
+It first checks its own formatting, tests, and warning-denied lint, then checks the private WinSock
+compatibility wrapper before printing and running the frozen NBReq formatting, compilation,
+warning-denied lint, default/minimal/native/curl/all-feature test, doctest, documentation, and named
+pressure-regression gates. It flushes each exact command before execution, reports elapsed time per
+stage, and stops at the first failure. Use
 `--offline` on an exact-source host with a populated Cargo cache, and
 `--stress-repetitions 25` when repeating the pressure gate. `--dry-run` prints the complete command
 plan without executing it.
@@ -26,6 +27,10 @@ The entry point currently expands to these principal commands (plus the named pr
 
 ```text
 cargo fmt --check
+cargo fmt --manifest-path support/winpoll/Cargo.toml --check
+cargo check --manifest-path support/winpoll/Cargo.toml --all-targets
+cargo clippy --manifest-path support/winpoll/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path support/winpoll/Cargo.toml
 cargo check --no-default-features
 cargo check --all-features --all-targets
 cargo clippy --all-features --all-targets -- -D warnings

@@ -1,9 +1,9 @@
 # GDS native NBReq P10-06 activation and rollback runbook
 
-Status: Windows 10 canary accepted; stock-Wine-5 canary remains. The completed Windows record is in
-`gds_native_p10_06_evidence.md`. Use this runbook for the remaining Wine repetition required to
-accept P10-06. It does not authorize P10-07, a fleet rollout, or a change to ordinary NBReq
-construction.
+Status: **P10-06 accepted on Windows 10 and stock Wine 5.** The completed platform records and exact
+package identities are in `gds_native_p10_06_evidence.md`. Retain this as the activation/rollback
+runbook for any wider controlled native deployment. It does not authorize a fleet rollout or by
+itself change ordinary NBReq construction; that separate switch is P10-07.
 
 ## Setting contract
 
@@ -18,6 +18,17 @@ values are:
 The setting is case-insensitive after surrounding whitespace is removed. Every other non-empty
 value is an error. Feature presence alone selects nothing. `/nbreqcurlpilottest` remains a
 curl-only proving override and must not be present during a native canary.
+
+GDS `7d4d243` also accepts a general process-local override:
+
+- `/httpbackend ureq`;
+- `/httpbackend nbreq-curl-pilot`; or
+- `/httpbackend nbreq-native`.
+
+The command-line value wins over both persisted `DSHTTPBACKEND` and the older curl-only proving
+switch, is logged as process-local, and never mutates CAT settings. A missing, empty, unknown,
+uncompiled, unavailable, or late value fails closed before HTTP initialization. Prefer this form
+for isolated tests and rollback drills; use persisted configuration for an actual deployment.
 
 The CAT settings API exposes the value as `system_DSHTTPBACKEND`. Read it with:
 
@@ -106,6 +117,6 @@ shutdown stall, secret-bearing logs, a required proxy/non-UTF-8 response, or pro
 4. Require `HTTP backend selected: ureq`, healthy primary/backup polls, and a successful safe
    login/read plus response POST.
 
-P10-06 is accepted only after the exact package hashes and both platform runs are recorded, the
-native activation and same-package ureq rollback pass, and the live cancellation/shutdown evidence
-meets the bounds above. Until then native stays explicitly selected and P10-07 remains closed.
+P10-06 met these gates on the exact packages recorded in `gds_native_p10_06_evidence.md`. Native
+remains explicitly selected until P10-07 separately changes Cargo defaults and ordinary Engine
+construction. Keep this runbook and ureq/curl rollback available during that transition.

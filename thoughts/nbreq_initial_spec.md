@@ -792,6 +792,14 @@ An optional FFI layer will use opaque handles and an explicit calling convention
 
 The core crate remains safe Rust wherever practical. Necessary OS and FFI unsafe code is isolated and documented.
 
+The accepted stock-Wine-5 native path is one such isolation. Supported native Windows continues to
+use Mio. If and only if the first socket registration fails with `NotFound` for Mio's private
+`\\Device\\Afd` object, that poll owner uses documented WinSock `WSAPoll` with a 50 ms safety
+bound. The main `nbreq` crate retains `unsafe_code = "forbid"`; the minimal WinSock FFI lives in an
+unpublished workspace support crate behind a safe readiness API. Switching after any successful
+registration fails closed, and no reactor/socket ownership escapes. This is a compatibility route
+for the accepted Ubuntu-20.04/stock-Wine-5 Windows-binary target, not a new public backend.
+
 ## 23. Security and observability
 
 - TLS verification is on by default.

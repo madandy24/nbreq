@@ -1,10 +1,12 @@
 # GDS native NBReq P10-06 evidence
 
-Status: **Windows 10 slice accepted on DMOUSE2; stock-Wine-5 slice remains.** The authenticated
-package passed same-package ureq baseline, persisted native activation, an 81-minute health
-observation, prompt refresh and shutdown joins, and persisted same-package ureq rollback.
+Status: **P10-06 accepted on Windows 10 and Ubuntu 20.04/stock Wine 5.** Windows used the original
+authenticated package for the 81-minute persisted-setting canary. Wine exposed and then closed a
+real platform compatibility hole; the repaired authenticated successor passed public process-local
+selection, live native traffic, prompt cancellation/join, normal shutdown, and same-package ureq
+rollback. Ordinary NBReq construction remains unchanged; this does not itself authorize P10-07.
 
-## Accepted package
+## Accepted Windows package
 
 - Target: DMOUSE2, Windows 10 Pro 22H2, GDS `#C`.
 - Staged folder: `C:\adstemp\gds-nbreq-native-x86`.
@@ -55,7 +57,76 @@ The ureq refresh retained its known behavior: facade Drop returned immediately w
 poll workers completed about 11.5 seconds later. That is rollback-baseline behavior, not attributed
 to native. Native synchronously joined its corresponding work in single-digit milliseconds.
 
-This accepts the Windows 10 half of P10-06. It is a correctness and lifecycle canary, not a fleet,
-performance, verified-TLS, or ordinary-constructor claim. The complete `wine5-x86` payload must now
-repeat activation, live traffic, cancellation/join, normal shutdown, and same-package ureq rollback
-on the declared Ubuntu 20.04/stock-Wine-5 host before P10-06 closes. P10-07 remains unauthorized.
+That drill accepted the Windows 10 half of P10-06. It was a correctness and lifecycle canary, not a
+fleet, performance, verified-TLS, or ordinary-constructor claim. The following section records the
+subsequent stock-Wine-5 repair and closes the second platform half.
+
+## Accepted Wine-repaired package
+
+The first stock-Wine repetition used the Windows-accepted source and failed before HTTP
+initialization with Mio's `Failed to open \\Device\\Afd\\Mio: Path not found`. A standalone
+32-bit native probe reproduced the same failure outside GDS. Trying the base `\\Device\\Afd`
+object also failed, matching the known absence of Mio's private AFD readiness route on old Wine
+([upstream issue 1444](https://github.com/tokio-rs/mio/issues/1444)). This was an NBReq platform
+compatibility defect, not a GDS ownership or HTTP-facade failure.
+
+NBReq commit `6c3bde6d5feac7fce0beebeab77e9d4cd5a430a1` adds a narrow readiness abstraction. Native Windows
+continues to use Mio. Only a first-registration `NotFound` error naming `\\Device\\Afd` switches
+that poll owner to documented WinSock `WSAPoll`; the fallback never occurs after any socket has
+registered. Because old Wine cannot use Mio's completion-port waker either, the compatibility wait
+is capped at 50 ms so submit, cancel, and shutdown cannot strand. NBReq proper retains
+`unsafe_code = "forbid"`; the small private, unpublished `nbreq-winpoll` workspace crate contains
+the audited WinSock FFI and exposes only a safe readiness API.
+
+The forced-fallback Windows test covers connect, write, read, FIN, and cancellation. The ordinary
+Windows account passes the expanded 21-step verification entry point in 64.583 seconds, including
+the combined Schannel suite. A rebuilt 32-bit standalone probe then returns HTTP 200 with a
+559-byte body under stock Wine 5, exercising automatic fallback, DNS, TCP, HTTP, and joined exit.
+
+The repaired GDS package is:
+
+- Archive: `gds-nbreq-native-x86.zip`.
+- Archive size: 15,948,147 bytes.
+- Archive SHA-256: `BB492B60E100C89B40D0772311C5D7A47D7364F24D3D1BC5BE0D2DC466E37C37`.
+- GDS source: `7d4d24325aa7684da75db13d3660567e84d95438`.
+- NBReq source: `6c3bde6d5feac7fce0beebeab77e9d4cd5a430a1`.
+- GDS DLL SHA-256: `3274EE3C96C4E713F9818FD75165C115CDD888A5C59C717F14CA45FDA2869B62`.
+- Delphi host SHA-256: `0238DF8571FA32C63F3F63E3320937B0DC9F4A73B1FE37CABF559733555FA018`.
+- PDF font data SHA-256: `7DCECDB17867500E590C2EAEB491E53E5D68CA24D0A41FBB90043307EE487CA0`.
+- Wine-5 ProcessPrng shim SHA-256:
+  `C199985B0035F332E71CDC597F2568E05FB24B558EC11EDED456732B731EDA0F`.
+
+The archive hash matched after copy. All 11 extracted manifest entries passed `sha256sum -c` in a
+fresh `/home/ubuntu/gds-nbreq-native-wine5-6c3bde6` evidence directory. The package verifier had
+already proved the required x86 binaries, native marker and public selector exports, Delphi runtime
+data, and absence of libcurl.
+
+## Stock-Wine-5 drill record
+
+The owner-selected consumer host is Ubuntu 20.04.6 LTS with distro Wine 5.0. It contains test data
+only. The prior accepted package and its artifacts were left intact.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Copied archive and extracted manifest | Pass | Exact 15,948,147-byte archive hash plus all 11 extracted hashes matched |
+| Unknown public selector fails closed | Pass | `/httpbackend definitely-invalid` stopped startup before HTTP initialization and named the override source plus all three valid values |
+| Public native process-local selection | Pass | Log records `nbreq-native`, says persisted `DSHTTPBACKEND` is ignored for that process, and names NBReq native plus the explicit GDS no-verify policy |
+| Live native startup and traffic | Pass | Green board, both long-poll channels, authenticated website login/navigation, and ongoing Activity-screen traffic succeeded; a second fresh native start repeated green-board and website success |
+| Native refresh during active polls | Pass | Both requests reported expected cancellation; shutdown completed in 1 ms and Drops joined in 7 ms and 2 ms |
+| Normal native close | Pass | Both active polls cancelled; shutdown completed in 1 ms and Drops joined in 4 ms and 1 ms; exact-name post-close check found no `gds.exe` |
+| Same-package public ureq rollback | Pass | `/httpbackend ureq` was logged from the same hashes; board and authenticated website were healthy |
+| Normal rollback close | Pass | GDS Drop returned in 0-1 ms; ureq retained its known detached 1.077 s / 11.474 s worker completion; final exact-name check found no process |
+
+The first repaired live run remained healthy for roughly 22 minutes before normal close. Its fresh
+directory initially lacked `logs/`, so the exact selection and join markers were captured on the
+immediate second native start after creating that standard directory. The first run still provides
+independent owner-observed green-board, website, long-poll, and normal-close evidence; the second
+run binds those observations to exact backend and lifecycle markers. The only package-local error
+record is the deliberate invalid-selector test. No libcurl was present or loaded.
+
+P10-06 is accepted. This remains a controlled correctness/lifecycle result, not a fleet rollout,
+performance attribution, verified-TLS claim, or permission to remove ureq/curl rollback. P10-07 may
+now review the separate ordinary-construction/default-feature switch; it must compile native for a
+plain `cargo add nbreq`, keep curl explicitly selectable without feature-unification side effects,
+and keep no-default-feature construction fail-closed rather than exposing the scaffold as a public
+runtime.

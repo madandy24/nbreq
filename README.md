@@ -5,8 +5,9 @@ deterministic shutdown, and synchronous or callback-oriented APIs without adopti
 runtime.
 
 The architecture contract and backend-independent lifecycle kernel are complete. The feature-gated
-curl Multi pilot now provides the first consumer-usable spawned backend while the Rust-native
-replacement is developed behind the same Engine/Client contract.
+curl Multi pilot remains a reference/rollback backend. The Rust-native implementation has passed
+its Windows, Ubuntu, and stock-Wine explicit-consumer gates behind the same Engine/Client contract;
+making it the ordinary Cargo/default constructor is the next separately reviewed step.
 
 ## Curl pilot use
 
@@ -83,7 +84,11 @@ Engine-owned DNS service, and rustls for owner-driven TLS. None is an executor a
 async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
 joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
 and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, including bounded
-fixed/chunked `UploadBody` pumping. Enabling `native` does not make `Engine::new` select it.
+fixed/chunked `UploadBody` pumping. The Windows build also passes live GDS traffic and shutdown on
+Ubuntu 20.04's stock Wine 5. Native Windows keeps Mio; only a first-registration missing-AFD error
+on old Wine selects a documented `WSAPoll` compatibility path with a 50 ms safety bound. NBReq
+proper forbids unsafe code; the minimal WinSock FFI is isolated in a private unpublished workspace
+crate behind a safe API. Enabling `native` does not make `Engine::new` select it.
 
 WP10's explicit selection seam is available without changing that current default:
 
@@ -111,6 +116,7 @@ will remain an explicit reference/compatibility selection.
 - [WP4 adversarial HTTP laboratory evidence](thoughts/wp4_http_lab_evidence.md)
 - [WP6 native reactor evidence](thoughts/wp6_native_reactor_evidence.md)
 - [WP7 native HTTP/1.1 evidence](thoughts/wp7_native_http_evidence.md)
+- [GDS native P10-06 Windows/Wine evidence](thoughts/gds_native_p10_06_evidence.md)
 - [GDS curl-pilot integration plan](thoughts/gds_curl_pilot_integration_plan.md)
 - [GDS G4 packaging and loader evidence](thoughts/gds_curl_pilot_g4_evidence.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
