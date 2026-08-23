@@ -1229,6 +1229,46 @@ fn closed_loopback_endpoint_stays_in_the_connect_category() {
 }
 
 #[test]
+fn reserved_invalid_hostname_maps_to_dns_when_resolution_answers() {
+    for (backend_name, backend) in test_backends() {
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        match engine
+            .client()
+            .execute(
+                Request::get("http://nbreq-parity-does-not-exist.invalid/")
+                    .connect_timeout(Duration::from_secs(1))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("invalid-host request must build"),
+            )
+            .expect_err("reserved invalid hostname must not resolve")
+        {
+            ExecuteError::Failed(error) => {
+                assert_eq!(
+                    error.kind(),
+                    ErrorKind::Transport,
+                    "{backend_name}: {error}"
+                );
+                assert_eq!(
+                    error.transport_stage(),
+                    Some(TransportStage::Dns),
+                    "{backend_name}: {error}"
+                );
+            }
+            other => panic!("{backend_name}: expected DNS failure, got {other:?}"),
+        }
+        assert_eq!(
+            engine.metrics().current().inflight_requests(),
+            0,
+            "{backend_name}"
+        );
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
 fn callback_completion_uses_the_same_real_backend_terminal() {
     for (backend_name, backend) in test_backends() {
         let server = ScriptedServer::start(Script::Bytes(
