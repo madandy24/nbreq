@@ -11,7 +11,7 @@ members = ["support/winpoll"]
 resolver = "2"
 
 [features]
-default = []
+default = ["native"]
 curl-pilot = ["dep:curl"]
 curl-pilot-vendored = ["curl-pilot", "curl/ssl"]
 native = [

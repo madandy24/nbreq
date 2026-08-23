@@ -10,10 +10,10 @@ use crate::{Completion, Error, ErrorKind, Request, RequestId, ShutdownError};
 
 use super::{Backend, BackendCompletion};
 
-#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+#[allow(dead_code)] // Internal lifecycle-test backend; never an ordinary public runtime.
 pub(super) struct ScaffoldBackend;
 
-#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+#[allow(dead_code)]
 impl Backend for ScaffoldBackend {
     fn submit(
         &mut self,

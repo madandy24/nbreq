@@ -1452,7 +1452,7 @@ fn resolved_redirect_target_from_headers(
 }
 
 /// Native HTTP factory with the accepted DNS, TCP, TLS, redirect, pooling, and streaming owners.
-/// Ordinary `Engine::new` does not select it until WP10's separately reviewed default-switch gate.
+/// Ordinary `Engine::new` selects this implementation when the default `native` feature is built.
 #[allow(dead_code)]
 pub(super) struct NativeHttpFactory {
     limits: HttpLimits,
@@ -6794,6 +6794,7 @@ mod tests {
     fn fixed_streamed_upload_pumps_incrementally_over_cleartext() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("fixed upload fixture must bind");
         let address = listener.local_addr().expect("fixed upload address");
+        let (respond_tx, respond_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("fixed upload must accept");
             let request = read_request_wire(&mut stream, "fixed streamed upload");
@@ -6806,6 +6807,9 @@ mod tests {
             assert!(head.contains("Content-Length: 6\r\n"));
             assert!(!head.to_ascii_lowercase().contains("transfer-encoding"));
             assert_eq!(&request[head_end..], b"abcdef");
+            respond_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("finished producer must release the fixed response");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                 .expect("fixed upload response must write");
@@ -6831,6 +6835,9 @@ mod tests {
             .expect("fixed streamed request must submit");
         push_eventually(&mut sender, b"def".to_vec(), "second fixed chunk");
         sender.finish().expect("fixed sender must finish exactly");
+        respond_tx
+            .send(())
+            .expect("fixed response gate must remain available");
         let response = reader.collect().expect("fixed response must collect");
         assert_eq!(response.status(), 200);
         assert_eq!(response.body(), b"ok");

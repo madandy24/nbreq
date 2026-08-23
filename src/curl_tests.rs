@@ -15,8 +15,8 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
 use crate::testing;
 use crate::{
-    Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Method, Request, RequestOptions,
-    TimeoutKind, TlsVerification, TransportStage,
+    Completion, EngineConfig, ErrorKind, ExecuteError, HttpBackend, LimitKind, Method, Request,
+    RequestOptions, TimeoutKind, TlsVerification, TransportStage,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -689,7 +689,10 @@ fn assert_tls_failure(completion: Completion) {
 #[test]
 fn curl_multi_runs_concurrent_get_status_and_post_requests() {
     let server = LocalServer::start();
-    let engine = crate::Engine::new(EngineConfig::spawned()).expect("curl Engine must construct");
+    let engine = crate::Engine::builder()
+        .http_backend(HttpBackend::Curl)
+        .build()
+        .expect("curl Engine must construct explicitly");
     let client = engine.client();
     let ok = client
         .submit(
@@ -730,11 +733,12 @@ fn curl_multi_runs_concurrent_get_status_and_post_requests() {
 }
 
 #[test]
-fn public_engine_constructor_serves_callback_and_blocking_callers_over_curl() {
+fn explicit_curl_constructor_serves_callback_and_blocking_callers() {
     let server = LocalServer::start();
     let engine = crate::Engine::builder()
+        .http_backend(HttpBackend::Curl)
         .build()
-        .expect("public curl Engine must construct");
+        .expect("explicit curl Engine must construct");
     let client = engine.client();
     let (callback_tx, callback_rx) = mpsc::channel();
     let handle = client
@@ -779,6 +783,7 @@ fn public_engine_constructor_serves_callback_and_blocking_callers_over_curl() {
 fn callback_and_blocking_forms_share_limit_and_timeout_semantics() {
     let server = LocalServer::start();
     let limit_engine = crate::Engine::builder()
+        .http_backend(HttpBackend::Curl)
         .max_response_body_bytes(4)
         .build()
         .expect("limited Engine must construct");
@@ -822,8 +827,10 @@ fn callback_and_blocking_forms_share_limit_and_timeout_semantics() {
     }
     limit_engine.shutdown().expect("limited Engine must stop");
 
-    let timeout_engine =
-        crate::Engine::new(EngineConfig::spawned()).expect("timeout Engine must construct");
+    let timeout_engine = crate::Engine::builder()
+        .http_backend(HttpBackend::Curl)
+        .build()
+        .expect("timeout curl Engine must construct explicitly");
     let client = timeout_engine.client();
     let (timeout_tx, timeout_rx) = mpsc::channel();
     client
@@ -1233,7 +1240,10 @@ fn curl_pilot_reports_non_utf8_request_header_values_as_unsupported() {
         .header("X-Opaque", vec![0x80])
         .build()
         .expect("portable opaque header value must build");
-    let engine = crate::Engine::new(EngineConfig::spawned()).expect("curl Engine must construct");
+    let engine = crate::Engine::builder()
+        .http_backend(HttpBackend::Curl)
+        .build()
+        .expect("curl Engine must construct explicitly");
 
     match engine
         .client()

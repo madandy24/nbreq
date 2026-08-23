@@ -4,23 +4,25 @@ NBReq is a Rust HTTP client for programs that need concurrent network access, pr
 deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async
 runtime.
 
-The architecture contract and backend-independent lifecycle kernel are complete. The feature-gated
-curl Multi pilot remains a reference/rollback backend. The Rust-native implementation has passed
-its Windows, Ubuntu, and stock-Wine explicit-consumer gates behind the same Engine/Client contract;
-making it the ordinary Cargo/default constructor is the next separately reviewed step.
+The architecture contract and backend-independent lifecycle kernel are complete. The default build
+and ordinary constructor use NBReq's Rust-native HTTP implementation. The feature-gated curl Multi
+pilot remains an explicitly selected reference/rollback backend.
 
 ## Curl pilot use
 
-Enable the `curl-pilot` feature, construct one independently owned Engine, and issue cheap cloneable
-Clients from it. The feature changes only the private backend selected by `Engine::new`; no curl type
-enters application code.
+Enable the `curl-pilot` feature, select `HttpBackend::Curl` on the builder, construct one
+independently owned Engine, and issue cheap cloneable Clients from it. Enabling the feature only
+compiles the backend; Cargo feature unification never changes what `Engine::new` selects, and no
+curl implementation type enters application code.
 
 ```rust
 use std::time::Duration;
 
-use nbreq::{Completion, Engine, EngineConfig, Request};
+use nbreq::{Completion, Engine, HttpBackend, Request};
 
-let engine = Engine::new(EngineConfig::spawned())?;
+let engine = Engine::builder()
+    .http_backend(HttpBackend::Curl)
+    .build()?;
 let client = engine.client();
 
 let callback_handle = client.start(
@@ -78,7 +80,7 @@ reactor bookkeeping.
 
 ## Native backend status
 
-The private `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
+The default `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
 readiness and notification, `httparse` for response-head parsing, Hickory's wire types for an
 Engine-owned DNS service, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
 async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
@@ -88,9 +90,9 @@ fixed/chunked `UploadBody` pumping. The Windows build also passes live GDS traff
 Ubuntu 20.04's stock Wine 5. Native Windows keeps Mio; only a first-registration missing-AFD error
 on old Wine selects a documented `WSAPoll` compatibility path with a 50 ms safety bound. NBReq
 proper forbids unsafe code; the minimal WinSock FFI is isolated in a private unpublished workspace
-crate behind a safe API. Enabling `native` does not make `Engine::new` select it.
+crate behind a safe API. `Engine::new` and an unqualified builder select native in ordinary builds.
 
-WP10's explicit selection seam is available without changing that current default:
+Explicit selection remains available when a caller wants to state the choice:
 
 ```rust
 use nbreq::{Engine, HttpBackend};
@@ -103,10 +105,9 @@ engine.shutdown()?;
 ```
 
 `HttpBackend` has the same public variants under every feature combination. Selecting an
-implementation that was not compiled returns `Unsupported` at construction. At the separately
-reviewed default-switch gate, the `native` feature will become a Cargo default so ordinary
-`cargo add nbreq` consumers receive the native implementation without extra feature work; curl
-will remain an explicit reference/compatibility selection.
+implementation that was not compiled returns `Unsupported` at construction. A
+`--no-default-features` build therefore still compiles, but ordinary construction returns
+`Unsupported`; the lifecycle scaffold is internal test support rather than a third public runtime.
 
 ## Project documents
 
@@ -121,6 +122,5 @@ will remain an explicit reference/compatibility selection.
 - [GDS G4 packaging and loader evidence](thoughts/gds_curl_pilot_g4_evidence.md)
 - [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
 
-Without a transport feature, the ordinary constructor retains the deterministic non-networking
-scaffold used to test the public lifecycle contract. `test-support` exposes deterministic controls
-for downstream conformance tests; it is not needed by curl-pilot consumers.
+`test-support` exposes deterministic controls for downstream conformance tests; it is not needed
+by ordinary native or explicit curl consumers.

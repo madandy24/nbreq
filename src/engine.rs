@@ -22,7 +22,7 @@ static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
 
 enum RuntimeOwner {
     Spawned(Option<JoinHandle<Result<(), ShutdownError>>>),
-    #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     Manual(Option<ReactorCore<dyn Backend + Send>>),
     Stopped,
 }
@@ -61,16 +61,19 @@ impl Drop for DrivingGuard<'_> {
 impl Engine {
     /// Creates one independent Engine from backend-neutral configuration.
     ///
-    /// With the `curl-pilot` feature, the Engine uses the private spawned curl backend. Without a
-    /// transport feature it uses the non-networking scaffold.
+    /// The default build uses NBReq's native HTTP implementation in spawned or manual mode. Cargo
+    /// feature unification never changes this choice to curl. A build without the `native` feature
+    /// returns [`ErrorKind::Unsupported`]; select [`HttpBackend::Curl`] explicitly when the curl
+    /// reference backend is required.
     pub fn new(config: EngineConfig) -> Result<Self, Error> {
-        #[cfg(feature = "curl-pilot")]
+        #[cfg(feature = "native")]
         {
-            Self::with_curl_backend(config)
+            Self::with_native_backend(config)
         }
-        #[cfg(not(feature = "curl-pilot"))]
+        #[cfg(not(feature = "native"))]
         {
-            Self::with_backend(config, backend::scaffold())
+            let _ = config;
+            Err(unavailable_http_backend("native"))
         }
     }
 
@@ -115,7 +118,7 @@ impl Engine {
         }
     }
 
-    #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn with_backend(
         config: EngineConfig,
         mut backend: Box<dyn Backend + Send>,
@@ -578,9 +581,9 @@ impl EngineBuilder {
 
     /// Explicitly selects an HTTP implementation.
     ///
-    /// Cargo features control whether the selected implementation is available. They do not alter
-    /// this selection. Omitting this call preserves [`Engine::new`]'s current pilot behavior until
-    /// WP10's separately reviewed native-default switch.
+    /// Cargo features control whether the selected implementation is available. They never alter
+    /// an explicit selection. Omitting this call uses [`Engine::new`], which selects native when
+    /// compiled and otherwise fails with [`ErrorKind::Unsupported`].
     #[must_use]
     pub fn http_backend(mut self, backend: HttpBackend) -> Self {
         self.http_backend = Some(backend);
@@ -717,9 +720,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(feature = "native")]
+    use crate::CallbackDispatch;
     use crate::backend::BackendCompletion;
     use crate::stream::ResponseSink;
-    use crate::{CallbackDispatch, Request, RequestId, StreamError, StreamRequest};
+    use crate::{Request, RequestId, StreamError, StreamRequest};
 
     use super::*;
 
@@ -977,6 +982,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native")]
     fn builder_sets_engine_configuration() {
         let workers = NonZeroUsize::new(3).expect("three is non-zero");
         let command_capacity = NonZeroUsize::new(7).expect("seven is non-zero");

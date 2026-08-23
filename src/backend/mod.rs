@@ -62,6 +62,7 @@ pub(crate) struct CurlPoolLimits {
     pub(crate) idle_timeout: Duration,
 }
 
+#[cfg_attr(not(any(feature = "native", feature = "curl-pilot")), allow(dead_code))]
 pub(crate) trait Backend {
     fn attach_metrics(&mut self, _metrics: Arc<Metrics>) {}
 
@@ -117,7 +118,7 @@ pub(crate) trait BackendFactory: Send {
     }
 }
 
-#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+#[allow(dead_code)] // Internal lifecycle-test backend; never an ordinary public runtime.
 pub(crate) fn scaffold() -> Box<dyn Backend + Send> {
     Box::new(scaffold::ScaffoldBackend)
 }

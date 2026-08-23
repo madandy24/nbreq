@@ -37,6 +37,7 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo test
 cargo test --no-default-features
 cargo test --features native,test-support
+cargo test --no-default-features --features curl-pilot
 cargo test --features curl-pilot
 cargo test --all-features
 cargo test --all-features --doc

@@ -179,7 +179,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
     }
 }
 
-#[cfg_attr(feature = "curl-pilot", allow(dead_code))]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn spawned_main<B: Backend + ?Sized>(
     shared: Arc<Shared>,
     mut reactor: ReactorCore<B>,

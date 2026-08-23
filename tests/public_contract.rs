@@ -1,6 +1,6 @@
+#[cfg(feature = "native")]
 use std::time::Instant;
 
-#[cfg(feature = "native")]
 use nbreq::EngineBuilder;
 use nbreq::{
     Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
@@ -27,6 +27,7 @@ fn public_thread_traits_match_the_contract() {
 }
 
 #[test]
+#[cfg(feature = "native")]
 fn clients_are_engine_issued_and_do_not_own_shutdown() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let client = engine.client();
@@ -37,17 +38,23 @@ fn clients_are_engine_issued_and_do_not_own_shutdown() {
 }
 
 #[test]
+#[cfg(feature = "native")]
 fn metrics_are_owner_observed_and_start_empty() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let metrics = engine.metrics();
-    assert_eq!(metrics, EngineMetrics::default());
+    assert!(metrics.connection_metrics_available());
     assert_eq!(metrics.current(), ResourceMetrics::default());
     engine.shutdown().expect("empty Engine must stop");
 }
 
 #[test]
 #[cfg(feature = "native")]
-fn explicit_native_selection_is_available_without_changing_the_default() {
+fn ordinary_and_explicit_native_selection_are_available() {
+    let ordinary = Engine::new(EngineConfig::spawned())
+        .expect("ordinary construction must use compiled native");
+    assert!(ordinary.metrics().connection_metrics_available());
+    ordinary.shutdown().expect("ordinary Engine must stop");
+
     let engine = Engine::builder()
         .http_backend(HttpBackend::Native)
         .build()
@@ -63,6 +70,36 @@ fn explicit_native_selection_is_available_without_changing_the_default() {
     manual
         .shutdown()
         .expect("empty manual native Engine must stop");
+}
+
+#[test]
+#[cfg(all(feature = "native", feature = "curl-pilot"))]
+fn curl_feature_unification_does_not_change_ordinary_native_selection() {
+    let engine = Engine::new(EngineConfig::spawned())
+        .expect("ordinary construction must remain native when curl is compiled");
+    assert!(engine.metrics().connection_metrics_available());
+    engine.shutdown().expect("ordinary native Engine must stop");
+}
+
+#[test]
+#[cfg(not(feature = "native"))]
+fn ordinary_construction_fails_without_the_native_feature() {
+    let spawned = Engine::new(EngineConfig::spawned())
+        .err()
+        .expect("ordinary spawned construction must fail without native");
+    assert_eq!(spawned.kind(), ErrorKind::Unsupported);
+
+    let built = Engine::builder()
+        .build()
+        .err()
+        .expect("unqualified builder construction must fail without native");
+    assert_eq!(built.kind(), ErrorKind::Unsupported);
+
+    let manual = EngineBuilder::manual()
+        .build()
+        .err()
+        .expect("ordinary manual construction must fail without native");
+    assert_eq!(manual.kind(), ErrorKind::Unsupported);
 }
 
 #[test]
@@ -99,6 +136,7 @@ fn explicit_curl_selection_fails_when_unavailable() {
 }
 
 #[test]
+#[cfg(feature = "native")]
 fn spawned_drive_fails_explicitly() {
     let mut engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let error = engine
@@ -108,20 +146,22 @@ fn spawned_drive_fails_explicitly() {
 }
 
 #[test]
-#[cfg(not(feature = "curl-pilot"))]
+#[cfg(feature = "native")]
 fn manual_drive_uses_the_same_public_engine_type() {
-    let mut engine = Engine::new(EngineConfig::manual()).expect("scaffold Engine must construct");
+    let mut engine = Engine::new(EngineConfig::manual()).expect("native Engine must construct");
     let _status = engine
         .drive(Instant::now())
-        .expect("manual scaffold drive must succeed");
+        .expect("manual native drive must succeed");
     engine.shutdown().expect("empty Engine must stop");
 }
 
 #[test]
 #[cfg(feature = "curl-pilot")]
 fn curl_pilot_rejects_manual_construction_explicitly() {
-    let error = Engine::new(EngineConfig::manual())
+    let error = EngineBuilder::manual()
+        .http_backend(HttpBackend::Curl)
+        .build()
         .err()
-        .expect("curl pilot must reject manual construction");
+        .expect("explicit curl must reject manual construction");
     assert_eq!(error.kind(), ErrorKind::WrongMode);
 }

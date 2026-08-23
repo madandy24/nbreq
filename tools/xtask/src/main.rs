@@ -261,7 +261,11 @@ fn verification_steps(stress_repetitions: usize) -> Vec<Step> {
             &["test", "--features", "native,test-support"],
         ),
         Step::cargo(
-            "curl reference tests",
+            "curl-only reference tests",
+            &["test", "--no-default-features", "--features", "curl-pilot"],
+        ),
+        Step::cargo(
+            "default-native plus curl reference tests",
             &["test", "--features", "curl-pilot"],
         ),
         Step::cargo("all-feature tests", &["test", "--all-features"]),
@@ -333,12 +337,18 @@ mod tests {
     #[test]
     fn verification_plan_covers_the_frozen_gate() {
         let steps = verification_steps(2);
-        assert_eq!(steps.len(), 24);
+        assert_eq!(steps.len(), 25);
         assert!(steps.iter().any(|step| step.args == ["test"]));
         assert!(
             steps
                 .iter()
                 .any(|step| { step.args == ["test", "--features", "native,test-support"] })
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.args
+                    == ["test", "--no-default-features", "--features", "curl-pilot"])
         );
         assert!(
             steps

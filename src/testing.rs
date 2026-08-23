@@ -102,7 +102,8 @@ pub fn native_https_engine_with_nameserver(
 
 /// Creates a private Rust-native HTTPS proving Engine using host DNS and platform trust.
 ///
-/// Ordinary `Engine::new` still does not select the native backend.
+/// Ordinary `Engine::new` selects native in the default build; this seam remains useful for
+/// injected nameservers and direct proving control.
 #[cfg(feature = "native")]
 pub fn native_https_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {
     let factory = crate::backend::native_https_factory_with_system_dns(&config)?;

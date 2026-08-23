@@ -44,8 +44,8 @@ impl Client {
 
     /// Submits a request whose response is consumed through one unique reader.
     ///
-    /// Streaming is currently available only on the private native proving backend. Curl and the
-    /// non-networking scaffold return `Unsupported` without accepting the request.
+    /// Streaming is available on the native backend. Curl and internal non-networking test
+    /// backends return `Unsupported` without accepting the request.
     pub fn submit_stream(&self, request: StreamRequest) -> Result<ResponseReader, Error> {
         self.shared.accept_stream(request)
     }
@@ -211,8 +211,8 @@ mod tests {
         let handle = pending.handle();
         assert!(controller.complete(handle.id(), Completion::Cancelled));
 
-        let second =
-            crate::Engine::new(EngineConfig::spawned()).expect("second Engine must construct");
+        let (second, _second_controller) = testing::engine(EngineConfig::spawned())
+            .expect("second deterministic Engine must construct");
         let second_client = second.client();
         let error = second_client
             .cancel(handle.id())
