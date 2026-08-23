@@ -4,7 +4,8 @@ NBReq currently requires Rust 1.85 or later and uses Rust 2024 edition. The init
 
 The settled project and proposed crate name is NBReq / `nbreq` (Non-Blocking Request). The intended
 public grant is `MIT OR Apache-2.0`; the crate remains private and `publish = false` until the
-displayed copyright holder, publication metadata, and WP10/WP11 release gates are complete.
+displayed copyright holder, publication metadata, path-dependency packaging, and WP11 release
+gates are complete. WP10's native-default and platform gates are accepted.
 
 ## Required checks
 
@@ -43,6 +44,9 @@ cargo test --all-features
 cargo test --all-features --doc
 cargo doc --all-features --no-deps
 ```
+
+The crate enables Rust's `missing_docs` lint. The existing warning-denied all-feature lint stage
+therefore also prevents undocumented public API from entering the release surface.
 
 On Windows, the exact dynamic curl pilot build and DLL lifecycle proof are run with:
 

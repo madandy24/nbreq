@@ -16,14 +16,19 @@ pub struct ResourceMetrics {
 }
 
 impl ResourceMetrics {
+    /// Returns requests that are accepted but not fully released.
+    ///
+    /// A terminal callback remains inflight until its callback job returns.
     pub fn inflight_requests(&self) -> usize {
         self.inflight_requests
     }
 
+    /// Returns commands currently waiting for the Engine owner.
     pub fn queued_commands(&self) -> usize {
         self.queued_commands
     }
 
+    /// Returns terminal callback jobs waiting for a callback worker or manual dispatch.
     pub fn queued_callbacks(&self) -> usize {
         self.queued_callbacks
     }
@@ -79,18 +84,22 @@ impl EngineMetrics {
         self.connection_metrics_available
     }
 
+    /// Returns the number of requests accepted during this Engine's lifetime.
     pub fn requests_accepted(&self) -> u64 {
         self.requests_accepted
     }
 
+    /// Returns accepted requests whose canonical terminal outcome was a response.
     pub fn requests_completed(&self) -> u64 {
         self.requests_completed
     }
 
+    /// Returns accepted requests whose canonical terminal outcome was failure.
     pub fn requests_failed(&self) -> u64 {
         self.requests_failed
     }
 
+    /// Returns accepted requests whose canonical terminal outcome was cancellation.
     pub fn requests_cancelled(&self) -> u64 {
         self.requests_cancelled
     }
@@ -118,10 +127,12 @@ impl EngineMetrics {
         self.idle_connections_evicted
     }
 
+    /// Returns the current bounded-resource snapshot.
     pub fn current(&self) -> ResourceMetrics {
         self.current
     }
 
+    /// Returns lifetime high-water marks for bounded resources.
     pub fn high_water(&self) -> ResourceMetrics {
         self.high_water
     }

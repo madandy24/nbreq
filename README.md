@@ -8,6 +8,38 @@ The architecture contract and backend-independent lifecycle kernel are complete.
 and ordinary constructor use NBReq's Rust-native HTTP implementation. The feature-gated curl Multi
 pilot remains an explicitly selected reference/rollback backend.
 
+## Quick start
+
+The default build is self-contained Rust HTTP/1.1. Create one independently owned Engine, issue
+cheap cloneable Clients from it, and consume the Engine when the service stops:
+
+```rust
+use std::time::Duration;
+
+use nbreq::{Engine, EngineConfig, Request};
+
+let engine = Engine::new(EngineConfig::spawned())?;
+let client = engine.client();
+
+let response = client.execute(
+    Request::get("https://example.com/")
+        .connect_timeout(Duration::from_secs(5))
+        .total_timeout(Duration::from_secs(15))
+        .build()?,
+)?;
+
+println!("status {}, {} bytes", response.status(), response.body().len());
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+HTTP error status codes are responses. DNS, connection, TLS, timeout, limit, cancellation, and
+shutdown outcomes remain distinct. Clients do not own or extend Engine lifetime, and no hidden
+runtime is installed globally.
+
+See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
+streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.
+
 ## Curl pilot use
 
 Enable the `curl-pilot` feature, select `HttpBackend::Curl` on the builder, construct one
@@ -111,6 +143,8 @@ implementation that was not compiled returns `Unsupported` at construction. A
 
 ## Project documents
 
+- [Consumer guide](docs/getting-started.md)
+- [WP11 release-readiness ledger](thoughts/wp11_release_readiness.md)
 - [Initial product specification](thoughts/nbreq_initial_spec.md)
 - [Delivery plan](thoughts/project_nbreq_plan.html)
 - [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)

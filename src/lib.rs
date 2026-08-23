@@ -1,9 +1,12 @@
+#![warn(missing_docs)]
+
 //! Runtime-independent HTTP client architecture.
 //!
 //! The crate implements NBReq's backend-independent ownership and lifecycle kernel. Compiled HTTP
 //! implementations can be selected explicitly with [`EngineBuilder::http_backend`]. The default
 //! build and ordinary [`Engine::new`] constructor use native HTTP. Curl remains an explicit
 //! reference/compatibility selection and is never selected by Cargo feature unification.
+#![doc = include_str!("../docs/getting-started.md")]
 
 mod backend;
 mod callback;
