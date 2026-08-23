@@ -1,10 +1,9 @@
 # WP10 backend parity inventory
 
-Status: P10-01 accepted, 2026-08-23; P10-02 shared black-box behavior passes on Windows and its
-target-host repetition remains. Explicit backend construction, conservative curl pool bounds, and
-connection-metrics availability pass their Windows and exact-source Ubuntu gates. Ordinary backend
-selection is deliberately unchanged. This does not alter the accepted GDS package or remove
-curl/ureq rollback.
+Status: P10-01 and P10-02 accepted, 2026-08-23; P10-03 verification entry point is next. Explicit
+backend construction, conservative curl pool bounds, connection-metrics availability, and shared
+black-box parity pass their Windows and exact-source Ubuntu gates. Ordinary backend selection is
+deliberately unchanged. This does not alter the accepted GDS package or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -311,5 +310,25 @@ mislabels a pre-connect timeout as total.
 The complete local matrix now passes 65 default units; 185 native units plus 16 shared tests; 84
 curl units plus the same 16 shared tests; all 7 contracts and 6 doctests; warning-denied all-feature
 lint; docs; and formatting. One all-feature process passes all 15 non-TLS shared tests against both
-implementations. P10-02 remains open only for the ordinary-user vendored-Schannel shared TLS run
-and exact-source Ubuntu repetition of the final matrix.
+implementations. At this checkpoint, ordinary-user vendored Schannel and exact-source Ubuntu were
+the remaining P10-02 gates; the following platform close records both.
+
+## 14. P10-02 platform close and acceptance
+
+The owner runs the focused shared TLS case from an ordinary PowerShell session with
+`curl-pilot-vendored`; it passes outside the already classified restricted-token Schannel
+environment. No product exception or weakened assertion is needed.
+
+Exact source `9ddf850` is archived as `wp10-p10-02-9ddf850.zip`, 504,284 bytes, SHA-256
+`C597D5CB38D7F2075612EF7C8AEEE113580FC5F36305ACFD91042D996A6C3067`. The copied hash matches on
+Ubuntu 20.04.6 LTS with Rust/Cargo 1.85.0. One fail-fast offline sequence then passes:
+
+- 65 default units, 7 contracts, and 6 doctests;
+- 185 native units, 16 shared adversarial tests, 7 contracts, and 6 doctests;
+- 85 curl units, 16 shared adversarial tests, 7 contracts, and 6 doctests;
+- all 16 shared tests in one all-feature process, exercising both implementations including TLS;
+- warning-denied all-feature/all-target lint, all-feature docs, and formatting.
+
+The sequence runs from 03:57:15 through 04:01:28 UTC, exits zero at `STAGE=complete`, and leaves no
+proof process. P10-02 is accepted. The ordinary native/default-feature switch remains gated; P10-03
+is next.
