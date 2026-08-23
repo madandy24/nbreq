@@ -44,6 +44,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) struct PollTarget {
     token: Token,
     readable: bool,
@@ -54,6 +55,8 @@ pub(super) struct PollTarget {
 
 impl PollTarget {
     pub(super) fn new<S: NativeSource>(token: Token, source: &S, interest: Interest) -> Self {
+        #[cfg(not(windows))]
+        let _ = source;
         Self {
             token,
             readable: interest.is_readable(),
@@ -86,6 +89,7 @@ pub(super) struct PollReady {
 
 pub(super) struct NativePoll {
     implementation: PollImplementation,
+    #[cfg(windows)]
     waker: NativeWaker,
     registered: usize,
 }
@@ -111,6 +115,7 @@ impl NativePoll {
                     poll,
                     events: Events::with_capacity(event_capacity.max(1)),
                 },
+                #[cfg(windows)]
                 waker: waker.clone(),
                 registered: 0,
             },
@@ -185,6 +190,8 @@ impl NativePoll {
         timeout: Duration,
         wake_token: Token,
     ) -> io::Result<Vec<PollReady>> {
+        #[cfg(not(windows))]
+        let _ = targets;
         match &mut self.implementation {
             PollImplementation::Mio { poll, events } => {
                 poll.poll(events, Some(timeout))?;
