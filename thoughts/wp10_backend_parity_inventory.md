@@ -1,10 +1,9 @@
 # WP10 backend parity inventory
 
-Status: P10-01 implementation checkpoint, 2026-08-23. Explicit backend construction, conservative
-curl pool bounds, and connection-metrics availability are implemented and pass their Windows
-backend-specific gates. Ordinary backend selection is deliberately unchanged; exact-source Ubuntu
-proof and review remain before accepting the slice. This does not alter the accepted GDS package
-or remove curl/ureq rollback.
+Status: P10-01 implementation and platform evidence complete, 2026-08-23; review pending. Explicit
+backend construction, conservative curl pool bounds, and connection-metrics availability pass
+their Windows and exact-source Ubuntu gates. Ordinary backend selection is deliberately unchanged.
+This does not alter the accepted GDS package or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -197,6 +196,17 @@ or constructing follow-up work. A direct regression and the smaller reviewed
 Windows. Because the third leg stopped early, this is a successful finding, not a completed
 campaign; all three legs must run again on the corrected exact source.
 
+Corrected exact source `dbe3ff0`, archive SHA-256
+`A949E9B54B6272930E58396C2925FD29BCFE7EA5C7F47C9F888680C1BF4A4605`, completes the repeat on
+Ubuntu 20.04 / Rust and Cargo 1.85. The buffered leg runs 5,585,729 executions with 987 coverage
+points and 3,306 features; streaming runs 6,506,947 with 1,792 coverage points and 5,332 features;
+DNS runs 2,024,469 with 2,559 coverage points and 6,340 features. Each target runs 1,201 seconds and
+produces no generated artifact. Timestamped stages then pass 65 default units, 7 contracts and 6
+doctests; 185 native units, 4 adversarial tests, 7 contracts and 6 doctests; 85 curl units, 5
+adversarial tests, 7 contracts and 6 doctests; warning-denied all-feature clippy, formatting, and
+offline all-feature compilation. The final marker is `EXIT stage=complete rc=0`, and no proof
+process remains.
+
 ## 8. Module organization during WP10
 
 `native_http.rs` is large enough to make review expensive, but extraction is not itself parity.
@@ -240,5 +250,6 @@ A unit gate proves a positive subsecond idle timeout takes `forbid_reuse` instea
 The combined all-feature test reproduces only the three already classified restricted-token
 Schannel fixture failures; the immediately preceding curl-only suite passes all three.
 
-P10-01 closes after exact-source Ubuntu runs the selection/metrics and curl-limit gates and review
-accepts the public freeze. It does not authorize the ordinary native/default-feature switch.
+The same public selection/metrics and curl-limit gates pass in the complete exact-source Ubuntu
+run recorded above. P10-01 is ready for review and closes when review accepts the public freeze. It
+does not authorize the ordinary native/default-feature switch.
