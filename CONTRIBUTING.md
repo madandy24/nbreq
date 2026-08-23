@@ -2,10 +2,14 @@
 
 NBReq currently requires Rust 1.85 or later and uses Rust 2024 edition. The initial supported deployment targets are Windows 10 x64 or later, the Windows build under Ubuntu 20.04's default Wine, and native Linux x64 built against an Ubuntu 20.04 ABI baseline.
 
-The settled project and proposed crate name is NBReq / `nbreq` (Non-Blocking Request). The intended
-public grant is `MIT OR Apache-2.0`; the crate remains private and `publish = false` until the
-displayed copyright holder, publication metadata, path-dependency packaging, and WP11 release
-gates are complete. WP10's native-default and platform gates are accepted.
+The settled project and proposed crate name is NBReq / `nbreq` (Non-Blocking Request). Copyright is
+held by Cave Rock Software Limited and the public grant is `MIT OR Apache-2.0`. The repository is
+intended for `https://github.com/madandy24/nbreq`; the crate remains private and `publish = false`
+until versioning, path-dependency packaging, and the remaining WP11 release gates are complete.
+WP10's native-default and platform gates are accepted.
+
+Unless explicitly stated otherwise, any contribution intentionally submitted for inclusion in
+NBReq is licensed under the same `MIT OR Apache-2.0` terms, without additional conditions.
 
 ## Required checks
 

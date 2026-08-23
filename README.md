@@ -158,3 +158,12 @@ implementation that was not compiled returns `Unsupported` at construction. A
 
 `test-support` exposes deterministic controls for downstream conformance tests; it is not needed
 by ordinary native or explicit curl consumers.
+
+## License
+
+NBReq is licensed under either of the following, at your option:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)); or
+- MIT License ([LICENSE-MIT](LICENSE-MIT)).
+
+Copyright (c) 2026 Cave Rock Software Limited.

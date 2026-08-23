@@ -28,9 +28,9 @@ Differences have four dispositions:
   Request. The name intentionally permits later DNS and TCP request interfaces as well as HTTP.
 - The project owner confirms authorship and ownership of GDS and authority to license the work
   that informed NBReq. There is no outstanding GDS provenance blocker.
-- The intended public license is `MIT OR Apache-2.0`. The manifest field and standard
-  `LICENSE-MIT` / `LICENSE-APACHE` files wait only for selection of the displayed copyright
-  holder.
+- Copyright is held by **Cave Rock Software Limited** and the public license is
+  `MIT OR Apache-2.0`. The root manifest and standard `LICENSE-MIT` / `LICENSE-APACHE` files record
+  that decision. The planned public repository is `https://github.com/madandy24/nbreq`.
 - Check crates.io again immediately before a genuine alpha publication; do not publish an empty
   placeholder merely to reserve the name.
 

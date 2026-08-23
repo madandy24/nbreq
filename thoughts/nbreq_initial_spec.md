@@ -901,10 +901,11 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 
 15. **Curl packaging — accepted for pilot:** Static linking is not required. Ship a pinned curl DLL and its audited dependencies beside GDS, using a controlled load location. Curl deployments are pilots with ureq configuration rollback retained; broad/full release may wait for native.
 
-16. **Licensing and publication — grant accepted:** Aim for a public crates.io library under the
-    customary dual `MIT OR Apache-2.0` grant. GDS authorship, ownership, and licensing authority
-    are confirmed; the displayed copyright holder, publication metadata, dependency notices, and
-    release gates remain.
+16. **Licensing and publication — identity accepted:** Aim for a public crates.io library under the
+    customary dual `MIT OR Apache-2.0` grant. Copyright is held by Cave Rock Software Limited and
+    the planned public repository is `https://github.com/madandy24/nbreq`. GDS authorship,
+    ownership, and licensing authority are confirmed; versioning, dependency notices, package
+    topology, and release gates remain.
 
 17. **Cancellation latency gate — provisional Windows value recorded:** The exact dynamic Windows package must release controlled slow-header and stalled-body sockets in less than 100 ms after cancellation; current 10-trial maxima are below 4 ms. The same 100 ms target is provisional for connect and for Windows 10, Wine, and Linux until named-stage measurements run there. Never leave “prompt” as the only acceptance language or silently weaken the gate when another platform is measured.
 
@@ -927,8 +928,8 @@ The architecture is closed for WP0. The following may be settled during normal i
 - any HTTP scope beyond the accepted buffered curl/GDS pilot;
 - TLS trust-root policy beyond the accepted explicit GDS no-verify compatibility switch;
 - numeric cancellation latency gates from WP2;
-- displayed copyright holder, publication metadata, and support promise for the accepted
-  `MIT OR Apache-2.0` grant.
+- versioning, remaining publication metadata, and support promise for the accepted
+  Cave Rock Software Limited `MIT OR Apache-2.0` grant.
 
 Decisions already accepted in principle:
 
@@ -967,8 +968,9 @@ Decisions already accepted in principle:
 - initial targets are Windows 10 x64, the Windows build under Ubuntu 20.04's default Wine, and native Ubuntu 20.04 x64;
 - verified TLS remains default while the current explicit GDS no-verify behaviour is preserved and tested;
 - the settled project and proposed crate name is NBReq / `nbreq`, meaning Non-Blocking Request;
-- the project aims for a public crates.io release under `MIT OR Apache-2.0`; GDS provenance and
-  licensing authority are settled, while the displayed copyright holder and publication metadata
-  remain release work;
+- the project aims for a public crates.io release under `MIT OR Apache-2.0`; Cave Rock Software
+  Limited is the copyright holder, `https://github.com/madandy24/nbreq` is the planned repository,
+  and GDS provenance/licensing authority are settled; versioning and the remaining publication
+  gates remain release work;
 - curl runs an explicit HTTP/1.1 compatibility profile rather than inheriting backend defaults;
 - the portable initial time model is connect timeout, inactivity timeout, and total deadline.

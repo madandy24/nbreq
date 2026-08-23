@@ -19,9 +19,9 @@ accepted private implementation into a public crate. It does not authorize publi
 
 | Item | Current state | Required WP11 decision/action |
 |---|---|---|
-| License grant | Intended `MIT OR Apache-2.0`; root manifest has no license and no license files | Choose displayed copyright holder; add standard MIT and Apache-2.0 files; set manifest SPDX expression |
+| License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
 | Version | `0.0.0` | Choose the first public version, expected to be an explicitly pre-stable release |
-| Registry metadata | `publish = false`; no repository, documentation, homepage, keywords, or categories | Create/freeze public repository and URLs; add complete package metadata; remove `publish = false` only at the release gate |
+| Registry metadata | **Identity resolved:** planned repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Create the public remote, verify all URLs, and remove `publish = false` only at the release gate |
 | Windows support crate | Default native depends on path-only, unpublished `support/winpoll` / `nbreq-winpoll` | Either publish it as a versioned implementation-detail crate from the same workspace, or choose another packaging boundary that preserves NBReq's safe public API and audited unsafe isolation |
 | Curl reference | `curl-pilot` requires a locally patched path override and private feature/API extensions | Upstream the patch, publish and maintain a clearly named implementation-detail fork, or omit curl from the public package until a registry-resolvable solution exists |
 | Package contents | Dry-run package includes internal thoughts, experiments, proof scripts, and evidence while excluding both nested path packages | Add a deliberate include/exclude policy and inspect the exact `.crate`; retain only material useful to consumers and required licenses/notices |
@@ -70,8 +70,9 @@ docs.rs metadata exist.
 
 1. **WP11.0 — public surface and guide audit:** enforce missing docs, add native-first onboarding,
    and freeze this ledger.
-2. **WP11.1 — identity and package topology:** decide holder/version/repository, resolve both path
-   dependencies, remove or define empty features, and freeze packaged contents.
+2. **WP11.1 — identity and package topology:** holder, dual license, and repository identity are
+   resolved; decide the version, resolve both path dependencies, remove or define empty features,
+   and freeze packaged contents.
 3. **WP11.2 — security and API audit:** review unsafe boundary, panic/callback containment, secret
    redaction, TLS policy, denial-of-service limits, semver surface, and reporting policy.
 4. **WP11.3 — release automation:** add real repository CI, exact license/notice generation,
