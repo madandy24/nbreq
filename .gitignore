@@ -1,4 +1,5 @@
 /target/
+/tools/xtask/target/
 /.tmp/
 *.rs.bk
 *.pdb
