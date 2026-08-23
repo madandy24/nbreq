@@ -50,8 +50,22 @@ pub(crate) struct ResponseLimits {
     pub(crate) header_count: usize,
 }
 
+#[cfg(feature = "curl-pilot")]
+#[derive(Clone, Copy)]
+pub(crate) struct CurlPoolLimits {
+    pub(crate) connections: usize,
+    pub(crate) connections_per_origin: usize,
+    pub(crate) idle_connections: usize,
+    pub(crate) idle_connections_per_origin: usize,
+    pub(crate) idle_timeout: Duration,
+}
+
 pub(crate) trait Backend {
     fn attach_metrics(&mut self, _metrics: Arc<Metrics>) {}
+
+    fn connection_metrics_available(&self) -> bool {
+        false
+    }
 
     fn submit(
         &mut self,
@@ -92,6 +106,10 @@ pub(crate) trait Backend {
 pub(crate) trait BackendFactory: Send {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
 
+    fn connection_metrics_available(&self) -> bool {
+        false
+    }
+
     fn supports_streaming(&self) -> bool {
         false
     }
@@ -109,11 +127,14 @@ pub(crate) fn held() -> Box<dyn Backend + Send> {
 
 #[cfg(feature = "curl-pilot")]
 pub(crate) fn curl_factory(config: &EngineConfig) -> Box<dyn BackendFactory> {
-    Box::new(curl::CurlFactory::new(ResponseLimits {
-        body_bytes: config.max_response_body_bytes(),
-        header_bytes: config.max_header_bytes(),
-        header_count: config.max_header_count(),
-    }))
+    Box::new(curl::CurlFactory::new(
+        ResponseLimits {
+            body_bytes: config.max_response_body_bytes(),
+            header_bytes: config.max_header_bytes(),
+            header_count: config.max_header_count(),
+        },
+        curl_pool_limits(config),
+    ))
 }
 
 #[cfg(all(test, feature = "curl-pilot"))]
@@ -127,8 +148,20 @@ pub(crate) fn curl_factory_with_test_ca(
             header_bytes: config.max_header_bytes(),
             header_count: config.max_header_count(),
         },
+        curl_pool_limits(config),
         ca_pem,
     ))
+}
+
+#[cfg(feature = "curl-pilot")]
+fn curl_pool_limits(config: &EngineConfig) -> CurlPoolLimits {
+    CurlPoolLimits {
+        connections: config.max_connections().get(),
+        connections_per_origin: config.max_connections_per_origin().get(),
+        idle_connections: config.max_idle_connections(),
+        idle_connections_per_origin: config.max_idle_connections_per_origin(),
+        idle_timeout: config.idle_connection_timeout(),
+    }
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
@@ -165,13 +198,20 @@ pub(crate) fn native_https_factory_with_nameserver(
     ))
 }
 
-#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+#[cfg(feature = "native")]
 pub(crate) fn native_https_factory_with_system_dns(
     config: &crate::EngineConfig,
 ) -> Result<Box<dyn BackendFactory>, Error> {
     Ok(Box::new(
         native_http::NativeHttpFactory::new_with_system_dns_and_platform_tls(config)?,
     ))
+}
+
+#[cfg(feature = "native")]
+pub(crate) fn native_https_backend_with_system_dns(
+    config: &crate::EngineConfig,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_system_dns_and_platform_tls(config)?.into_backend()
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]

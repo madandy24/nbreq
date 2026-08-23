@@ -1,8 +1,9 @@
 use std::time::Instant;
 
 use nbreq::{
-    Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, PendingRequest,
-    RequestHandle, ResourceMetrics, ResponseReader, StreamRequest, UploadBody, UploadSender,
+    Client, DetachedCallbacks, Engine, EngineBuilder, EngineConfig, EngineMetrics, ErrorKind,
+    HttpBackend, PendingRequest, RequestHandle, ResourceMetrics, ResponseReader, StreamRequest,
+    UploadBody, UploadSender,
 };
 
 fn assert_send<T: Send>() {}
@@ -40,6 +41,59 @@ fn metrics_are_owner_observed_and_start_empty() {
     assert_eq!(metrics, EngineMetrics::default());
     assert_eq!(metrics.current(), ResourceMetrics::default());
     engine.shutdown().expect("empty Engine must stop");
+}
+
+#[test]
+#[cfg(feature = "native")]
+fn explicit_native_selection_is_available_without_changing_the_default() {
+    let engine = Engine::builder()
+        .http_backend(HttpBackend::Native)
+        .build()
+        .expect("compiled native backend must construct explicitly");
+    assert!(engine.metrics().connection_metrics_available());
+    engine.shutdown().expect("empty native Engine must stop");
+
+    let manual = EngineBuilder::manual()
+        .http_backend(HttpBackend::Native)
+        .build()
+        .expect("compiled native backend must support explicit manual construction");
+    assert!(manual.metrics().connection_metrics_available());
+    manual
+        .shutdown()
+        .expect("empty manual native Engine must stop");
+}
+
+#[test]
+#[cfg(not(feature = "native"))]
+fn explicit_native_selection_fails_when_unavailable() {
+    let error = Engine::builder()
+        .http_backend(HttpBackend::Native)
+        .build()
+        .err()
+        .expect("uncompiled native backend must fail construction");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+}
+
+#[test]
+#[cfg(feature = "curl-pilot")]
+fn explicit_curl_selection_is_available_without_inventing_connection_metrics() {
+    let engine = Engine::builder()
+        .http_backend(HttpBackend::Curl)
+        .build()
+        .expect("compiled curl backend must construct explicitly");
+    assert!(!engine.metrics().connection_metrics_available());
+    engine.shutdown().expect("empty curl Engine must stop");
+}
+
+#[test]
+#[cfg(not(feature = "curl-pilot"))]
+fn explicit_curl_selection_fails_when_unavailable() {
+    let error = Engine::builder()
+        .http_backend(HttpBackend::Curl)
+        .build()
+        .err()
+        .expect("uncompiled curl backend must fail construction");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
 }
 
 #[test]

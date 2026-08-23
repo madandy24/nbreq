@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 #[cfg(test)]
 use std::io::{ErrorKind as IoErrorKind, Write};
+use std::os::raw::c_long;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use std::time::{Duration, Instant};
 use curl::easy::{Easy2, Handler, HttpVersion, List, WriteError};
 use curl::multi::{Easy2Handle, Multi};
 
-use super::{Backend, BackendCompletion, BackendFactory, PollMode, ResponseLimits};
+use super::{Backend, BackendCompletion, BackendFactory, CurlPoolLimits, PollMode, ResponseLimits};
 use crate::registry::Shared;
 use crate::types::{is_http_token, is_valid_http_header_value, redirected_request};
 use crate::{
@@ -29,23 +30,102 @@ use crate::{
 
 pub(super) struct CurlFactory {
     limits: ResponseLimits,
+    pool_limits: CurlPoolLimits,
     #[cfg(test)]
     test_ca_pem: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy)]
+struct CurlPoolPolicy {
+    max_age: Option<Duration>,
+}
+
+impl CurlPoolPolicy {
+    fn configure(multi: &mut Multi, limits: CurlPoolLimits) -> Result<Self, Error> {
+        let connections = curl_long_limit("max_connections", limits.connections)?;
+        let connections_per_origin =
+            curl_long_limit("max_connections_per_origin", limits.connections_per_origin)?;
+        multi
+            .set_max_total_connections(connections)
+            .map_err(multi_error)?;
+        multi
+            .set_max_host_connections(connections_per_origin)
+            .map_err(multi_error)?;
+
+        let idle_connections = limits
+            .idle_connections
+            .min(limits.idle_connections_per_origin);
+        let idle_seconds = limits.idle_timeout.as_secs();
+        if idle_connections == 0 || idle_seconds == 0 {
+            return Ok(Self { max_age: None });
+        }
+
+        let idle_connections = curl_long_limit("idle connection cache", idle_connections)?;
+        multi
+            .set_max_connects(idle_connections)
+            .map_err(multi_error)?;
+        let max_age_seconds = idle_seconds.min(c_long::MAX as u64);
+        Ok(Self {
+            max_age: Some(Duration::from_secs(max_age_seconds)),
+        })
+    }
+}
+
+fn curl_long_limit(name: &str, value: usize) -> Result<usize, Error> {
+    if value > c_long::MAX as usize {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!("curl cannot represent {name} above {}", c_long::MAX),
+        ));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod pool_policy_tests {
+    use super::*;
+
+    #[test]
+    fn positive_subsecond_idle_timeout_disables_reuse() {
+        let mut multi = Multi::new();
+        let policy = CurlPoolPolicy::configure(
+            &mut multi,
+            CurlPoolLimits {
+                connections: 32,
+                connections_per_origin: 8,
+                idle_connections: 32,
+                idle_connections_per_origin: 4,
+                idle_timeout: Duration::from_millis(999),
+            },
+        )
+        .expect("curl pool policy must configure");
+
+        assert!(
+            policy.max_age.is_none(),
+            "a subsecond limit must use forbid_reuse, never MAXAGE_CONN=0"
+        );
+    }
+}
+
 impl CurlFactory {
-    pub(super) fn new(limits: ResponseLimits) -> Self {
+    pub(super) fn new(limits: ResponseLimits, pool_limits: CurlPoolLimits) -> Self {
         Self {
             limits,
+            pool_limits,
             #[cfg(test)]
             test_ca_pem: None,
         }
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_test_ca(limits: ResponseLimits, ca_pem: Vec<u8>) -> Self {
+    pub(super) fn new_with_test_ca(
+        limits: ResponseLimits,
+        pool_limits: CurlPoolLimits,
+        ca_pem: Vec<u8>,
+    ) -> Self {
         Self {
             limits,
+            pool_limits,
             test_ca_pem: Some(ca_pem),
         }
     }
@@ -63,7 +143,8 @@ impl BackendFactory for CurlFactory {
         })?;
         #[cfg(test)]
         let test_ca = self.test_ca_pem.map(TestCa::new).transpose()?;
-        let multi = Multi::new();
+        let mut multi = Multi::new();
+        let pool_policy = CurlPoolPolicy::configure(&mut multi, self.pool_limits)?;
         let waker = multi.waker();
         shared
             .queue
@@ -71,6 +152,7 @@ impl BackendFactory for CurlFactory {
         Ok(Box::new(CurlBackend {
             multi,
             limits: self.limits,
+            pool_policy,
             #[cfg(test)]
             test_ca,
             handles: HashMap::new(),
@@ -85,6 +167,7 @@ impl BackendFactory for CurlFactory {
 struct CurlBackend {
     multi: Multi,
     limits: ResponseLimits,
+    pool_policy: CurlPoolPolicy,
     #[cfg(test)]
     test_ca: Option<TestCa>,
     handles: HashMap<RequestId, ActiveTransfer>,
@@ -419,6 +502,7 @@ impl CurlBackend {
             &request,
             started,
             self.limits,
+            self.pool_policy,
             #[cfg(test)]
             self.test_ca.as_ref(),
         )?;
@@ -566,6 +650,7 @@ fn configured_easy(
     request: &Request,
     started: Instant,
     limits: ResponseLimits,
+    pool_policy: CurlPoolPolicy,
     #[cfg(test)] test_ca: Option<&TestCa>,
 ) -> Result<Easy2<ResponseCollector>, Error> {
     validate_request(request)?;
@@ -577,6 +662,11 @@ fn configured_easy(
     easy.proxy("").map_err(curl_error)?;
     easy.http_version(HttpVersion::V11).map_err(curl_error)?;
     easy.follow_location(false).map_err(curl_error)?;
+    if let Some(max_age) = pool_policy.max_age {
+        easy.maxage_conn(max_age).map_err(curl_error)?;
+    } else {
+        easy.forbid_reuse(true).map_err(curl_error)?;
+    }
     #[cfg(test)]
     if std::env::var_os("NBREQ_CURL_VERBOSE").is_some() {
         easy.verbose(true).map_err(curl_error)?;

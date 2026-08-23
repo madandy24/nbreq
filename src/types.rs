@@ -12,6 +12,20 @@ pub enum RunMode {
     Manual,
 }
 
+/// Selects the HTTP implementation used by an [`Engine`](crate::Engine).
+///
+/// Variants are present under every Cargo feature combination. Features control whether an
+/// implementation is compiled, not which implementation an otherwise unchanged constructor
+/// silently selects. Requesting an unavailable implementation fails during Engine construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HttpBackend {
+    /// NBReq's Rust-native DNS, TCP, TLS, and HTTP implementation.
+    Native,
+    /// The optional libcurl diagnostic/reference implementation.
+    Curl,
+}
+
 /// Determines where owned callback jobs are executed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackDispatch {

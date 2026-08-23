@@ -1,6 +1,7 @@
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -189,6 +190,143 @@ impl Drop for LocalServer {
             .drain(..)
         {
             connection.join().expect("test connection must join");
+        }
+    }
+}
+
+#[derive(Default)]
+struct SocketTracker {
+    open: AtomicUsize,
+    high: AtomicUsize,
+}
+
+impl SocketTracker {
+    fn opened(&self) {
+        let open = self.open.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self
+            .high
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |high| {
+                (open > high).then_some(open)
+            });
+    }
+
+    fn closed(&self) {
+        self.open.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn wait_at_most(&self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.open.load(Ordering::Acquire) > expected && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            self.open.load(Ordering::Acquire) <= expected,
+            "curl did not evict the excess idle connection"
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PoolServerMode {
+    KeepAlive,
+    Stall,
+}
+
+struct PoolServer {
+    address: SocketAddr,
+    stopping: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+    request_seen: mpsc::Receiver<()>,
+}
+
+impl PoolServer {
+    fn start(mode: PoolServerMode, tracker: Arc<SocketTracker>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("pool listener must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("pool listener must become nonblocking");
+        let address = listener.local_addr().expect("pool listener address");
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = Arc::clone(&stopping);
+        let (seen_tx, request_seen) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            while !worker_stopping.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _peer)) => {
+                        if worker_stopping.load(Ordering::Acquire) {
+                            return;
+                        }
+                        tracker.opened();
+                        stream
+                            .set_nonblocking(false)
+                            .expect("pool peer must become blocking");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("pool read timeout must configure");
+                        read_request(&mut stream);
+                        seen_tx.send(()).expect("pool observer must remain");
+                        if matches!(mode, PoolServerMode::KeepAlive) {
+                            stream
+                                .write_all(
+                                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+                                )
+                                .expect("pool response must write");
+                        }
+                        stream
+                            .set_read_timeout(Some(Duration::from_millis(20)))
+                            .expect("pool close-observer timeout must configure");
+
+                        let mut byte = [0_u8; 1];
+                        while !worker_stopping.load(Ordering::Acquire) {
+                            match stream.read(&mut byte) {
+                                Ok(0) => break,
+                                Ok(_) => {}
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        IoErrorKind::WouldBlock | IoErrorKind::TimedOut
+                                    ) => {}
+                                Err(_) => break,
+                            }
+                        }
+                        tracker.closed();
+                        return;
+                    }
+                    Err(error) if error.kind() == IoErrorKind::WouldBlock => {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("pool listener failed: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            stopping,
+            worker: Some(worker),
+            request_seen,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/", self.address)
+    }
+
+    fn expect_request(&self) {
+        self.request_seen
+            .recv_timeout(Duration::from_secs(2))
+            .expect("pool request must reach its peer");
+    }
+}
+
+impl Drop for PoolServer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        let _wake_listener = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            let joined = worker.join();
+            if !thread::panicking() {
+                joined.expect("pool server must join");
+            }
         }
     }
 }
@@ -1303,6 +1441,74 @@ fn active_spawned_curl_engine_owner_is_send_but_manual_curl_is_rejected() {
     server.expect_event_within(ServerEvent::StalledBodyClosed, Duration::from_millis(100));
     shutdown_tx.send(()).expect("owner signal must send");
     moved_owner.join().expect("moved Engine owner must join");
+}
+
+#[test]
+fn curl_pool_limits_bound_cached_and_active_peer_sockets() {
+    let tracker = Arc::new(SocketTracker::default());
+    let first_idle = PoolServer::start(PoolServerMode::KeepAlive, Arc::clone(&tracker));
+    let second_idle = PoolServer::start(PoolServerMode::KeepAlive, Arc::clone(&tracker));
+    let first_active = PoolServer::start(PoolServerMode::Stall, Arc::clone(&tracker));
+    let second_active = PoolServer::start(PoolServerMode::Stall, Arc::clone(&tracker));
+
+    let two = NonZeroUsize::new(2).expect("two is nonzero");
+    let engine = testing::curl_engine(
+        EngineConfig::spawned()
+            .with_max_connections(two)
+            .with_max_connections_per_origin(two)
+            .with_max_idle_connections(2)
+            .with_max_idle_connections_per_origin(1)
+            .with_idle_connection_timeout(Duration::from_secs(30)),
+    )
+    .expect("bounded curl Engine must construct");
+    let client = engine.client();
+
+    for server in [&first_idle, &second_idle] {
+        let response = client
+            .execute(
+                Request::get(server.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("idle-seeding request must build"),
+            )
+            .expect("idle-seeding request must complete");
+        assert_eq!(response.status(), 200);
+    }
+    tracker.wait_at_most(1);
+
+    let first = client
+        .submit(
+            Request::get(first_active.url())
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("first active request must build"),
+        )
+        .expect("first active request must submit");
+    let second = client
+        .submit(
+            Request::get(second_active.url())
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("second active request must build"),
+        )
+        .expect("second active request must submit");
+    first_active.expect_request();
+    second_active.expect_request();
+
+    assert!(
+        tracker.high.load(Ordering::Acquire) <= 2,
+        "curl exceeded the configured combined active/idle socket bound: high={}",
+        tracker.high.load(Ordering::Acquire)
+    );
+
+    first.handle().cancel().expect("first request must cancel");
+    second
+        .handle()
+        .cancel()
+        .expect("second request must cancel");
+    assert!(matches!(first.wait(), Completion::Cancelled));
+    assert!(matches!(second.wait(), Completion::Cancelled));
+    engine.shutdown().expect("bounded curl Engine must stop");
 }
 
 #[test]

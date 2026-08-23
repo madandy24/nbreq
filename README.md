@@ -68,6 +68,9 @@ origin, header, body, address, certificate, or backend-native error data; fields
 cross-field inconsistent while work is moving. Native connection counters describe capacity
 lifecycles beginning at DNS/connect reservation, matching the active cap rather than claiming that
 every reserved slot completed a TCP handshake.
+`EngineMetrics::connection_metrics_available()` distinguishes those native-owned physical
+connection measurements from curl/scaffold snapshots, where the connection fields remain zero
+rather than pretending curl exposed events that it does not.
 When a buffered waiter or streaming reader observes a terminal result, its matching outcome counter
 has already advanced; this ordering is part of the canonical terminal commit rather than eventual
 reactor bookkeeping.
@@ -81,6 +84,24 @@ async runtime. The backend owns bounded socket and stream queues, all timeout cl
 joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
 and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, including bounded
 fixed/chunked `UploadBody` pumping. Enabling `native` does not make `Engine::new` select it.
+
+WP10's explicit selection seam is available without changing that current default:
+
+```rust
+use nbreq::{Engine, HttpBackend};
+
+let engine = Engine::builder()
+    .http_backend(HttpBackend::Native)
+    .build()?;
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`HttpBackend` has the same public variants under every feature combination. Selecting an
+implementation that was not compiled returns `Unsupported` at construction. At the separately
+reviewed default-switch gate, the `native` feature will become a Cargo default so ordinary
+`cargo add nbreq` consumers receive the native implementation without extra feature work; curl
+will remain an explicit reference/compatibility selection.
 
 ## Project documents
 

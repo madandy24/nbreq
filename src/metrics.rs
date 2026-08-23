@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::Completion;
 
@@ -38,10 +38,12 @@ impl ResourceMetrics {
         self.active_connections
     }
 
+    /// Returns native idle connections, or zero when connection metrics are unavailable.
     pub fn idle_connections(&self) -> usize {
         self.idle_connections
     }
 
+    /// Returns native connection-capacity waiters, or zero when connection metrics are unavailable.
     pub fn connection_waiters(&self) -> usize {
         self.connection_waiters
     }
@@ -54,6 +56,7 @@ impl ResourceMetrics {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct EngineMetrics {
+    connection_metrics_available: bool,
     requests_accepted: u64,
     requests_completed: u64,
     requests_failed: u64,
@@ -67,6 +70,15 @@ pub struct EngineMetrics {
 }
 
 impl EngineMetrics {
+    /// Reports whether this Engine owns and measures physical connection/pool lifecycles.
+    ///
+    /// When false, connection counters and connection-specific gauges remain zero because the
+    /// selected backend does not expose trustworthy physical connection events. Request and queue
+    /// metrics remain available.
+    pub fn connection_metrics_available(&self) -> bool {
+        self.connection_metrics_available
+    }
+
     pub fn requests_accepted(&self) -> u64 {
         self.requests_accepted
     }
@@ -91,6 +103,7 @@ impl EngineMetrics {
         self.connections_opened
     }
 
+    /// Returns native connection-pool reuses, or zero when connection metrics are unavailable.
     pub fn connections_reused(&self) -> u64 {
         self.connections_reused
     }
@@ -100,6 +113,7 @@ impl EngineMetrics {
         self.connections_closed
     }
 
+    /// Returns native idle evictions, or zero when connection metrics are unavailable.
     pub fn idle_connections_evicted(&self) -> u64 {
         self.idle_connections_evicted
     }
@@ -115,6 +129,7 @@ impl EngineMetrics {
 
 #[derive(Default)]
 pub(crate) struct Metrics {
+    connection_metrics_available: AtomicBool,
     requests_accepted: AtomicU64,
     requests_completed: AtomicU64,
     requests_failed: AtomicU64,
@@ -138,6 +153,11 @@ pub(crate) struct Metrics {
 }
 
 impl Metrics {
+    pub(crate) fn enable_connection_metrics(&self) {
+        self.connection_metrics_available
+            .store(true, Ordering::Release);
+    }
+
     pub(crate) fn request_accepted(&self, inflight: usize, stream_bytes: usize) {
         saturating_increment(&self.requests_accepted);
         update_max(&self.high_inflight_requests, inflight);
@@ -222,6 +242,7 @@ impl Metrics {
 
     pub(crate) fn snapshot(&self, inflight: usize, stream_bytes: usize) -> EngineMetrics {
         EngineMetrics {
+            connection_metrics_available: self.connection_metrics_available.load(Ordering::Acquire),
             requests_accepted: self.requests_accepted.load(Ordering::Acquire),
             requests_completed: self.requests_completed.load(Ordering::Acquire),
             requests_failed: self.requests_failed.load(Ordering::Acquire),

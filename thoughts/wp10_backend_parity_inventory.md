@@ -1,8 +1,10 @@
 # WP10 backend parity inventory
 
-Status: initial source audit, 2026-08-23. This document starts WP10. It classifies observable
-behavior before ordinary backend selection changes; it does not authorize native selection from
-`Engine::new`, alter the accepted GDS package, or remove curl/ureq rollback.
+Status: P10-01 implementation checkpoint, 2026-08-23. Explicit backend construction, conservative
+curl pool bounds, and connection-metrics availability are implemented and pass their Windows
+backend-specific gates. Ordinary backend selection is deliberately unchanged; exact-source Ubuntu
+proof and review remain before accepting the slice. This does not alter the accepted GDS package
+or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -35,7 +37,7 @@ Differences have four dispositions:
 
 | Area | Native | Curl pilot | WP10 disposition |
 |---|---|---|---|
-| Ordinary `Engine::new` | Never selects native; private proving constructors only | Selected merely by compiling `curl-pilot`; otherwise the scaffold is selected | **Required redesign.** Backend choice must be explicit or unambiguously native by default; Cargo feature unification must not silently change it. |
+| Ordinary `Engine::new` | Does not yet select native; `HttpBackend::Native` is available explicitly when compiled | Still selected implicitly by `curl-pilot`, and also available as explicit `HttpBackend::Curl` | **Partially closed.** Explicit feature-invariant selection now fails unavailable implementations at construction. The separately gated native/default-feature switch remains. |
 | Spawned mode | Supported | Supported | **Required parity** for acceptance, wakeup, cancellation, terminal arbitration, panic containment, callbacks, and consuming shutdown. |
 | Manual mode | Supported through the same native state machines | Construction returns `WrongMode` | **Explicit curl limitation.** Do not add an unsafe binding wrapper merely for symmetry. |
 | Buffered HTTP | Supported | Supported | **Required black-box parity** for request wire policy, responses, redirects, limits, timeout/error kinds, cancellation, and shutdown. |
@@ -45,11 +47,11 @@ Differences have four dispositions:
 | TCP implementation | NBReq mio owner with generation-checked slots | libcurl Multi/easy owner | **Internal difference.** Portable cancellation/close behavior matters; a raw TCP facade is post-WP11. |
 | TLS | rustls with platform verification; explicit no-verify keeps handshake signatures | pinned libcurl platform TLS; same explicit compatibility policy | **Required policy parity; environment-specific mechanics.** Generated and platform-store fixtures remain named gates. |
 | HTTP connection reuse | Bounded NBReq owner pool with no transparent replay | libcurl connection cache | **Required observable safety**, not identical algorithms. Contamination, framing, cancellation, and redirect rules must agree. |
-| Active/idle pool settings | All five public settings are enforced | Curl factory receives only response-body/header limits; pool settings are silently ignored | **Required fix.** Map them honestly or reject non-default/native-only configuration during curl construction. |
+| Active/idle pool settings | All five public settings are enforced | Total/host active limits and a conservative total idle cache are configured; zero/floored-subsecond idle policy disables reuse | **P10-01 implemented.** The curl policy is an upper bound and may retain fewer connections than native. Exact-source Ubuntu proof remains. |
 | Request lifecycle metrics | Backend-neutral accepted/completed/failed/cancelled and queue gauges | Same registry counters | **Required parity** and shared tests. |
-| Connection/pool metrics | Native alone records opened/reused/closed/evicted and active/idle/waiter gauges | All remain zero because curl never attaches connection metrics | **Required contract decision.** Zero must mean documented unavailable/not-owned, or expose capability/availability; it must not look like measured zero activity. |
+| Connection/pool metrics | Native records opened/reused/closed/evicted and active/idle/waiter gauges and reports availability | Fields remain zero and `connection_metrics_available()` is false | **P10-01 implemented.** Request/lifecycle metrics remain available on every backend; no curl connection activity is invented. |
 | Body/header/event limits | Request limits enforced before admission; native enforces response and stream bounds | Request limits are shared; curl receives response body/header bounds | **Required black-box parity**, including `LimitKind` and permit release. Streaming bounds are irrelevant after curl's pre-admission `Unsupported`. |
-| Connection limits | Native enforces total/per-origin active and idle bounds | Ignored by curl | Same required construction/capability decision as pool settings. |
+| Connection limits | Native enforces total/per-origin active and idle bounds | Curl Multi enforces total/host active maxima and `min(global idle, per-origin idle)` cached connections | **P10-01 implemented conservatively.** A peer-visible transition test proves the active-plus-idle total bound on Windows; Ubuntu remains. |
 | Connect/inactivity/total time | Owner clocks cover DNS/TCP/TLS/HTTP; total begins at acceptance | Total includes acceptance/redirect time; monotonic inactivity collector; connect maps through libcurl | **Required outcome audit.** `TimeoutKind::Unknown` remains an honest curl fallback; prompt curl DNS/connect cancellation is not claimed. |
 | Redirects | Shared conservative `redirected_request` policy | Same shared policy, with libcurl auto-follow disabled | **Required parity:** method/body replay, hop limit, credential stripping, and HTTPS downgrade refusal. |
 | Request headers | Binary values accepted by the native serializer after portable validation | Non-UTF-8 values return `Unsupported` at submission | **Explicit curl limitation**, already documented; must remain deterministic before network work. |
@@ -66,7 +68,7 @@ abortive large upload. Curl alone currently has the public sequential-reuse case
 contract suite checks ownership/thread traits, empty metrics, spawned-drive rejection, and the
 intentional manual-mode difference.
 
-The first source audit therefore identifies these concrete gaps:
+The first source audit identified these concrete gaps:
 
 1. There is no explicit public backend-selection type; feature presence selects curl and can
    override a compiled native implementation.
@@ -78,7 +80,11 @@ The first source audit therefore identifies these concrete gaps:
 5. Native is not yet built through an ordinary consumer constructor, so constructor parity itself
    has not been exercised.
 
-These are WP10 seams. Manual curl, curl streaming, resolver internals, the UTF-8 curl-header
+P10-01 closes items 1–3 and exercises native construction through the public builder, without
+changing `Engine::new`. Item 4 is P10-02. The final ordinary-constructor/default-feature portion of
+items 1 and 5 stays behind the named switch gate.
+
+Manual curl, curl streaming, resolver internals, the UTF-8 curl-header
 restriction, and curl's process-lifetime pin are deliberate limitations rather than missing native
 features.
 
@@ -108,6 +114,10 @@ This is the proposed public shape for review before implementation:
   `Engine::builder().build()` unambiguous native shorthand. Curl remains an explicit diagnostic or
   reference choice. Until that gate, land and test explicit selection without changing the current
   ordinary constructor.
+- At that same switch, compile native support for ordinary consumers by making `native` a default
+  Cargo feature (or by making its dependencies unconditional). The intended release experience is
+  that plain `cargo add nbreq` constructs a working native Engine with no feature selection. A
+  default that falls through to the scaffold or `Unsupported` is not an acceptable switch.
 - Remove the no-feature lifecycle scaffold from ordinary product construction at the switch. It
   remains an internal/test backend, never a third public runtime choice.
 - Keep `HttpBackend` independent of the future DNS/TCP facade policy. An Engine using curl for
@@ -122,7 +132,11 @@ Curl can conservatively honor the five existing pool maxima rather than reject o
   advertised maximum;
 - disable reuse when either idle maximum or the idle timeout is zero;
 - apply positive idle timeout through curl's maximum connection-age option, rounding downward;
-  a positive subsecond value therefore disables reuse rather than exceeding the caller's bound.
+  a positive subsecond value therefore disables reuse rather than exceeding the caller's bound;
+- prove that curl's total Multi connection limit and idle cache overlap cannot retain more peer
+  sockets than native would under the same five knobs. Passing zero to `MAXAGE_CONN` is expressly
+  forbidden: it is not curl's disable-reuse setting, so a floored subsecond duration must use the
+  per-transfer disable-reuse path.
 
 This is intentionally an upper-bound contract, not a promise that each backend has identical pool
 utilization. Add shared configured-bound tests before accepting the mapping.
@@ -138,6 +152,9 @@ connection reuse from curl easy-handle activity.
 
 Decide the public backend-selection shape and the behavior of native-only configuration/metrics
 when the reference curl backend is selected. Make silence impossible before changing defaults.
+This slice adds explicit selection and honest curl bounds/metrics only; it does not change
+`Engine::new`. The later named default-switch gate changes both ordinary construction and Cargo's
+default compilation together.
 
 ### P10-02 — expand controlled black-box parity
 
@@ -192,9 +209,20 @@ return a raw socket that escapes the owner. Curl may report `Unsupported`. Separ
 DNS/TCP packages and generic TCP pooling are not planned. A future internal workspace split may
 remain invisible behind the one public facade.
 
-## 11. First-slice exit
+## 11. First-slice checkpoint and exit
 
-This initial inventory and P10-01 proposal are source-grounded but deliberately stop before code or
-default-selection changes. The first implementation slice closes when construction/capability
-semantics are reviewed and frozen, silent curl configuration and misleading metrics are resolved,
-the shared matrix is enumerated, and no backend/default behavior has changed accidentally.
+The first implementation checkpoint adds the feature-invariant `HttpBackend` enum and
+`EngineBuilder::http_backend`, public spawned/manual native construction, deterministic
+`Unsupported` for unavailable implementations, conservative curl Multi limits, and an explicit
+connection-metrics availability bit. The current `Engine::new` and Cargo `default = []` behavior
+remain unchanged.
+
+Windows gates pass separately for default, native, and curl, including a peer-visible proof that a
+two-connection curl limit is not exceeded while cached connections give way to active transfers.
+A unit gate proves a positive subsecond idle timeout takes `forbid_reuse` instead of setting
+`MAXAGE_CONN` to zero. Warning-denied all-feature clippy, docs, formatting, and compilation pass.
+The combined all-feature test reproduces only the three already classified restricted-token
+Schannel fixture failures; the immediately preceding curl-only suite passes all three.
+
+P10-01 closes after exact-source Ubuntu runs the selection/metrics and curl-limit gates and review
+accepts the public freeze. It does not authorize the ordinary native/default-feature switch.

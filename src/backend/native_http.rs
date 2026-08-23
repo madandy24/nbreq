@@ -1558,6 +1558,10 @@ impl NativeHttpFactory {
 }
 
 impl BackendFactory for NativeHttpFactory {
+    fn connection_metrics_available(&self) -> bool {
+        true
+    }
+
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error> {
         let mut backend =
             NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
@@ -3782,6 +3786,10 @@ impl NativeHttpBackend {
 }
 
 impl Backend for NativeHttpBackend {
+    fn connection_metrics_available(&self) -> bool {
+        true
+    }
+
     fn attach_metrics(&mut self, metrics: Arc<Metrics>) {
         metrics.set_active_connections(self.connection_count);
         metrics.set_idle_connections(self.idle_count);

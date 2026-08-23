@@ -1,8 +1,9 @@
 //! Runtime-independent HTTP client architecture.
 //!
-//! The crate implements NBReq's backend-independent ownership and lifecycle kernel. Enabling the
-//! `curl-pilot` feature makes the ordinary [`Engine::new`] constructor use the private curl Multi
-//! backend without exposing backend implementation types.
+//! The crate implements NBReq's backend-independent ownership and lifecycle kernel. Compiled HTTP
+//! implementations can be selected explicitly with [`EngineBuilder::http_backend`]. During the
+//! compatibility pilot, enabling `curl-pilot` also makes the ordinary [`Engine::new`] constructor
+//! use curl; WP10 will switch ordinary construction and default Cargo features to native together.
 
 mod backend;
 mod callback;
@@ -39,6 +40,6 @@ pub use stream::{
 };
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,
-    Header, LimitKind, Method, Request, RequestBuilder, RequestId, RequestOptions, Response,
-    RunMode, ShutdownError, TimeoutKind, TlsVerification, TransportStage,
+    Header, HttpBackend, LimitKind, Method, Request, RequestBuilder, RequestId, RequestOptions,
+    Response, RunMode, ShutdownError, TimeoutKind, TlsVerification, TransportStage,
 };

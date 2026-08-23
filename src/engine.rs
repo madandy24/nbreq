@@ -14,8 +14,8 @@ use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
 use crate::{
-    Client, Completion, DriveStatus, EngineConfig, Error, ErrorKind, PendingRequest, RunMode,
-    ShutdownError, ShutdownOutcome,
+    Client, Completion, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, PendingRequest,
+    RunMode, ShutdownError, ShutdownOutcome,
 };
 
 static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
@@ -74,6 +74,47 @@ impl Engine {
         }
     }
 
+    fn with_http_backend(config: EngineConfig, backend: HttpBackend) -> Result<Self, Error> {
+        match backend {
+            HttpBackend::Native => {
+                #[cfg(feature = "native")]
+                {
+                    Self::with_native_backend(config)
+                }
+                #[cfg(not(feature = "native"))]
+                {
+                    let _ = config;
+                    Err(unavailable_http_backend("native"))
+                }
+            }
+            HttpBackend::Curl => {
+                #[cfg(feature = "curl-pilot")]
+                {
+                    Self::with_curl_backend(config)
+                }
+                #[cfg(not(feature = "curl-pilot"))]
+                {
+                    let _ = config;
+                    Err(unavailable_http_backend("curl"))
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn with_native_backend(config: EngineConfig) -> Result<Self, Error> {
+        match config.run_mode() {
+            RunMode::Spawned => {
+                let factory = backend::native_https_factory_with_system_dns(&config)?;
+                Self::with_spawned_factory(config, factory)
+            }
+            RunMode::Manual => {
+                let backend = backend::native_https_backend_with_system_dns(&config)?;
+                Self::with_backend(config, backend)
+            }
+        }
+    }
+
     #[cfg_attr(feature = "curl-pilot", allow(dead_code))]
     pub(crate) fn with_backend(
         config: EngineConfig,
@@ -89,6 +130,9 @@ impl Engine {
         }
 
         let metrics = Arc::new(Metrics::default());
+        if backend.connection_metrics_available() {
+            metrics.enable_connection_metrics();
+        }
         let dispatcher = DispatcherOwner::new(
             id,
             config.callback_queue_capacity().get(),
@@ -187,6 +231,9 @@ impl Engine {
             ));
         }
         let metrics = Arc::new(Metrics::default());
+        if factory.connection_metrics_available() {
+            metrics.enable_connection_metrics();
+        }
         let dispatcher = DispatcherOwner::new(
             id,
             config.callback_queue_capacity().get(),
@@ -500,6 +547,7 @@ fn reentrant_shutdown_error() -> ShutdownError {
 #[derive(Clone, Debug)]
 pub struct EngineBuilder {
     config: EngineConfig,
+    http_backend: Option<HttpBackend>,
 }
 
 impl EngineBuilder {
@@ -508,6 +556,7 @@ impl EngineBuilder {
     pub fn spawned() -> Self {
         Self {
             config: EngineConfig::spawned(),
+            http_backend: None,
         }
     }
 
@@ -516,6 +565,7 @@ impl EngineBuilder {
     pub fn manual() -> Self {
         Self {
             config: EngineConfig::manual(),
+            http_backend: None,
         }
     }
 
@@ -523,6 +573,17 @@ impl EngineBuilder {
     #[must_use]
     pub fn config(mut self, config: EngineConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Explicitly selects an HTTP implementation.
+    ///
+    /// Cargo features control whether the selected implementation is available. They do not alter
+    /// this selection. Omitting this call preserves [`Engine::new`]'s current pilot behavior until
+    /// WP10's separately reviewed native-default switch.
+    #[must_use]
+    pub fn http_backend(mut self, backend: HttpBackend) -> Self {
+        self.http_backend = Some(backend);
         self
     }
 
@@ -635,8 +696,19 @@ impl EngineBuilder {
 
     /// Builds one independent Engine.
     pub fn build(self) -> Result<Engine, Error> {
-        Engine::new(self.config)
+        match self.http_backend {
+            Some(backend) => Engine::with_http_backend(self.config, backend),
+            None => Engine::new(self.config),
+        }
     }
+}
+
+#[cfg_attr(all(feature = "native", feature = "curl-pilot"), allow(dead_code))]
+fn unavailable_http_backend(backend: &str) -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
+        format!("the {backend} HTTP backend is not compiled into this NBReq build"),
+    )
 }
 
 #[cfg(test)]
