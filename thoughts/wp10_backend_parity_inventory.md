@@ -181,6 +181,22 @@ Run at least one hour of exact-source Ubuntu parser/state-machine thrash while p
 Retain reviewed seeds and any minimized reproducer, not the generated corpus. Longer multi-hour/day
 lifecycle soak remains WP11.
 
+The first attempt used exact source `95b61a6` and divided the intended hour into three 1,200-second
+legs. The buffered decoder completed 5,097,309 executions with 983 coverage points and 3,293
+features. The streaming decoder completed 6,593,440 executions with 1,789 coverage points and
+5,195 features. Both were clean. The DNS leg then found a real policy invariant violation after
+roughly 183,000 executions: a mutated but parseable answer could produce a root CNAME target, which
+`parse_answer` returned for resolver follow-up even though the target is not a usable host name.
+
+The retained 163-byte generated input is
+`crash-d22ada9e2205d2e60658119d39d69f73a4546323`, SHA-256
+`45ABE31A9E8E16D6927CCD7011390D17CABD3DEF1C11688ABCAB77C6F45535C2`. Commit `1f7784a`
+rejects the root target before adding it to the accepted-name set, trusting any address beneath it,
+or constructing follow-up work. A direct regression and the smaller reviewed
+`root-cname.seed` preserve the production branch. The complete native/default/lint gate passes on
+Windows. Because the third leg stopped early, this is a successful finding, not a completed
+campaign; all three legs must run again on the corrected exact source.
+
 ## 8. Module organization during WP10
 
 `native_http.rs` is large enough to make review expensive, but extraction is not itself parity.
