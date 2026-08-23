@@ -1,9 +1,9 @@
 # WP10 backend parity inventory
 
-Status: P10-01 and P10-02 accepted, 2026-08-23; the P10-03 verification entry point passes its
-complete ordinary-user Windows gate and awaits exact-source Ubuntu repetition. Explicit backend
-construction, conservative curl pool bounds, connection-metrics availability, and shared
-black-box parity pass their Windows and exact-source Ubuntu gates. Ordinary backend selection is
+Status: P10-01, P10-02, P10-03, and P10-05 accepted, 2026-08-23; P10-04 CI automation is deferred
+until a public repository exists. Explicit backend construction, conservative curl pool bounds,
+connection-metrics availability, shared black-box parity, the cross-platform verification entry
+point, and the scheduled Ubuntu campaign pass their gates. Ordinary backend selection is
 deliberately unchanged. This does not alter the accepted GDS package or remove curl/ureq rollback.
 
 ## 1. Meaning of parity
@@ -353,3 +353,36 @@ three already classified Schannel environment fixtures in the combined all-featu
 owner's ordinary PowerShell run passes all 17 stages in 63.868 seconds, including that combined
 suite and the three final pressure filters. This accepts the Windows half and proves the runner
 does not hide its environment gate. Exact-source Ubuntu repetition remains before P10-03 closes.
+
+## 16. P10-03 platform close and remaining WP10 sequence
+
+Exact commit `b6ef1e1` is archived as `wp10-p10-03-b6ef1e1.zip`, 509,410 bytes, SHA-256
+`E4C96E601661968787D5CC821E6136B0A3F8C8411958EECF19399765E8EF3745`. The copied size and hash
+match on Ubuntu 20.04.6 LTS with Rust 1.85.0 and Cargo 1.85.0. From a fresh `/tmp` extraction, the
+same offline entry point passes all 17 stages in 310.297 seconds. Its final marker is
+`NBReq verification complete: all 17 steps passed`, and a `/proc` executable/working-directory
+ownership check reports zero process associated with the proof tree. Together with the 63.868
+second ordinary-user Windows result, P10-03 is accepted.
+
+P10-04 is deliberately deferred rather than simulated: the entry point is ready for Windows/Linux
+CI, but no public repository exists yet. Exact Ubuntu 20.04/Rust 1.85, Wine 5, Windows 10,
+ordinary-user Schannel, DLL loading, and GDS canaries remain target-host gates even after CI exists.
+This deferral is a publication/operations task, not a reason to hold the private native rollout.
+
+P10-05 is accepted by the corrected `dbe3ff0` campaign already recorded in section 7: three
+timestamped 1,201-second Ubuntu parser/state-machine legs complete without a generated artifact
+after the first run found and retained the root-CNAME regression. Longer multi-hour/day live
+lifecycle soak remains WP11.
+
+The next contract review must keep two decisions separate:
+
+1. Add an explicitly selected native GDS canary while ordinary NBReq construction remains
+   unchanged, preserving both ureq and curl rollback and exercising the existing cancellation,
+   restart, Windows 10, and Wine deployment paths.
+2. Only after that canary passes, make `native` a Cargo default and make ordinary
+   `Engine::new`/unqualified builder construction select native. Feature unification must never
+   select curl implicitly, and a no-default-feature build must fail unsupported ordinary network
+   construction rather than expose the scaffold as a third public runtime.
+
+Call these P10-06 (explicit native consumer rollout) and P10-07 (ordinary native/default-feature
+switch). Neither is authorized merely by closing P10-03.
