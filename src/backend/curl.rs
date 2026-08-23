@@ -918,10 +918,11 @@ fn curl_transfer_error(
     let total_expired = options
         .total_timeout
         .is_some_and(|timeout| started.elapsed() >= timeout);
-    let connected = easy.primary_ip().is_ok_and(|address| address.is_some())
-        || easy
-            .connect_time()
-            .is_ok_and(|duration| !duration.is_zero());
+    // libcurl can publish the selected primary IP before TCP establishment. Only a non-zero
+    // connect time proves that this transfer advanced beyond the connect stage.
+    let connected = easy
+        .connect_time()
+        .is_ok_and(|duration| !duration.is_zero());
     if total_expired || (connected && options.total_timeout.is_some()) {
         Error::timeout(TimeoutKind::Total, "the total request timeout expired")
     } else if !connected {

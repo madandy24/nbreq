@@ -1182,6 +1182,89 @@ fn failed_limit_releases_admission_and_updates_portable_metrics() {
 }
 
 #[test]
+fn closed_loopback_endpoint_stays_in_the_connect_category() {
+    for (backend_name, backend) in test_backends() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("closed port must reserve");
+        let address = listener
+            .local_addr()
+            .expect("closed-port address must exist");
+        drop(listener);
+
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        match engine
+            .client()
+            .execute(
+                Request::get(format!("http://{address}/"))
+                    .connect_timeout(Duration::from_millis(250))
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("closed-endpoint request must build"),
+            )
+            .expect_err("closed local endpoint must not connect")
+        {
+            ExecuteError::Failed(error) if error.kind() == ErrorKind::Transport => assert_eq!(
+                error.transport_stage(),
+                Some(TransportStage::Connect),
+                "{backend_name}: {error}"
+            ),
+            ExecuteError::Failed(error) if error.kind() == ErrorKind::Timeout => assert_eq!(
+                error.timeout_kind(),
+                Some(TimeoutKind::Connect),
+                "{backend_name}: {error}"
+            ),
+            ExecuteError::Failed(error) => {
+                panic!("{backend_name}: expected connect transport/timeout category, got {error}")
+            }
+            other => panic!("{backend_name}: expected connect failure, got {other:?}"),
+        }
+        assert_eq!(
+            engine.metrics().current().inflight_requests(),
+            0,
+            "{backend_name}"
+        );
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
+fn callback_completion_uses_the_same_real_backend_terminal() {
+    for (backend_name, backend) in test_backends() {
+        let server = ScriptedServer::start(Script::Bytes(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope",
+        ));
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let (sender, receiver) = mpsc::channel();
+        let _handle = engine
+            .client()
+            .start(
+                Request::get(server.url())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("callback request must build"),
+                move |completion| {
+                    let _ = sender.send(completion);
+                },
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: callback request rejected: {error}"));
+        let completion = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|error| panic!("{backend_name}: callback did not arrive: {error}"));
+        match completion {
+            Completion::Completed(response) => {
+                assert_eq!(response.status(), 404, "{backend_name}");
+                assert_eq!(response.body(), b"nope", "{backend_name}");
+            }
+            other => panic!("{backend_name}: expected HTTP completion, got {other:?}"),
+        }
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
 fn explicit_no_verify_and_unknown_root_share_tls_outcomes() {
     for (backend_name, backend) in test_backends() {
         if !backend_has_tls(backend) {
