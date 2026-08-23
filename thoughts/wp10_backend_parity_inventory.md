@@ -1,9 +1,10 @@
 # WP10 backend parity inventory
 
-Status: P10-01 accepted, 2026-08-23; P10-02 shared black-box parity is active. Explicit backend
-construction, conservative curl pool bounds, and connection-metrics availability pass their
-Windows and exact-source Ubuntu gates. Ordinary backend selection is deliberately unchanged. This
-does not alter the accepted GDS package or remove curl/ureq rollback.
+Status: P10-01 accepted, 2026-08-23; P10-02 shared black-box behavior passes on Windows and its
+target-host repetition remains. Explicit backend construction, conservative curl pool bounds, and
+connection-metrics availability pass their Windows and exact-source Ubuntu gates. Ordinary backend
+selection is deliberately unchanged. This does not alter the accepted GDS package or remove
+curl/ureq rollback.
 
 ## 1. Meaning of parity
 
@@ -284,6 +285,31 @@ The all-feature TLS test reaches the already classified vendored-Schannel restri
 credential failure in the Codex environment. Keep the assertion and run it under the ordinary
 Windows account rather than converting the environment failure into a product allowance.
 
-P10-02 remains open for shared DNS/connect failure classification, request-wire policy and permit
-recovery after errors, the ordinary-user Schannel run, and exact-source Ubuntu repetition. None of
-this changes `Engine::new`, Cargo defaults, the accepted GDS package, or curl/ureq rollback.
+This first checkpoint did not yet close shared DNS/connect failure classification, request-wire
+policy, or permit recovery after errors. The next checkpoint closes those behavioral items. None
+of this changes `Engine::new`, Cargo defaults, the accepted GDS package, or curl/ureq rollback.
+
+## 13. P10-02 Windows behavior checkpoint
+
+Commits `2e52eb8`, `9694a99`, and `1ca54c8` add the remaining shared Windows behavior cases:
+
+- a buffered POST proves origin-form path/query serialization, generated Host and Content-Length,
+  fragment removal, and no invented Content-Type or Expect;
+- a response-limit failure under one-slot admission releases the permit, allows a second request,
+  and leaves accepted/failed/completed counters and current/high-water inflight gauges exact;
+- a real 404 callback follows the same `Completed(Response)` terminal path;
+- the reserved `.invalid` namespace maps an answered negative resolution to `Transport/Dns`;
+- a closed loopback endpoint remains in the connect category whether the host reports immediate
+  refusal (`Transport/Connect`) or the restricted network layer silently drops it
+  (`Timeout/Connect`).
+
+The last case caught a curl classification bug. libcurl may publish `primary_ip` after choosing an
+address but before TCP establishment, so it cannot prove that a transfer reached the connected
+stage. Curl timeout classification now uses non-zero `connect_time` as that evidence and no longer
+mislabels a pre-connect timeout as total.
+
+The complete local matrix now passes 65 default units; 185 native units plus 16 shared tests; 84
+curl units plus the same 16 shared tests; all 7 contracts and 6 doctests; warning-denied all-feature
+lint; docs; and formatting. One all-feature process passes all 15 non-TLS shared tests against both
+implementations. P10-02 remains open only for the ordinary-user vendored-Schannel shared TLS run
+and exact-source Ubuntu repetition of the final matrix.
