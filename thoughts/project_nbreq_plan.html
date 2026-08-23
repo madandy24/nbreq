@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">WP1 complete; WP2 transport matrix proven; WP3 consumer API accepted; WP4 curl platform gate accepted; WP5 G4–G6 accepted; WP6 native reactor accepted; WP7 native cleartext HTTP accepted; WP8 native DNS/TLS accepted; WP9 native v1 pooling, redirects, streaming, production limits, metrics, and evidence accepted on Windows and Ubuntu; WP10 parity, automation, and explicit native GDS rollout accepted through P10-06; P10-07 native ordinary/default selection is implemented, with platform and GDS proof active</span>
+  Overall status: <span class="gate-partial">WP1–WP10 accepted; native is the ordinary/default HTTP backend after exact-source Ubuntu, ordinary-account Windows, and live Windows 10 GDS native/ureq rollback proof; WP11 hardening, public documentation, and publication remain</span>
 </div>
 
 <div class="panel">
@@ -83,8 +83,8 @@
   <p>This document describes <strong>how</strong> the product will be delivered: decision order, implementation slices, test evidence, integration sequence, backend migration, acceptance gates, rollout, and the progress record that future sessions must preserve. Product behaviour belongs in the separate specification.</p>
 </div>
 
-<div class="callout warning">
-  <strong>WP9 streaming is accepted on Windows and exact-source Ubuntu 20.04:</strong> the private native backend owns fixed/chunked producer framing, spawned blocking and manual nonblocking upload, bounded cleartext/rustls pumping, direct streamed responses, early-final-response arbitration, cancellation, and joined shutdown in addition to its accepted pool and redirect lifecycle. The curl pilot and ureq rollback remain unchanged; ordinary <span class="mono">Engine::new</span>, the accepted GDS package, and backend selection do not change during this work. WP9.5 now owns production configuration and evidence.
+<div class="callout success">
+  <strong>WP10 is accepted:</strong> a normal dependency build compiles the native backend and ordinary <span class="mono">Engine::new</span> selects it. Curl remains explicitly selectable and immune to feature-unification surprises; no-default construction fails unsupported rather than exposing a fake network runtime. Exact-source Ubuntu 20.04/Rust 1.85, ordinary-account Windows, and a separate Windows 10 GDS native smoke plus same-package ureq rollback pass. P10-04 CI remains deliberately deferred until the real public repository exists; WP11 is next.
 </div>
 
 <h2 id="contents">Contents</h2>
@@ -470,7 +470,7 @@
 <p>The first Ubuntu comparison also found a correctness-shaped memory edge: lazy stale timeout entries could accumulate until their future deadlines arrived. The reactor now compacts that heap above twice the live-deadline count plus 64 entries, and a 10,000-update regression keeps storage proportional to live sockets. This is the model for worthwhile optimization work: prefer removal of unreasonable historical retention and fixed costs over chasing a synthetic throughput ranking.</p>
 
 <h3>WP10 — Establish backend parity and switch the default</h3>
-<p><span class="status status-progress">In progress</span> Removes curl from the default product. The controlling first-pass classification is <span class="mono">thoughts/wp10_backend_parity_inventory.md</span>.</p>
+<p><span class="status status-done">Accepted</span> Removes curl from the default product while retaining it as an explicit reference/diagnostic backend. The controlling classification and platform evidence are in <span class="mono">thoughts/wp10_backend_parity_inventory.md</span>.</p>
 <ul>
   <li>Maintain the source-grounded backend inventory and classify every observable difference as required parity, an explicit pre-admission backend limitation, a named environment gate, or post-v1 work.</li>
   <li>Freeze ordinary construction semantics before implementation: feature unification must not silently choose curl, native, or the scaffold.</li>
@@ -488,9 +488,10 @@
   <li>Keep curl as an optional diagnostic/reference backend until at least one stable native release has completed production observation.</li>
 </ul>
 <p><strong>Acceptance:</strong> GDS changes no code when changing backends; native meets all contract/security/lifecycle gates; observed performance is acceptable; a documented feature rollback remains.</p>
+<p><strong>Accepted:</strong> exact NBReq <span class="mono">95cc8ea</span> passes all 22 verification stages on Ubuntu 20.04/Rust 1.85 in 409.080 seconds and under the ordinary Windows account in 96.297 seconds. A distinct verified GDS x86 package then selects native on Windows 10, runs both real gateway channels and authenticated website traffic, joins native Drops in 1 ms, restarts the identical files with ureq, repeats live traffic, and closes normally. Native is now the Cargo default and ordinary constructor; curl remains explicit, and ureq/curl rollback remains available. P10-04 CI is deferred until the genuine public repository exists rather than simulated locally.</p>
 
 <h3>WP11 — Harden, document, and publish</h3>
-<p><span class="status status-deferred">After default switch</span> Produces the reusable public module.</p>
+<p><span class="status status-progress">Next</span> Produces the reusable public module.</p>
 <ul>
   <li>Write API guides for blocking programs, callbacks, GUI dispatch, DLL/FFI use, cancellation, shutdown, limits, TLS, and testing.</li>
   <li>Document MSRV, supported platforms, feature matrix, dependency/licensing inventory, and security reporting.</li>
@@ -907,11 +908,12 @@
   <li><strong>2026-08-23 — P10-06 accepted on stock Wine 5.</strong> Clean GDS <span class="mono">7d4d243</span> and NBReq <span class="mono">6c3bde6</span> produce a 15,948,147-byte archive, SHA-256 <span class="mono">BB492B60E100C89B40D0772311C5D7A47D7364F24D3D1BC5BE0D2DC466E37C37</span>; all 11 copied/extracted hashes pass and no libcurl is present. The new fail-closed <span class="mono">/httpbackend</span> override rejects an unknown value, then selects native without changing persisted configuration. Two native starts run both real poll channels plus authenticated website traffic; refresh joins Drops in 7/2 ms and final close in 4/1 ms, with no remaining process. The same binaries select ureq, return a green board and healthy website, then close with only ureq's known detached-worker behavior and no remaining process. P10-06 is closed; P10-07 is now the separate ordinary-construction/default-feature gate.</li>
   <li><strong>2026-08-23 — Wine fallback waker carry-forward closes.</strong> NBReq <span class="mono">9378e46</span> switches every clone of the Mio waker to a shared disabled state before first-registration AFD fallback takes ownership. Old-Wine <span class="mono">WSAPoll</span> therefore retains the proven 50 ms safety bound without accumulating unread IOCP completions in a port nobody drains; a 20,000-call regression covers clones created before fallback.</li>
   <li><strong>2026-08-23 — P10-07 reaches its Windows implementation checkpoint.</strong> NBReq <span class="mono">733c294</span> makes <span class="mono">native</span> the Cargo default; ordinary <span class="mono">Engine::new</span> and unqualified builder construction select native, while curl requires explicit <span class="mono">HttpBackend::Curl</span> and cannot be selected by feature unification. No-default and curl-only builds compile, but ordinary construction without native fails <span class="mono">Unsupported</span> rather than exposing the scaffold. The default 188-unit native gate, curl-only 83-unit gate, combined 207-unit gate, shared adversarial/public-contract/doctest suites, warning-denied lint, docs, and formatting pass. The runner now contains a separate curl-only stage and 22 stages total. Restricted-token execution reaches only the three previously classified Schannel fixtures after correcting one over-eager streaming fixture gate; ordinary-account Windows, exact-source Ubuntu/Rust 1.85, and a separate GDS smoke/rollback remain before acceptance.</li>
+  <li><strong>2026-08-24 — P10-07 and WP10 accepted.</strong> Exact NBReq <span class="mono">95cc8ea</span>, archived as 530,931 bytes with SHA-256 <span class="mono">F7B34F5EEE271F90ACDE76B3E40A263DAF07F31F58313A802320CE22C4A26808</span>, passes all 22 verifier stages on Ubuntu 20.04/Rust 1.85 in 409.080 seconds and under the ordinary Windows account in 96.297 seconds. Separate GDS <span class="mono">7d4d243</span>/NBReq <span class="mono">95cc8ea</span> smoke archive <span class="mono">99AED777EF4CC14D5A23C4B3B472A448A24E63BD92271D8F2B171B89E91E4976</span> authenticates 10 files, required x86 exports/runtime data, and no libcurl. On DMOUSE2 Windows 10, native runs both gateway channels and authenticated website traffic, records 63 responses with 63 successful POSTs, and joins final Drops in 1 ms. The identical files then select ureq, record 36 responses with 36 successful POSTs, and close with the expected detached-worker behavior; neither run leaves a process. Native is now the ordinary/default backend. Curl remains explicit, ureq/curl rollback remains, and P10-04 CI waits for the real public repository.</li>
 </ul>
 
 <div class="panel">
   <h3>Next implementation step</h3>
-  <p><strong>Next — close P10-07 proof:</strong> run the 22-stage gate under the ordinary Windows account, archive the exact committed source and repeat it on Ubuntu 20.04/Rust 1.85, then build a separate GDS package for one controlled ordinary-native smoke and same-package ureq rollback. Do not replace or mix the accepted P10-06 Windows/Wine folders.</p>
+  <p><strong>Next — open WP11:</strong> audit the public API and dependency/license/MSRV surface, write the consumer-facing guide skeletons, add the final license and publication metadata, and turn the existing target-host and verifier evidence into a reproducible release checklist. Keep curl and GDS ureq rollback through at least the first stable native observation period; do not mix publication hardening with the deferred post-WP11 DNS/TCP facades.</p>
 </div>
 
 </body>

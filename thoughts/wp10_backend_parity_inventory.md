@@ -1,12 +1,11 @@
 # WP10 backend parity inventory
 
-Status: P10-01, P10-02, P10-03, and P10-05 accepted, 2026-08-23; P10-04 CI automation is deferred
-until a public repository exists. Explicit backend construction, conservative curl pool bounds,
-connection-metrics availability, shared black-box parity, the cross-platform verification entry
-point, and the scheduled Ubuntu campaign pass their gates. P10-06's explicit native GDS rollout is
-accepted; P10-07 now has a Windows implementation checkpoint for native ordinary/default
-selection. Exact-source Ubuntu, ordinary-account Windows, and a separate GDS smoke/rollback remain.
-This does not alter the accepted GDS package or remove curl/ureq rollback.
+Status: WP10 accepted, 2026-08-24. P10-01, P10-02, P10-03, P10-05, P10-06, and P10-07 pass;
+P10-04 CI automation is deliberately deferred until a public repository exists. Explicit backend
+construction, conservative curl pool bounds, honest metrics availability, shared black-box parity,
+the cross-platform verification entry point, the scheduled Ubuntu campaign, explicit native GDS
+rollout, and native ordinary/default selection all pass their named gates. Curl and ureq remain
+available rollback/reference paths, and the accepted P10-06 package remains separately preserved.
 
 ## 1. Meaning of parity
 
@@ -504,3 +503,44 @@ additional streaming-fixture race was a dishonest peer-response gate and is corr
 product change. Ordinary-account Windows must still run all 22 stages. Exact-source Ubuntu/Rust
 1.85 and one separate GDS native smoke plus same-package ureq rollback remain before acceptance;
 neither proof may replace the accepted P10-06 package.
+
+## 20. P10-07 platform close and acceptance
+
+The final source is NBReq `95cc8ea`. Its 530,931-byte archive
+`nbreq-p10-07-95cc8ea.zip` has SHA-256
+`F7B34F5EEE271F90ACDE76B3E40A263DAF07F31F58313A802320CE22C4A26808`. The first exact-source
+Ubuntu pass exposed only warning-denied Unix lint at the Windows fallback boundary; `95cc8ea`
+narrows that boundary without changing runtime behavior. A fresh Ubuntu 20.04 extraction with
+Rust/Cargo 1.85 then passes the complete 22-stage verifier in 409.080 seconds, including the
+default-native, minimal, curl-only, combined all-feature, public-contract, doctest, documentation,
+formatting, warning-denied lint, and named pressure stages. The final log contains no failure marker
+and no proof process survives. The owner's ordinary Windows PowerShell run of the identical commit
+passes all 22 stages, including vendored Schannel, in 96.297 seconds. The restricted-token failures
+therefore remain correctly classified as execution-environment behavior.
+
+GDS `7d4d243` was rebuilt in release x86 mode against NBReq `95cc8ea` without changing GDS source.
+The separate 15,946,809-byte smoke archive `p10-07-95cc8ea-x86.zip` has SHA-256
+`99AED777EF4CC14D5A23C4B3B472A448A24E63BD92271D8F2B171B89E91E4976`. Its verifier authenticates
+10 files, required x86 binaries and native selector exports, Delphi runtime data, and the absence
+of libcurl. The package and extraction use names distinct from the accepted P10-06 Windows/Wine
+artifact; no accepted folder or archive was replaced.
+
+On the actual Windows 10 DMOUSE2 host, the copied package passes the same verifier and loads its
+adjacent `gds.dll`. A process-local `/httpbackend nbreq-native` run explicitly logs native selection
+and the GDS compatibility adapter's deliberate no-verify policy. Both real gateway channels poll,
+authenticated website reads and response POSTs succeed, and 70 nonzero fetched IDs produce 63
+responses with exactly 63 successful POST acknowledgements. Refresh and final shutdown cancel and
+join every native WebRPC owner; both final Drops complete in 1 ms and no GDS process remains.
+
+The identical files then restart with `/httpbackend ureq`, explicitly log ureq selection, run both
+gateway channels, and serve authenticated website traffic. That session records 37 nonzero fetched
+IDs, 36 responses, and exactly 36 successful POST acknowledgements. Final close retains ureq's
+documented zero-millisecond detached-worker behavior and leaves no GDS process. The separate legacy
+tracking endpoint reports the same intermittent connection termination under both backends, so it
+is not attributed to native.
+
+P10-07 and WP10 are accepted. A plain dependency build now compiles native and ordinary
+`Engine::new` selects it; curl requires explicit `HttpBackend::Curl`; no-default construction fails
+`Unsupported`; and ureq/curl rollback remains available. P10-04 stays deferred to creation of the
+real public repository rather than blocking WP11 documentation, release audit, and publication
+work.
