@@ -1,7 +1,8 @@
 # WP10 backend parity inventory
 
-Status: P10-01 and P10-02 accepted, 2026-08-23; P10-03 verification entry point is next. Explicit
-backend construction, conservative curl pool bounds, connection-metrics availability, and shared
+Status: P10-01 and P10-02 accepted, 2026-08-23; the P10-03 verification entry point passes its
+complete ordinary-user Windows gate and awaits exact-source Ubuntu repetition. Explicit backend
+construction, conservative curl pool bounds, connection-metrics availability, and shared
 black-box parity pass their Windows and exact-source Ubuntu gates. Ordinary backend selection is
 deliberately unchanged. This does not alter the accepted GDS package or remove curl/ureq rollback.
 
@@ -332,3 +333,23 @@ Ubuntu 20.04.6 LTS with Rust/Cargo 1.85.0. One fail-fast offline sequence then p
 The sequence runs from 03:57:15 through 04:01:28 UTC, exits zero at `STAGE=complete`, and leaves no
 proof process. P10-02 is accepted. The ordinary native/default-feature switch remains gated; P10-03
 is next.
+
+## 15. P10-03 Windows verification-runner checkpoint
+
+Commit `b6ef1e1` adds one dependency-free Rust entry point:
+
+`cargo run --manifest-path tools/xtask/Cargo.toml -- verify`
+
+The runner checks its own formatting, tests, and warning-denied lint before running NBReq's
+formatting, minimal/all-feature compilation, warning-denied all-target lint, ordinary/minimal/
+native/curl/all-feature suites, explicit doctests, documentation, and three named native pressure
+regressions. It prints and flushes every exact command before execution, reports stage timing, and
+stops at the first failure. `--offline`, `--dry-run`, and a positive `--stress-repetitions N` are
+explicit options; invalid input fails closed. Specialized curl packaging, DLL lifecycle, Wine,
+Windows 10, GDS, and source-archive evidence remain separate target-host leaves.
+
+The restricted Codex Windows token passes the first eleven product stages and then stops at the
+three already classified Schannel environment fixtures in the combined all-feature suite. The
+owner's ordinary PowerShell run passes all 17 stages in 63.868 seconds, including that combined
+suite and the three final pressure filters. This accepts the Windows half and proves the runner
+does not hide its environment gate. Exact-source Ubuntu repetition remains before P10-03 closes.
