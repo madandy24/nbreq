@@ -61,11 +61,14 @@ Differences have four dispositions:
 
 ## 4. Existing shared evidence and first gaps
 
-`tests/http_adversarial.rs` already runs the same public buffered path against either curl or native
-for fragmented fixed/chunked responses, malformed status/headers/framing, premature EOF, and an
-abortive large upload. Curl alone currently has the public sequential-reuse case. The public
-contract suite checks ownership/thread traits, empty metrics, spawned-drive rejection, and the
-intentional manual-mode difference.
+`tests/http_adversarial.rs` now enumerates every compiled real backend through the public explicit
+selector. In an all-feature build each test therefore runs against both native and curl rather than
+allowing implicit curl selection to hide native. The shared suite covers fragmented fixed/chunked
+responses, malformed status/headers/framing, premature EOF, abortive upload, sequential reuse,
+buffered response limits, total/inactivity clocks, individual cancellation, consuming shutdown,
+redirect policy, and portable TLS outcomes. The public contract suite separately checks
+ownership/thread traits, empty metrics, spawned-drive rejection, and the intentional manual-mode
+difference.
 
 The first source audit identified these concrete gaps:
 
@@ -253,3 +256,34 @@ Schannel fixture failures; the immediately preceding curl-only suite passes all 
 The same public selection/metrics and curl-limit gates pass in the complete exact-source Ubuntu
 run recorded above. Review accepted P10-01 and closed the slice. It does not authorize the ordinary
 native/default-feature switch; P10-02 shared black-box parity is next.
+
+## 12. P10-02 first shared checkpoint
+
+Commits `a16ca75`, `fcbd0d8`, and `cbc1911` convert the adversarial integration suite from an
+implicit either/or backend test into a public-selector matrix over every compiled backend. The
+same fixtures now prove:
+
+- sequential HTTP/1.1 reuse;
+- response body bytes, response header bytes, and response header count with exact `LimitKind`;
+- total and inactivity timeout categories, including peer-observed socket close;
+- individual cancellation and consuming shutdown, including canonical `Cancelled` and
+  peer-observed socket close;
+- conservative redirect behavior: POST 302 remains a response, 303 becomes bodyless GET, 307
+  replays the buffered body, hop exhaustion is `Redirect`, same-origin credentials remain, and
+  cross-origin credentials are stripped;
+- explicit no-verify success and verified unknown-root failure at the TLS stage when the selected
+  implementation has TLS support.
+
+The Windows default gate passes 65 units, 7 contracts, and 6 doctests. Native passes 185 units,
+11 shared adversarial tests, 7 contracts, and 6 doctests. Curl passes 84 units, the same 11 shared
+tests, 7 contracts, and 6 doctests; the integration TLS case conditionally skips when the selected
+system curl reports no TLS implementation. Warning-denied all-feature lint, docs, and formatting
+pass. The ten non-TLS shared tests also pass in one all-feature process against both implementations.
+
+The all-feature TLS test reaches the already classified vendored-Schannel restricted-token
+credential failure in the Codex environment. Keep the assertion and run it under the ordinary
+Windows account rather than converting the environment failure into a product allowance.
+
+P10-02 remains open for shared DNS/connect failure classification, request-wire policy and permit
+recovery after errors, the ordinary-user Schannel run, and exact-source Ubuntu repetition. None of
+this changes `Engine::new`, Cargo defaults, the accepted GDS package, or curl/ureq rollback.
