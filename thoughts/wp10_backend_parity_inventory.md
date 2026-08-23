@@ -417,3 +417,13 @@ authenticated self-contained native package, Windows 10 and Wine deployment, rea
 poll/POST traffic, individual in-flight poll cancellation and join, normal process shutdown, and
 persisted `DSHTTPBACKEND=ureq` restart rollback. The curl package and its process-lifetime rules
 remain untouched. P10-07 remains unauthorized.
+
+GDS commit `87cf109` adds a separate native packager and verifier. From code-clean GDS `87cf109`
+and clean NBReq `b3ea96f`, it rebuilt the Delphi host and release x86 native DLL, built the audited
+Wine-5 `ProcessPrng` shim, and produced the 15,943,934-byte
+`gds-nbreq-native-x86.zip` with SHA-256
+`940EDD4971DB975FBD2471CFBAC156C1788CD996DC8090CE06D1CE4F14714355`. The manifest authenticates
+11 files. Both platform folders contain the same GDS host/DLL/font data; only Wine adds the shim.
+The verifier proves all PE files are x86, both GDS DLLs export the native marker and public selector,
+and neither folder contains libcurl. A fresh archive extraction passes the same verifier. Packaging
+is therefore closed; the two target-host activation/rollback runs remain.
