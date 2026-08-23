@@ -1,8 +1,9 @@
 # GDS native NBReq P10-06 activation and rollback runbook
 
-Status: implementation/build checkpoint only. Use this for the controlled Windows 10 and Wine
-canaries required to accept P10-06. It does not authorize P10-07, a fleet rollout, or a change to
-ordinary NBReq construction.
+Status: Windows 10 canary accepted; stock-Wine-5 canary remains. The completed Windows record is in
+`gds_native_p10_06_evidence.md`. Use this runbook for the remaining Wine repetition required to
+accept P10-06. It does not authorize P10-07, a fleet rollout, or a change to ordinary NBReq
+construction.
 
 ## Setting contract
 

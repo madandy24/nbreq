@@ -426,4 +426,17 @@ Wine-5 `ProcessPrng` shim, and produced the 15,943,934-byte
 11 files. Both platform folders contain the same GDS host/DLL/font data; only Wine adds the shim.
 The verifier proves all PE files are x86, both GDS DLLs export the native marker and public selector,
 and neither folder contains libcurl. A fresh archive extraction passes the same verifier. Packaging
-is therefore closed; the two target-host activation/rollback runs remain.
+is therefore closed.
+
+The same authenticated package then passes the Windows 10 activation and rollback drill on
+DMOUSE2. Persisted native selection starts the self-contained backend, both channels poll, an
+authenticated Activity-screen session and sound event exercise real reads and POSTs, a settings
+refresh cancels and joins both long polls in about 3 ms, and 81 minutes produce 738 fetched IDs,
+666 responses, and 666 matching successful POSTs with zero unexpected errors. Final native Drop
+joins in 1–3 ms and leaves no GDS process. Persisted ureq restart from the identical package then
+produces 28 responses and 28 matching successful POSTs with zero errors. Exact hashes and timings
+are recorded in `gds_native_p10_06_evidence.md`.
+
+The Windows half of P10-06 is accepted. The stock-Ubuntu-20.04/Wine-5 activation, cancellation,
+shutdown, and same-package rollback repetition remains before P10-06 closes. P10-07 remains
+unauthorized.
