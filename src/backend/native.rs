@@ -10,11 +10,12 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mio::net::TcpStream;
-use mio::{Events, Interest, Poll, Token, Waker};
+use mio::{Interest, Token};
+
+use super::native_poll::{NativePoll, NativeWaker, PollTarget};
 
 const WAKE_TOKEN: Token = Token(0);
 const FIRST_SOCKET_TOKEN: usize = 1;
@@ -26,17 +27,6 @@ pub(super) const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
 pub(crate) struct SlotId {
     index: u32,
     generation: u32,
-}
-
-#[derive(Clone)]
-pub(crate) struct NativeWaker {
-    inner: Arc<Waker>,
-}
-
-impl NativeWaker {
-    pub(crate) fn wake(&self) -> io::Result<()> {
-        self.inner.wake()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,6 +97,20 @@ struct Slot {
     connection: Option<Connection>,
 }
 
+fn connection_interest(connection: &Connection) -> Option<Interest> {
+    if connection.state == ConnectionState::Connecting {
+        return Some(Interest::READABLE.add(Interest::WRITABLE));
+    }
+    let readable = !connection.peer_read_closed && !matches!(connection.read_allowance, Some(0));
+    let writable = !connection.outbound.is_empty();
+    match (readable, writable) {
+        (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
+        (true, false) => Some(Interest::READABLE),
+        (false, true) => Some(Interest::WRITABLE),
+        (false, false) => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DeadlineEntry {
     when: Instant,
@@ -129,8 +133,7 @@ impl PartialOrd for DeadlineEntry {
 }
 
 pub(crate) struct NativeReactor {
-    poll: Poll,
-    events: Events,
+    poll: NativePoll,
     waker: NativeWaker,
     slots: Vec<Slot>,
     free_slots: Vec<u32>,
@@ -141,18 +144,12 @@ pub(crate) struct NativeReactor {
 
 impl NativeReactor {
     pub(crate) fn new(event_capacity: usize) -> Result<Self, NativeFailure> {
-        let poll = Poll::new().map_err(|error| {
+        let (poll, waker) = NativePoll::new(event_capacity, WAKE_TOKEN).map_err(|error| {
             NativeFailure::io(NativeFailureKind::Internal, "poll creation", &error)
-        })?;
-        let waker = Waker::new(poll.registry(), WAKE_TOKEN).map_err(|error| {
-            NativeFailure::io(NativeFailureKind::Internal, "waker creation", &error)
         })?;
         Ok(Self {
             poll,
-            events: Events::with_capacity(event_capacity.max(1)),
-            waker: NativeWaker {
-                inner: Arc::new(waker),
-            },
+            waker,
             slots: Vec::new(),
             free_slots: Vec::new(),
             tokens: HashMap::new(),
@@ -163,6 +160,11 @@ impl NativeReactor {
 
     pub(crate) fn waker(&self) -> NativeWaker {
         self.waker.clone()
+    }
+
+    #[cfg(all(test, windows))]
+    fn force_winsock_poll_for_test(&mut self) {
+        self.poll.force_winsock();
     }
 
     pub(crate) fn connect(
@@ -191,7 +193,7 @@ impl NativeReactor {
                 ));
             }
         };
-        if let Err(error) = self.poll.registry().register(
+        if let Err(error) = self.poll.register(
             &mut stream,
             token,
             Interest::READABLE.add(Interest::WRITABLE),
@@ -205,7 +207,7 @@ impl NativeReactor {
         }
         match stream.take_error() {
             Ok(Some(error)) => {
-                let _deregister_result = self.poll.registry().deregister(&mut stream);
+                let _deregister_result = self.poll.deregister(&mut stream);
                 self.release_empty_slot(slot_index);
                 return Err(NativeFailure::io(
                     NativeFailureKind::Connect,
@@ -214,7 +216,7 @@ impl NativeReactor {
                 ));
             }
             Err(error) => {
-                let _deregister_result = self.poll.registry().deregister(&mut stream);
+                let _deregister_result = self.poll.deregister(&mut stream);
                 self.release_empty_slot(slot_index);
                 return Err(NativeFailure::io(
                     NativeFailureKind::Internal,
@@ -367,23 +369,28 @@ impl NativeReactor {
             .nearest_deadline()
             .map_or(deadline, |slot_deadline| slot_deadline.min(deadline));
         let timeout = wait_until.saturating_duration_since(Instant::now());
-        self.poll
-            .poll(&mut self.events, Some(timeout))
+        let targets = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.connection.as_ref())
+            .filter(|connection| connection.registered)
+            .filter_map(|connection| {
+                connection_interest(connection)
+                    .map(|interest| PollTarget::new(connection.token, &connection.stream, interest))
+            })
+            .collect::<Vec<_>>();
+        let ready = self
+            .poll
+            .poll(&targets, timeout, WAKE_TOKEN)
             .map_err(|error| NativeFailure::io(NativeFailureKind::Internal, "poll", &error))?;
 
-        let ready = self
-            .events
-            .iter()
-            .filter(|event| event.token() != WAKE_TOKEN)
+        let ready = ready
+            .into_iter()
             .filter_map(|event| {
-                self.tokens.get(&event.token()).copied().map(|id| {
-                    (
-                        id,
-                        event.is_readable() || event.is_read_closed(),
-                        event.is_writable() || event.is_write_closed(),
-                        event.is_error(),
-                    )
-                })
+                self.tokens
+                    .get(&event.token)
+                    .copied()
+                    .map(|id| (id, event.readable, event.writable, event.error))
             })
             .collect::<Vec<_>>();
 
@@ -670,7 +677,7 @@ impl NativeReactor {
     }
 
     fn reregister(&mut self, id: SlotId) -> Result<(), NativeFailure> {
-        let poll = &self.poll;
+        let poll = &mut self.poll;
         let slot = self
             .slots
             .get_mut(id.index as usize)
@@ -681,29 +688,15 @@ impl NativeReactor {
         let connection = slot.connection.as_mut().ok_or_else(|| {
             NativeFailure::internal("native readiness update targeted a closed slot")
         })?;
-        let interest = if connection.state == ConnectionState::Connecting {
-            Some(Interest::READABLE.add(Interest::WRITABLE))
-        } else {
-            let readable =
-                !connection.peer_read_closed && !matches!(connection.read_allowance, Some(0));
-            let writable = !connection.outbound.is_empty();
-            match (readable, writable) {
-                (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
-                (true, false) => Some(Interest::READABLE),
-                (false, true) => Some(Interest::WRITABLE),
-                (false, false) => None,
-            }
-        };
+        let interest = connection_interest(connection);
         match (connection.registered, interest) {
             (true, Some(interest)) => poll
-                .registry()
                 .reregister(&mut connection.stream, connection.token, interest)
                 .map_err(|error| {
                     NativeFailure::io(NativeFailureKind::Internal, "socket reregistration", &error)
                 }),
             (false, Some(interest)) => {
-                poll.registry()
-                    .register(&mut connection.stream, connection.token, interest)
+                poll.register(&mut connection.stream, connection.token, interest)
                     .map_err(|error| {
                         NativeFailure::io(
                             NativeFailureKind::Internal,
@@ -715,15 +708,9 @@ impl NativeReactor {
                 Ok(())
             }
             (true, None) => {
-                poll.registry()
-                    .deregister(&mut connection.stream)
-                    .map_err(|error| {
-                        NativeFailure::io(
-                            NativeFailureKind::Internal,
-                            "socket deregistration",
-                            &error,
-                        )
-                    })?;
+                poll.deregister(&mut connection.stream).map_err(|error| {
+                    NativeFailure::io(NativeFailureKind::Internal, "socket deregistration", &error)
+                })?;
                 connection.registered = false;
                 Ok(())
             }
@@ -738,7 +725,7 @@ impl NativeReactor {
         }
         let mut connection = slot.connection.take()?;
         if connection.registered {
-            let _deregister_result = self.poll.registry().deregister(&mut connection.stream);
+            let _deregister_result = self.poll.deregister(&mut connection.stream);
         }
         self.tokens.remove(&connection.token);
         self.free_slots.push(id.index);
@@ -1260,6 +1247,46 @@ mod tests {
         assert_eq!(reactor.active_count(), 1);
         assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
+        server.join().expect("server must join");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn winsock_fallback_connects_writes_reads_and_observes_fin() {
+        let (listener, address) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server must accept");
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).expect("server must read");
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").expect("server must write");
+            stream
+                .shutdown(Shutdown::Write)
+                .expect("server must half-close");
+        });
+
+        let mut reactor = NativeReactor::new(8).expect("reactor must construct");
+        reactor.force_winsock_poll_for_test();
+        let id = reactor
+            .connect(address, None, TEST_LIMIT, TEST_LIMIT)
+            .expect("fallback connect must start");
+        reactor.queue_write(id, b"ping").expect("write must queue");
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::PeerClosed(id))
+        });
+        let body = events
+            .iter()
+            .filter_map(|event| match event {
+                NativeEvent::Data(event_id, bytes) if *event_id == id => Some(bytes.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(body, b"pong");
+        assert!(events.contains(&NativeEvent::Connected(id)));
+        assert!(events.contains(&NativeEvent::WriteDrained(id)));
+        assert!(reactor.cancel(id));
         server.join().expect("server must join");
     }
 

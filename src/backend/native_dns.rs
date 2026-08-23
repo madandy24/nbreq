@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(test)]
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
@@ -16,9 +17,10 @@ use std::time::{Duration, Instant};
 use hickory_proto::op::{Message, MessageType, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
 use mio::net::{TcpStream, UdpSocket};
-use mio::{Events, Interest, Poll, Token, Waker};
+use mio::{Interest, Token};
 
-use super::native::{NATIVE_SAFETY_POLL, NativeWaker};
+use super::native::NATIVE_SAFETY_POLL;
+use super::native_poll::{NativePoll, NativeWaker, PollTarget};
 use crate::{Error, ErrorKind};
 
 const WAKE_TOKEN: Token = Token(0);
@@ -229,7 +231,7 @@ impl DnsCache {
 pub(super) struct NativeResolver {
     commands: Sender<Command>,
     results: Receiver<ResolveResult>,
-    waker: Arc<Waker>,
+    waker: NativeWaker,
     joined: Option<JoinHandle<()>>,
 }
 
@@ -249,14 +251,10 @@ impl NativeResolver {
                 "native resolver retry configuration must be nonzero",
             ));
         }
-        let mut poll = Poll::new().map_err(|error| resolver_internal("poll creation", &error))?;
-        let waker = Arc::new(
-            Waker::new(poll.registry(), WAKE_TOKEN)
-                .map_err(|error| resolver_internal("waker creation", &error))?,
-        );
+        let (mut poll, waker) = NativePoll::new(16, WAKE_TOKEN)
+            .map_err(|error| resolver_internal("poll creation", &error))?;
         let (mut socket, current_nameserver) = connect_nameserver(&config.nameservers)?;
-        poll.registry()
-            .register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
+        poll.register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
             .map_err(|error| resolver_internal("socket registration", &error))?;
         let mut initial_id = [0_u8; 2];
         getrandom::fill(&mut initial_id).map_err(|error| {
@@ -379,7 +377,7 @@ impl Drop for NativeResolver {
 }
 
 fn resolver_main(
-    poll: &mut Poll,
+    poll: &mut NativePoll,
     socket: &mut UdpSocket,
     commands: Receiver<Command>,
     results: Sender<ResolveResult>,
@@ -387,7 +385,6 @@ fn resolver_main(
     config: ResolverConfig,
     mut state: ResolverState,
 ) {
-    let mut events = Events::with_capacity(16);
     loop {
         let mut stop = false;
         loop {
@@ -464,26 +461,42 @@ fn resolver_main(
         if let Some(barrier) = state.before_first_poll.take() {
             let _send_result = barrier.send(());
         }
-        if poll.poll(&mut events, Some(timeout)).is_err() {
-            fail_all(
-                &mut state.pending,
-                &mut state.by_key,
-                &results,
-                &result_waker,
-                "native resolver poll failed",
-            );
-            return;
-        }
+        let mut targets = Vec::with_capacity(state.tcp_by_token.len() + 1);
+        targets.push(PollTarget::new(SOCKET_TOKEN, &*socket, Interest::READABLE));
+        targets.extend(state.pending.values().filter_map(|query| {
+            let QueryTransport::Tcp(tcp) = &query.transport else {
+                return None;
+            };
+            let interest = if tcp.written < tcp.outbound.len() {
+                Interest::READABLE.add(Interest::WRITABLE)
+            } else {
+                Interest::READABLE
+            };
+            Some(PollTarget::new(tcp.token, &tcp.stream, interest))
+        }));
+        let events = match poll.poll(&targets, timeout, WAKE_TOKEN) {
+            Ok(events) => events,
+            Err(_) => {
+                fail_all(
+                    &mut state.pending,
+                    &mut state.by_key,
+                    &results,
+                    &result_waker,
+                    "native resolver poll failed",
+                );
+                return;
+            }
+        };
         let socket_ready = events
             .iter()
-            .any(|event| event.token() == SOCKET_TOKEN && event.is_readable());
+            .any(|event| event.token == SOCKET_TOKEN && event.readable);
         if socket_ready {
             receive_packets(socket, &mut state, &results, &result_waker, poll, &config);
         }
         let tcp_events = events
             .iter()
-            .filter(|event| event.token().0 >= FIRST_TCP_TOKEN)
-            .map(|event| (event.token(), event.is_readable(), event.is_writable()))
+            .filter(|event| event.token.0 >= FIRST_TCP_TOKEN)
+            .map(|event| (event.token, event.readable, event.writable))
             .collect::<Vec<_>>();
         for (token, readable, writable) in tcp_events {
             receive_tcp(
@@ -557,7 +570,7 @@ fn transmit_due(
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
     config: &ResolverConfig,
-    poll: &Poll,
+    poll: &mut NativePoll,
 ) {
     let now = Instant::now();
     let due = state
@@ -649,7 +662,7 @@ fn transmit_due(
 
 fn advance_nameserver(
     socket: &mut UdpSocket,
-    poll: &Poll,
+    poll: &mut NativePoll,
     config: &ResolverConfig,
     current: &mut usize,
 ) -> bool {
@@ -659,13 +672,12 @@ fn advance_nameserver(
             continue;
         };
         if poll
-            .registry()
             .register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
             .is_err()
         {
             continue;
         }
-        let _deregister_result = poll.registry().deregister(socket);
+        let _deregister_result = poll.deregister(socket);
         *socket = replacement;
         *current = index;
         return true;
@@ -678,7 +690,7 @@ fn receive_packets(
     state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
-    poll: &Poll,
+    poll: &mut NativePoll,
     config: &ResolverConfig,
 ) {
     let mut buffer = [0_u8; DNS_PACKET_LIMIT];
@@ -902,7 +914,7 @@ fn finish_answer(
 fn begin_tcp_fallback(
     id: u16,
     query: &mut PendingQuery,
-    poll: &Poll,
+    poll: &mut NativePoll,
     nameserver: SocketAddr,
     timeout: Duration,
     tcp_by_token: &mut HashMap<Token, u16>,
@@ -916,15 +928,12 @@ fn begin_tcp_fallback(
         .ok_or_else(|| ResolveFailure::new("the native resolver TCP token space is exhausted"))?;
     let mut stream = TcpStream::connect(nameserver)
         .map_err(|error| ResolveFailure::new(format!("DNS-over-TCP connect failed: {error}")))?;
-    poll.registry()
-        .register(
-            &mut stream,
-            token,
-            Interest::READABLE.add(Interest::WRITABLE),
-        )
-        .map_err(|error| {
-            ResolveFailure::new(format!("DNS-over-TCP registration failed: {error}"))
-        })?;
+    poll.register(
+        &mut stream,
+        token,
+        Interest::READABLE.add(Interest::WRITABLE),
+    )
+    .map_err(|error| ResolveFailure::new(format!("DNS-over-TCP registration failed: {error}")))?;
     let mut outbound = Vec::with_capacity(query.wire.len() + 2);
     outbound.extend_from_slice(&length.to_be_bytes());
     outbound.extend_from_slice(&query.wire);
@@ -943,11 +952,11 @@ fn begin_tcp_fallback(
     Ok(())
 }
 
-fn remove_query(id: u16, state: &mut ResolverState, poll: &Poll) -> Option<PendingQuery> {
+fn remove_query(id: u16, state: &mut ResolverState, poll: &mut NativePoll) -> Option<PendingQuery> {
     let mut query = state.pending.remove(&id)?;
     if let QueryTransport::Tcp(tcp) = &mut query.transport {
         state.tcp_by_token.remove(&tcp.token);
-        let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+        let _deregister_result = poll.deregister(&mut tcp.stream);
     }
     Some(query)
 }
@@ -961,7 +970,7 @@ fn receive_tcp(
     token: Token,
     readable: bool,
     writable: bool,
-    poll: &Poll,
+    poll: &mut NativePoll,
     state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
@@ -987,7 +996,7 @@ fn receive_tcp(
         Ok(TcpDrive::Message(message)) => {
             if let QueryTransport::Tcp(tcp) = &mut query.transport {
                 state.tcp_by_token.remove(&tcp.token);
-                let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+                let _deregister_result = poll.deregister(&mut tcp.stream);
             }
             let parsed =
                 parse_answer(&message, id, &query.host, query.record_type).unwrap_or_else(|| {
@@ -1000,7 +1009,7 @@ fn receive_tcp(
         Err(failure) => {
             if let QueryTransport::Tcp(tcp) = &mut query.transport {
                 state.tcp_by_token.remove(&tcp.token);
-                let _deregister_result = poll.registry().deregister(&mut tcp.stream);
+                let _deregister_result = poll.deregister(&mut tcp.stream);
             }
             state.by_key.remove(&query.key);
             send_result(
@@ -1019,7 +1028,7 @@ fn drive_tcp(
     tcp: &mut TcpFallback,
     readable: bool,
     writable: bool,
-    poll: &Poll,
+    poll: &mut NativePoll,
 ) -> Result<TcpDrive, ResolveFailure> {
     if writable && tcp.written < tcp.outbound.len() {
         if let Some(error) = tcp.stream.take_error().map_err(|error| {
@@ -1046,8 +1055,7 @@ fn drive_tcp(
             }
         }
         if tcp.written == tcp.outbound.len() {
-            poll.registry()
-                .reregister(&mut tcp.stream, tcp.token, Interest::READABLE)
+            poll.reregister(&mut tcp.stream, tcp.token, Interest::READABLE)
                 .map_err(|error| {
                     ResolveFailure::new(format!("DNS-over-TCP re-registration failed: {error}"))
                 })?;

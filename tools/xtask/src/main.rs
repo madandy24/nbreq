@@ -201,6 +201,40 @@ fn verification_steps(stress_repetitions: usize) -> Vec<Step> {
             ],
         ),
         Step::cargo_without_offline("NBReq formatting", &["fmt", "--check"]),
+        Step::cargo_without_offline(
+            "WinSock compatibility wrapper formatting",
+            &[
+                "fmt",
+                "--manifest-path",
+                "support/winpoll/Cargo.toml",
+                "--check",
+            ],
+        ),
+        Step::cargo(
+            "WinSock compatibility wrapper compilation",
+            &[
+                "check",
+                "--manifest-path",
+                "support/winpoll/Cargo.toml",
+                "--all-targets",
+            ],
+        ),
+        Step::cargo(
+            "WinSock compatibility wrapper warning-denied lint",
+            &[
+                "clippy",
+                "--manifest-path",
+                "support/winpoll/Cargo.toml",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ),
+        Step::cargo(
+            "WinSock compatibility wrapper tests",
+            &["test", "--manifest-path", "support/winpoll/Cargo.toml"],
+        ),
         Step::cargo(
             "minimal-feature compilation",
             &["check", "--no-default-features"],
@@ -299,7 +333,7 @@ mod tests {
     #[test]
     fn verification_plan_covers_the_frozen_gate() {
         let steps = verification_steps(2);
-        assert_eq!(steps.len(), 20);
+        assert_eq!(steps.len(), 24);
         assert!(steps.iter().any(|step| step.args == ["test"]));
         assert!(
             steps
@@ -347,7 +381,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            steps[4].command_args(true),
+            steps[8].command_args(true),
             ["check", "--offline", "--no-default-features"]
         );
     }

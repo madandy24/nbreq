@@ -6,6 +6,10 @@ rust-version = "1.85"
 description = "Runtime-independent cancellable HTTP client"
 publish = false
 
+[workspace]
+members = ["support/winpoll"]
+resolver = "2"
+
 [features]
 default = []
 curl-pilot = ["dep:curl"]
@@ -16,6 +20,7 @@ native = [
     "dep:httparse",
     "dep:ipconfig",
     "dep:mio",
+    "dep:nbreq-winpoll",
     "dep:resolv-conf",
     "dep:rustls",
     "dep:rustls-platform-verifier",
@@ -36,6 +41,7 @@ url = { version = "=2.5.8", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 ipconfig = { version = "=0.3.4", optional = true, default-features = false }
+nbreq-winpoll = { path = "support/winpoll", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 resolv-conf = { version = "=0.7.6", optional = true, default-features = false }

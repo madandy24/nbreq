@@ -20,6 +20,8 @@ mod native_dns;
 mod native_dns_config;
 #[cfg(feature = "native")]
 mod native_http;
+#[cfg(feature = "native")]
+mod native_poll;
 #[cfg(all(fuzzing, feature = "native", feature = "test-support"))]
 pub(crate) use native_dns::fuzz_dns_response;
 #[cfg(all(fuzzing, feature = "native", feature = "test-support"))]
