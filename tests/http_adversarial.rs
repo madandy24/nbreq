@@ -199,6 +199,283 @@ impl Drop for ScriptedServer {
     }
 }
 
+enum RedirectScenario {
+    Post302Stops,
+    Post303BecomesGet,
+    Post307Replays,
+    SameOriginCredentials,
+    RedirectTo(String),
+    InspectCredentials,
+    Loop,
+}
+
+struct RedirectServer {
+    address: SocketAddr,
+    stopping: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl RedirectServer {
+    fn start(scenario: RedirectScenario) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("redirect listener must bind");
+        listener
+            .set_nonblocking(true)
+            .expect("redirect listener must become nonblocking");
+        let address = listener.local_addr().expect("redirect listener address");
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = Arc::clone(&stopping);
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            match scenario {
+                RedirectScenario::Post302Stops => {
+                    let (mut stream, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut stream);
+                    assert_eq!(request.method, "POST");
+                    assert_eq!(request.body, b"payload");
+                    write_redirect(&mut stream, 302, "/must-not-follow");
+                }
+                RedirectScenario::Post303BecomesGet => {
+                    let (mut first, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut first);
+                    assert_eq!(request.method, "POST");
+                    assert_eq!(request.body, b"payload");
+                    write_redirect(&mut first, 303, "/final");
+                    drop(first);
+
+                    let (mut second, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut second);
+                    assert_eq!(request.path, "/final");
+                    let body = format!("method={};body={}", request.method, request.body.len());
+                    write_ok(&mut second, body.as_bytes());
+                }
+                RedirectScenario::Post307Replays => {
+                    let (mut first, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut first);
+                    assert_eq!(request.method, "POST");
+                    assert_eq!(request.body, b"payload");
+                    write_redirect(&mut first, 307, "/final");
+                    drop(first);
+
+                    let (mut second, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut second);
+                    assert_eq!(request.path, "/final");
+                    let body = format!(
+                        "method={};body={}",
+                        request.method,
+                        String::from_utf8_lossy(&request.body)
+                    );
+                    write_ok(&mut second, body.as_bytes());
+                }
+                RedirectScenario::SameOriginCredentials => {
+                    let (mut first, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut first);
+                    assert!(request.authorization);
+                    assert!(request.cookie);
+                    write_redirect(&mut first, 302, "/final");
+                    drop(first);
+
+                    let (mut second, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut second);
+                    let body = format!(
+                        "authorization={};cookie={}",
+                        request.authorization, request.cookie
+                    );
+                    write_ok(&mut second, body.as_bytes());
+                }
+                RedirectScenario::RedirectTo(target) => {
+                    let (mut stream, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut stream);
+                    assert!(request.authorization);
+                    assert!(request.cookie);
+                    write_redirect(&mut stream, 302, &target);
+                }
+                RedirectScenario::InspectCredentials => {
+                    let (mut stream, _) =
+                        accept_redirect_stream(&listener, &worker_stopping, deadline);
+                    let request = read_request(&mut stream);
+                    let body = format!(
+                        "authorization={};cookie={}",
+                        request.authorization, request.cookie
+                    );
+                    write_ok(&mut stream, body.as_bytes());
+                }
+                RedirectScenario::Loop => {
+                    for _ in 0..3 {
+                        let (mut stream, _) =
+                            accept_redirect_stream(&listener, &worker_stopping, deadline);
+                        let request = read_request(&mut stream);
+                        assert_eq!(request.method, "GET");
+                        write_redirect(&mut stream, 302, "/loop");
+                    }
+                }
+            }
+        });
+        Self {
+            address,
+            stopping,
+            worker: Some(worker),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/start", self.address)
+    }
+
+    fn final_url(&self) -> String {
+        format!("http://{}/final", self.address)
+    }
+}
+
+impl Drop for RedirectServer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let joined = worker.join();
+            if !thread::panicking() {
+                joined.expect("redirect server must join");
+            }
+        }
+    }
+}
+
+struct ObservedRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    authorization: bool,
+    cookie: bool,
+}
+
+fn accept_redirect_stream(
+    listener: &TcpListener,
+    stopping: &AtomicBool,
+    deadline: Instant,
+) -> (TcpStream, SocketAddr) {
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("redirect stream must become blocking");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("redirect read timeout must configure");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .expect("redirect write timeout must configure");
+                stream
+                    .set_nodelay(true)
+                    .expect("redirect TCP_NODELAY must configure");
+                return (stream, peer);
+            }
+            Err(error) if error.kind() == IoErrorKind::WouldBlock => {
+                assert!(
+                    !stopping.load(Ordering::Acquire),
+                    "redirect server stopped before the expected request"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "redirect server timed out waiting for a request"
+                );
+                thread::yield_now();
+            }
+            Err(error) => panic!("redirect listener failed: {error}"),
+        }
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> ObservedRequest {
+    let mut received = Vec::new();
+    let mut buffer = [0_u8; 512];
+    let head_end = loop {
+        if let Some(offset) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+            break offset + 4;
+        }
+        let read = stream
+            .read(&mut buffer)
+            .expect("redirect request head must read");
+        assert_ne!(read, 0, "client closed before redirect request head");
+        received.extend_from_slice(&buffer[..read]);
+    };
+    let head = std::str::from_utf8(&received[..head_end]).expect("request head must be UTF-8");
+    let mut lines = head.split("\r\n");
+    let mut request_line = lines
+        .next()
+        .expect("request line must exist")
+        .split_whitespace();
+    let method = request_line
+        .next()
+        .expect("request method must exist")
+        .to_owned();
+    let path = request_line
+        .next()
+        .expect("request path must exist")
+        .to_owned();
+    let headers: Vec<_> = lines.filter_map(|line| line.split_once(':')).collect();
+    let content_length = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
+        .map(|(_, value)| {
+            value
+                .trim()
+                .parse::<usize>()
+                .expect("request Content-Length must be numeric")
+        })
+        .unwrap_or(0);
+    let authorization = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Authorization"));
+    let cookie = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Cookie"));
+    let mut body = received.split_off(head_end);
+    while body.len() < content_length {
+        let read = stream
+            .read(&mut buffer)
+            .expect("redirect request body must read");
+        assert_ne!(read, 0, "client closed before redirect request body");
+        body.extend_from_slice(&buffer[..read]);
+    }
+    body.truncate(content_length);
+    ObservedRequest {
+        method,
+        path,
+        body,
+        authorization,
+        cookie,
+    }
+}
+
+fn write_redirect(stream: &mut TcpStream, status: u16, location: &str) {
+    let response = format!(
+        "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("redirect response must write");
+}
+
+fn write_ok(stream: &mut TcpStream, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .expect("final response head must write");
+    stream
+        .write_all(body)
+        .expect("final response body must write");
+}
+
 fn wait_for_peer_close(stream: &mut TcpStream, stopping: &AtomicBool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buffer = [0_u8; 64];
@@ -372,6 +649,113 @@ fn sequential_requests_reuse_one_http11_connection() {
                 .unwrap_or_else(|error| panic!("{backend_name}: reuse failed: {error}"));
             assert_eq!(response.body(), expected, "{backend_name}");
         }
+        engine
+            .shutdown()
+            .unwrap_or_else(|error| panic!("{backend_name}: lab Engine failed to stop: {error}"));
+    }
+}
+
+#[test]
+fn redirects_share_the_portable_method_body_and_hop_rules() {
+    for (backend_name, backend) in test_backends() {
+        let engine = test_engine(EngineConfig::spawned(), backend);
+        let client = engine.client();
+
+        let post_302 = RedirectServer::start(RedirectScenario::Post302Stops);
+        let response = client
+            .execute(
+                Request::post(post_302.url())
+                    .body(b"payload".to_vec())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("302 request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: 302 request failed: {error}"));
+        assert_eq!(response.status(), 302, "{backend_name}: POST 302");
+
+        let post_303 = RedirectServer::start(RedirectScenario::Post303BecomesGet);
+        let response = client
+            .execute(
+                Request::post(post_303.url())
+                    .body(b"payload".to_vec())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("303 request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: 303 request failed: {error}"));
+        assert_eq!(response.body(), b"method=GET;body=0", "{backend_name}");
+
+        let post_307 = RedirectServer::start(RedirectScenario::Post307Replays);
+        let response = client
+            .execute(
+                Request::post(post_307.url())
+                    .body(b"payload".to_vec())
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("307 request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: 307 request failed: {error}"));
+        assert_eq!(
+            response.body(),
+            b"method=POST;body=payload",
+            "{backend_name}"
+        );
+
+        let same_origin = RedirectServer::start(RedirectScenario::SameOriginCredentials);
+        let response = client
+            .execute(
+                Request::get(same_origin.url())
+                    .header("Authorization", "Basic parity-fixture")
+                    .header("Cookie", "parity=yes")
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("same-origin credential request must build"),
+            )
+            .unwrap_or_else(|error| panic!("{backend_name}: same-origin redirect failed: {error}"));
+        assert_eq!(
+            response.body(),
+            b"authorization=true;cookie=true",
+            "{backend_name}"
+        );
+
+        let cross_target = RedirectServer::start(RedirectScenario::InspectCredentials);
+        let cross_source =
+            RedirectServer::start(RedirectScenario::RedirectTo(cross_target.final_url()));
+        let response = client
+            .execute(
+                Request::get(cross_source.url())
+                    .header("Authorization", "Basic parity-fixture")
+                    .header("Cookie", "parity=yes")
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cross-origin credential request must build"),
+            )
+            .unwrap_or_else(|error| {
+                panic!("{backend_name}: cross-origin redirect failed: {error}")
+            });
+        assert_eq!(
+            response.body(),
+            b"authorization=false;cookie=false",
+            "{backend_name}"
+        );
+
+        let redirect_loop = RedirectServer::start(RedirectScenario::Loop);
+        match client
+            .execute(
+                Request::get(redirect_loop.url())
+                    .redirect_limit(2)
+                    .total_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("redirect loop request must build"),
+            )
+            .expect_err("redirect loop must fail")
+        {
+            ExecuteError::Failed(error) => {
+                assert_eq!(error.kind(), ErrorKind::Redirect, "{backend_name}: {error}")
+            }
+            other => panic!("{backend_name}: expected redirect failure, got {other:?}"),
+        }
+
         engine
             .shutdown()
             .unwrap_or_else(|error| panic!("{backend_name}: lab Engine failed to stop: {error}"));
