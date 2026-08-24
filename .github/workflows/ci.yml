@@ -100,7 +100,7 @@ jobs:
         run: cargo install --locked --features cli --version 0.9.1 cargo-about
 
       - name: Regenerate locked license report
-        run: cargo about generate --frozen --all-features --fail --output-file target/THIRD_PARTY_LICENSES.generated.html about.hbs
+        run: cargo about generate --frozen --all-features --fail --output-file THIRD_PARTY_LICENSES.generated.html about.hbs
 
       - name: Reject license-report drift
-        run: cmp THIRD_PARTY_LICENSES.html target/THIRD_PARTY_LICENSES.generated.html
+        run: cmp THIRD_PARTY_LICENSES.html THIRD_PARTY_LICENSES.generated.html
