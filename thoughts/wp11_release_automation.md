@@ -1,7 +1,8 @@
 # WP11.3 release-automation evidence
 
-Status: hosted automation accepted 2026-08-24. The public GitHub repository, portable CI, and
-private vulnerability reporting are live. No crate has been published.
+Status: WP11.3 accepted 2026-08-24. The public GitHub repository, portable CI, private vulnerability
+reporting, support-crate publication, registry-resolution rehearsal, and clean consumer build pass.
+The root `nbreq` crate remains unpublished pending the separate WP11.4 decision.
 
 ## 1. Portable CI definition
 
@@ -68,11 +69,24 @@ pushing the reviewed local `main` history. GitHub Actions is enabled. Private vu
 reporting is enabled, making the packaged `SECURITY.md` route live. Secret scanning and push
 protection remain enabled by GitHub for the public repository.
 
-## 6. Remaining WP11.3 gates
+## 6. Registry-resolution and consumer rehearsal
 
-1. Rehearse registry resolution by publishing and verifying `nbreq-winpoll 0.1.0` before packaging
-   the root crate. Publication itself requires a separate explicit release decision.
-2. Build the root archive and a clean external consumer only after the support crate resolves from
-   the registry.
+With explicit owner approval, `nbreq-winpoll 0.1.0` was published from clean commit `0ac593b` after
+an authenticated dry run. Its eight-file archive is 7.6 KiB compressed with SHA-256:
 
-No crate has been published by this checkpoint.
+`A7D9DF03F084102285D0AED63DE4233544FC23D9D555D0E4A0DB5E30A27BDEB1`
+
+The crates.io record reports `MIT OR Apache-2.0`, Rust 1.85, and the expected repository and docs.rs
+URLs. Root `cargo package` then succeeds without a local registry patch, explicitly downloads and
+compiles `nbreq-winpoll 0.1.0`, and produces the 39-file `nbreq 0.1.0` archive with SHA-256:
+
+`5689F12B3E560DD477F62E978D025CAEAD0C0363F6914714C646AF6E653DE9D2`
+
+A new isolated consumer depends on the unpacked normalized root package, resolves the support crate
+from crates.io, compiles the complete native graph, creates one spawned Engine and Client, and
+shuts the Engine down successfully. This closes WP11.3 without publishing the root crate.
+
+## 7. Remaining release gate
+
+WP11.4 owns the explicit, permanent publication decision for `nbreq 0.1.0`. Before that action,
+reconfirm the exact root archive, clean Git/CI state, package metadata, and crates.io credentials.

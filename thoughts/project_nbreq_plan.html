@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">WP1–WP10 and WP11.2 accepted; native is the ordinary/default HTTP backend; WP11.3 release automation is in progress</span>
+  Overall status: <span class="gate-partial">WP1–WP10 and WP11.3 accepted; native is the ordinary/default HTTP backend; WP11.4 root publication is next</span>
 </div>
 
 <div class="panel">
@@ -491,7 +491,7 @@
 <p><strong>Accepted:</strong> exact NBReq <span class="mono">95cc8ea</span> passes all 22 verification stages on Ubuntu 20.04/Rust 1.85 in 409.080 seconds and under the ordinary Windows account in 96.297 seconds. A distinct verified GDS x86 package then selects native on Windows 10, runs both real gateway channels and authenticated website traffic, joins native Drops in 1 ms, restarts the identical files with ureq, repeats live traffic, and closes normally. Native is now the Cargo default and ordinary constructor; curl remains explicit, and ureq/curl rollback remains available. P10-04 CI is deferred until the genuine public repository exists rather than simulated locally.</p>
 
 <h3>WP11 — Harden, document, and publish</h3>
-<p><span class="status status-progress">In progress — WP11.3 release automation</span> Produces the reusable public module.</p>
+<p><span class="status status-progress">In progress — WP11.4 root publication</span> Produces the reusable public module.</p>
 <ul>
   <li>Write API guides for blocking programs, callbacks, GUI dispatch, DLL/FFI use, cancellation, shutdown, limits, TLS, and testing.</li>
   <li>Document MSRV, supported platforms, feature matrix, dependency/licensing inventory, and security reporting.</li>
@@ -501,7 +501,7 @@
   <li>Define semantic-versioning policy and distinguish portable contract from backend extras.</li>
   <li>Publish only after reproducing builds and release tests from a clean environment.</li>
 </ul>
-<p><strong>Progress:</strong> the public repository is live at <span class="mono">https://github.com/madandy24/nbreq</span> with private vulnerability reporting enabled. Its least-privilege workflow passes stable Windows, stable Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-exact component/dependency license gates in 3 minutes 2 seconds on run #3. The complete local 20-stage Windows verifier also passes in 29.940 seconds. Registry-resolution rehearsal and publication remain open.</p>
+<p><strong>Progress:</strong> WP11.3 is accepted. The public repository is live at <span class="mono">https://github.com/madandy24/nbreq</span> with private vulnerability reporting enabled. Its least-privilege workflow passes stable Windows, stable Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-exact component/dependency license gates. The implementation-detail <span class="mono">nbreq-winpoll 0.1.0</span> is published and registry-verified; the normalized 39-file root archive downloads that exact crate, compiles, and runs through an isolated consumer. Only the explicit permanent publication of root <span class="mono">nbreq 0.1.0</span> remains open.</p>
 <p><strong>Acceptance:</strong> a new consumer can use NBReq without GDS knowledge; docs state execution and shutdown honestly; release artifacts and tests are reproducible.</p>
 
 <h3>Post-WP11 — Expose reusable DNS and TCP capabilities</h3>

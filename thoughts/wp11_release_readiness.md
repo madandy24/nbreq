@@ -24,24 +24,25 @@ accepted private implementation into a public crate. It does not authorize publi
 | License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
 | Version | **Resolved:** root and implementation-detail support crate are `0.1.0` | Keep 1.0 gated on post-publication production observation and API stability |
 | Registry metadata | **Hosted:** public repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Remove `publish = false` only at the explicit release gate |
-| Windows support crate | **Topology resolved:** `nbreq-winpoll` is `0.1.0`, crates.io-scoped, explicitly described as an implementation detail, and the root uses path + registry version | Publish and verify this crate immediately before `nbreq`; do not market or stabilize it as a direct consumer API |
+| Windows support crate | **Published and verified:** `nbreq-winpoll 0.1.0` is the crates.io-scoped implementation detail; the root uses path + registry version and its normalized package resolves the registry copy | Do not market or stabilize it as a direct consumer API; publish later versions only with their matching root release |
 | Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
 | Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
 | Empty `ffi` feature | **Resolved:** removed before 0.1.0 | Add a future FFI feature only with an implemented and documented contract |
 | Security contact | **Live:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports; private reporting is enabled on the repository | Recheck the route before each release |
 | CI | **Live:** the least-privilege GitHub Actions workflow passes the complete verifier on stable Windows, stable Ubuntu, and Ubuntu/Rust 1.85, with separate successful RustSec and byte-exact license-report gates | Retain named target-host/Wine/GDS evidence for claims portable CI cannot reproduce |
 
-The remaining topology gate is publication order, not an architecture defect: publish and verify
-`nbreq-winpoll` first, then package `nbreq` so its normalized manifest resolves version `0.1.0` from
-crates.io. Both crates remain unpublished during WP11 review. Curl no longer participates in the
-public resolution graph.
+The topology gate is closed. `nbreq-winpoll 0.1.0` was published and verified first; packaging
+`nbreq` now rewrites its path dependency to registry version `0.1.0`, downloads that exact support
+crate from crates.io, and compiles successfully. The root crate remains unpublished pending the
+separate WP11.4 decision. Curl does not participate in the public resolution graph.
 
 The 2026-08-24 rehearsal confirms that boundary. `cargo package --list` for each crate contains only
-the frozen files. Offline `cargo package -p nbreq-winpoll --allow-dirty` produced and compiled an
-eight-file support archive. Root packaging then stopped before archive creation because
-`nbreq-winpoll 0.1.0` is not yet present in the crates.io index. That is the intended fail-closed
-publish order; the root archive and external clean-consumer build remain a post-support-publication
-release rehearsal rather than being simulated with a local registry patch.
+the frozen files. The published eight-file support archive has SHA-256
+`A7D9DF03F084102285D0AED63DE4233544FC23D9D555D0E4A0DB5E30A27BDEB1`. Root packaging produces a
+39-file, 183.2-KiB compressed archive with SHA-256
+`5689F12B3E560DD477F62E978D025CAEAD0C0363F6914714C646AF6E653DE9D2`. An isolated consumer builds
+against the normalized unpacked root package, resolves the support crate from crates.io, creates a
+spawned Engine and Client, and shuts down cleanly.
 
 ## 3. Dependency-license audit
 
@@ -118,7 +119,9 @@ WP11.3 automation evidence is recorded in `wp11_release_automation.md`. The loca
 the complete 20-stage Windows verifier in 29.940 seconds. Public GitHub Actions run #3 on `9015961`
 then passes stable Windows, stable Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-exact license gates in
 3 minutes 2 seconds. Private vulnerability reporting is live. Registry resolution and publication
-remain deliberately open.
+order were then proved by the support publication, registry-resolved root package, and isolated
+consumer proof above. WP11.3 is accepted; only permanent root publication remains deliberately
+open.
 
 ## 6. First realistic native observation
 
