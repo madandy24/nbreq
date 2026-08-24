@@ -506,11 +506,12 @@
 
 <h3>Post-WP11 — Expose reusable DNS and TCP capabilities</h3>
 <p><span class="status status-deferred">Follow-up after the HTTP release</span> Reuse NBReq's proven owner without splitting project management across public crates.</p>
+<p><strong>Companion tracker:</strong> the public contract, implementation sequence, verification gates, and progress record for this work continue in <span class="mono">thoughts/project_nbreq_followup_plan.html</span>. The WP0–WP11 material here remains the accepted history of the first HTTP release.</p>
 <ul>
   <li>Keep one public <span class="mono">nbreq</span> crate. Internal modules or workspace crates may be reorganized invisibly, but no separate public DNS/TCP packages are planned initially.</li>
   <li>Expose Engine-issued, backend-neutral DNS and TCP facades rather than Hickory, mio, reactor-slot, cache-entry, HTTP-pool, or raw escaped-socket types.</li>
   <li>Give DNS explicit policy for A/AAAA ordering, search suffixes, cache/TTL visibility, bounded results, errors, cancellation, and shutdown.</li>
-  <li>Remove the wire-only Hickory dependency early in this follow-up. The Rust-1.85 release pin has two reviewed, unreachable advisory paths (DNSSEC is not compiled; production encoding is exactly one bounded question with no records), but retaining a scanner exception indefinitely is undesirable.</li>
+  <li>Remove the wire-only Hickory dependency after the public DNS/TCP behaviour is frozen, as sequenced by the companion tracker. The Rust-1.85 release pin has two reviewed, unreachable advisory paths (DNSSEC is not compiled; production encoding is exactly one bounded question with no records), but retaining a scanner exception indefinitely is undesirable.</li>
   <li>Give TCP bounded reader/writer ownership, connect and I/O deadlines, half-close/EOF semantics, cancellation, and consuming Engine shutdown.</li>
   <li>Reuse the same admission, wakeup, metrics, error-stage, resource-bound, and no-hidden-runtime rules as HTTP; do not weaken the unique Engine ownership model.</li>
 </ul>

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NBReq Post-Release Follow-up Plan</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #172033;
+    --muted: #64748b;
+    --line: #d9e1ea;
+    --panel: #ffffff;
+    --page: #f6f7f9;
+    --blue: #2563eb;
+    --red: #b91c1c;
+    --red-bg: #fef2f2;
+    --amber: #a16207;
+    --amber-bg: #fffbeb;
+    --green: #15803d;
+    --green-bg: #f0fdf4;
+    --slate: #475569;
+    --purple: #7e22ce;
+    --purple-bg: #faf5ff;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; line-height: 1.5; color: var(--ink); background: var(--page); }
+  h1 { font-size: 1.9rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.25rem; margin-top: 2rem; margin-bottom: 0.55rem; border-bottom: 2px solid var(--line); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.25rem; margin-bottom: 0.35rem; color: #334155; }
+  p { margin: 0.45rem 0; }
+  ul, ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+  li { margin-bottom: 0.35rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0.75rem 0 1.25rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e4eaf1; font-size: 0.9rem; vertical-align: top; }
+  th { background: #eef3f8; font-weight: 650; }
+  tr:last-child td { border-bottom: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+  pre { background: #eef3f8; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.84rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 1rem; border-radius: 8px; margin: 1rem 0 1.35rem; }
+  .panel h3:first-child { margin-top: 0; }
+  .callout { border-left: 4px solid var(--blue); padding: 0.75rem 0.9rem; background: #eff6ff; border-radius: 0 6px 6px 0; margin: 0.85rem 0; }
+  .danger { border-left-color: var(--red); background: var(--red-bg); }
+  .warning { border-left-color: var(--amber); background: var(--amber-bg); }
+  .success { border-left-color: var(--green); background: var(--green-bg); }
+  .future { border-left-color: var(--purple); background: var(--purple-bg); }
+  .small { font-size: 0.86rem; color: var(--muted); }
+  .status { display: inline-block; white-space: nowrap; border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
+  .status-open { color: #9f1239; background: #ffe4e6; }
+  .status-progress { color: #a16207; background: #fef3c7; }
+  .status-done { color: #166534; background: #dcfce7; }
+  .status-deferred { color: var(--slate); background: #e2e8f0; }
+  .status-question { color: #6b21a8; background: #f3e8ff; }
+  .gate-no { color: var(--red); font-weight: 750; }
+  .gate-yes { color: var(--green); font-weight: 750; }
+  .gate-partial { color: var(--amber); font-weight: 750; }
+  .nowrap { white-space: nowrap; }
+  .toc { columns: 2; column-gap: 2rem; }
+  @media (max-width: 780px) {
+    body { margin: 1rem; }
+    .toc { columns: 1; }
+    table { display: block; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+
+<h1>NBReq Post-Release Follow-up Plan</h1>
+<div class="subtitle">
+  Published baseline: <span class="mono">nbreq 0.1.0</span> &nbsp;|&nbsp;
+  Original tracker: <span class="mono">thoughts/project_nbreq_plan.html</span> &nbsp;|&nbsp;
+  Opened: 2026-08-25 &nbsp;|&nbsp;
+  Overall status: <span class="status status-progress">Follow-up plan accepted; F0 API skeleton next</span>
+</div>
+
+<div class="panel">
+  <h3>Purpose</h3>
+  <p>This companion tracker governs work after the first HTTP release. It keeps the accepted <span class="mono">0.1.0</span> ownership and lifecycle model intact while exposing the already-proven Engine-owned DNS resolver and TCP reactor as useful public capabilities, then removes the wire-only Hickory dependency without changing observable resolver behaviour.</p>
+  <p>The original WP0–WP11 tracker remains the authoritative history of the HTTP product and release. This document begins a new programme so follow-up API decisions and evidence do not blur the boundary of the published release.</p>
+</div>
+
+<div class="callout success">
+  <strong>Starting point:</strong> native HTTP is the ordinary default; <span class="mono">Engine</span> uniquely owns networking, cancellation, wakeup, limits, metrics, worker services, and joined shutdown. DNS, TCP, HTTP/1.1, TLS, pooling, redirects, and streaming already run on that owner on Windows and Linux, with an old-Wine polling fallback. The follow-up exposes capabilities; it does not create another runtime.
+</div>
+
+<h2 id="contents">Contents</h2>
+<ol class="toc">
+  <li><a href="#boundary">Programme boundary</a></li>
+  <li><a href="#principles">Frozen principles</a></li>
+  <li><a href="#contract">Public contract freeze</a></li>
+  <li><a href="#shape">Proposed API shape</a></li>
+  <li><a href="#work">Work packages</a></li>
+  <li><a href="#sequence">Dependency sequence</a></li>
+  <li><a href="#verification">Verification matrix</a></li>
+  <li><a href="#questions">Open API footnotes</a></li>
+  <li><a href="#later">Later register</a></li>
+  <li><a href="#decisions">Decision log</a></li>
+  <li><a href="#progress">Progress log</a></li>
+</ol>
+
+<h2 id="boundary">1. Programme Boundary</h2>
+
+<table>
+<tr><th>In scope now</th><th>Not part of this programme</th></tr>
+<tr>
+  <td>
+    <ul>
+      <li>An Engine-issued hostname <span class="mono">Resolver</span>.</li>
+      <li>An Engine-issued cleartext <span class="mono">TcpConnector</span>.</li>
+      <li>Finite cancellable resolve/connect operations.</li>
+      <li>Unique bounded TCP connection, reader, and writer ownership.</li>
+      <li>Component admission budgets and payload-free metrics.</li>
+      <li>Removal of the wire-only Hickory dependency after facade acceptance.</li>
+      <li>Compile-checked guides and cross-platform lifecycle evidence.</li>
+    </ul>
+  </td>
+  <td>
+    <ul>
+      <li>A generic DNS record-query library.</li>
+      <li>Escaped raw sockets, descriptors, Mio types, or reactor identities.</li>
+      <li>TLS on <span class="mono">TcpConnector</span>; a future TLS facade would wrap NBReq TCP ownership.</li>
+      <li>A second runtime, second native poller, or hidden Engine.</li>
+      <li>Separate published DNS or TCP crates.</li>
+      <li>Generic TCP pooling, HTTP/2, proxies, compression, or shared cross-Engine pools.</li>
+      <li>Changing existing HTTP unknown-host semantics.</li>
+    </ul>
+  </td>
+</tr>
+</table>
+
+<div class="callout warning">
+  <strong>Compatibility boundary:</strong> public resolver NXDOMAIN/NoData are successful DNS exchanges. HTTP still maps a hostname with no usable address to <span class="mono">Failed(ErrorKind::Transport, TransportStage::Dns)</span>. Exposing the resolver must not change <span class="mono">Client</span> behaviour.
+</div>
+
+<h2 id="principles">2. Frozen Principles</h2>
+
+<ol>
+  <li><strong>One Engine, three capabilities.</strong> HTTP <span class="mono">Client</span>, <span class="mono">Resolver</span>, and <span class="mono">TcpConnector</span> are issued tickets into one unique Engine lifecycle.</li>
+  <li><strong>No public constructors.</strong> Capability handles are cheap and cloneable, but they neither own nor extend Engine life. Detached handles reject new work with <span class="mono">EngineStopped</span>.</li>
+  <li><strong>No hidden runtime.</strong> Public DNS uses the existing resolver thread and public TCP uses the existing native reactor. They never construct parallel pollers or private Engines.</li>
+  <li><strong>HTTP selection is only HTTP selection.</strong> <span class="mono">HttpBackend</span> does not select DNS or TCP. With native support compiled, an Engine using an explicit HTTP backend may still issue native DNS/TCP handles; without native support, those operations fail <span class="mono">Unsupported</span> before admission.</li>
+  <li><strong>One terminal winner.</strong> Resolve and connect each have exactly one completed, failed, or cancelled terminal. Cancellation is idempotent after terminal state and fails closed across Engines.</li>
+  <li><strong>No user code on owners.</strong> Start callbacks use the accepted callback-dispatch domain and never run on the resolver or reactor thread or under internal locks.</li>
+  <li><strong>Manual means passive.</strong> Submit and <span class="mono">try_*</span> calls never drive. Blocking execute, wait, read, and send calls reject manual mode. <span class="mono">Engine::drive</span> advances HTTP, DNS, and TCP together.</li>
+  <li><strong>Bounds before growth.</strong> Names, result counts, commands, live operations, connections, and queued bytes are bounded before resource acquisition or buffer growth.</li>
+  <li><strong>Joined shutdown.</strong> Engine-wide cancellation and consuming shutdown cover HTTP requests, public resolutions, public connects, and live TCP streams. No thread or socket ownership escapes that join.</li>
+  <li><strong>One crate.</strong> Public interfaces remain in <span class="mono">nbreq</span>. Internal module/workspace reorganisation may remain invisible.</li>
+</ol>
+
+<h2 id="contract">3. Public Contract Freeze</h2>
+
+<h3>3.1 Resolver semantics</h3>
+<ul>
+  <li><span class="mono">Resolver</span> is a hostname-to-address service, not arbitrary DNS.</li>
+  <li>NXDOMAIN and NoData commit <span class="mono">ResolveCompletion::Completed</span>. SERVFAIL, REFUSED, malformed replies, truncation after bounded TCP retry, timeout, and no usable nameserver commit <span class="mono">Failed</span>.</li>
+  <li><span class="mono">DnsFailure</span> is payload-free failure detail like <span class="mono">TlsFailure</span>. It does not encode NXDOMAIN or NoData, and timeout remains classified by <span class="mono">TimeoutKind</span>.</li>
+  <li>Names are exact ASCII/punycode at build time. No Unicode-to-IDNA conversion occurs silently.</li>
+  <li>Search suffix use is per-request opt-in. It is never an Engine-wide switch and cannot affect HTTP lookups.</li>
+  <li>Address family and order are explicit. Public <span class="mono">AddressFamily::Both</span> collects A and AAAA rather than copying HTTP's A-first/AAAA-on-NoData fallback. Order within each family is preserved; combined IPv4/IPv6 ordering does not promise parallel queries or Happy Eyeballs. Both completes only when each required family reaches a semantic DNS terminal; a transport/protocol failure in either fails the operation rather than silently returning a partial set.</li>
+  <li><span class="mono">Use</span>, <span class="mono">Refresh</span>, and <span class="mono">Bypass</span> are the complete initial cache modes. Cache validity is exposed as an in-process <span class="mono">Option&lt;Instant&gt;</span>, not a wall clock.</li>
+  <li>The resolver and HTTP share the existing Engine-owned DNS cache. A public <span class="mono">Refresh</span> can therefore replace an entry later observed by HTTP on that Engine; this visibility is deliberate and does not permit public search policy to affect HTTP.</li>
+  <li>Every request has a bounded result count at or below the Engine ceiling. Resolver validation and cache lookup cannot bypass admission or terminal accounting.</li>
+</ul>
+
+<h3>3.2 TCP connect semantics</h3>
+<ul>
+  <li>A connect is a finite operation with <span class="mono">start</span>, <span class="mono">submit</span>, and spawned-mode <span class="mono">execute</span>. Its completed value is one unique live <span class="mono">TcpConnection</span>.</li>
+  <li><span class="mono">TcpConnectRequest</span> accepts either a hostname plus port or a literal <span class="mono">SocketAddr</span>. A hostname connect charges public DNS and standalone TCP budgets; a literal skips DNS.</li>
+  <li>Connect timeout includes capacity waiting, DNS when required, and TCP establishment. The accepted-operation total clock begins at admission.</li>
+  <li>The unsplit connection supports simple bidirectional use. <span class="mono">split(self)</span> returns unique reader and writer halves for concurrent ownership.</li>
+  <li>Connected reads and writes are bounded queue I/O with passive <span class="mono">try_*</span> operations. They do not create a second Completion protocol.</li>
+  <li>An unfinished writer drop aborts the connection. <span class="mono">finish(self)</span> drains accepted output and then half-closes the write side.</li>
+  <li>A reader drop before observed EOF cancels the connection, including after writer finish. Reader drop after EOF is harmless.</li>
+  <li>Dropping an unsplit connection before its writer has finished and its reader has observed EOF aborts it. Dropping it after both directions are terminal is harmless.</li>
+  <li>The reader drains retained bytes before reporting EOF. Reset, cancellation, Engine stop, and local fail-closed drop wake blocked readers and writers promptly.</li>
+  <li>TCP is cleartext. There is no <span class="mono">into_std</span>, raw descriptor, escaped socket, or hidden TLS mode.</li>
+</ul>
+
+<h3>3.3 Shared budgets</h3>
+<ul>
+  <li>HTTP pool capacity, public DNS inflight capacity, and standalone TCP capacity are distinct anti-starvation budgets.</li>
+  <li>An Engine-wide queued-byte ceiling covers HTTP upload/unread-response queues plus standalone TCP send/unread-receive queues.</li>
+  <li>Per-operation and per-connection windows may request less than their Engine limit, never more.</li>
+  <li>HTTP-internal DNS remains reserved from public-resolver exhaustion. A hostname connect reserves its standalone TCP permit for the lifetime of the accepted connect/live connection and borrows one public-DNS permit only while resolving. The DNS permit is released before socket establishment; the connect retains one ID and one canonical terminal throughout.</li>
+  <li><span class="mono">Engine::cancel_all</span> covers HTTP, public DNS, pending connects, and live standalone TCP. The callback-event budget is shared by callback-bearing HTTP, resolve, and connect terminals; connected queue I/O does not invent callbacks.</li>
+  <li>Metrics remain payload-free and distinguish HTTP, public DNS, and standalone TCP current/high-water/cumulative activity.</li>
+</ul>
+
+<h2 id="shape">4. Proposed API Shape</h2>
+
+<p>The exact spelling remains compile-checkable F0 work. The intended consumer shape is:</p>
+
+<pre><code>let engine = Engine::new(config)?;
+
+let http = engine.client();
+let resolver = engine.resolver();
+let tcp = engine.tcp_connector();</code></pre>
+
+<h3>4.1 Resolution</h3>
+<pre><code>let request = ResolveRequest::new("example.com")
+    .address_family(AddressFamily::Both)
+    .address_order(AddressOrder::Ipv4ThenIpv6)
+    .cache_mode(CacheMode::Use)
+    .max_results(8)
+    .total_timeout(Duration::from_secs(5))
+    .build()?;
+
+let response = resolver.execute(request)?;
+match response.status() {
+    ResolveStatus::Answer =&gt; { /* use response.addresses() */ }
+    ResolveStatus::NameNotFound | ResolveStatus::NoData =&gt; { /* valid negative answer */ }
+}</code></pre>
+
+<p>Expected public family: <span class="mono">Resolver</span>, <span class="mono">ResolveRequest</span>/<span class="mono">ResolveRequestBuilder</span>, <span class="mono">PendingResolve</span>, <span class="mono">ResolveHandle</span>, <span class="mono">ResolveCompletion</span>, <span class="mono">ResolveResponse</span>, <span class="mono">ResolveStatus</span>, <span class="mono">ResolvedAddress</span>, <span class="mono">AddressFamily</span>, <span class="mono">AddressOrder</span>, <span class="mono">CacheMode</span>, and <span class="mono">DnsFailure</span>.</p>
+
+<h3>4.2 TCP</h3>
+<pre><code>let request = TcpConnectRequest::hostname("example.com", 1234)
+    .connect_timeout(Duration::from_secs(5))
+    .build()?;
+
+let connection = tcp.execute(request)?;
+let handle = connection.handle();
+
+// Simple callers may read/send on `connection` directly.
+// Concurrent callers may consume it into unique halves:
+let (mut reader, mut writer) = connection.split();
+writer.send(bytes)?;
+writer.finish()?;
+while let Some(count) = reader.read(&mut buffer)? {
+    consume(&buffer[..count]);
+}</code></pre>
+
+<p>Expected public family: <span class="mono">TcpConnector</span>, <span class="mono">TcpConnectRequest</span>/<span class="mono">TcpConnectRequestBuilder</span>, <span class="mono">PendingTcpConnect</span>, <span class="mono">TcpConnectHandle</span>, <span class="mono">TcpConnectCompletion</span>, <span class="mono">TcpConnection</span>, <span class="mono">TcpConnectionHandle</span>, <span class="mono">TcpReader</span>, <span class="mono">TcpWriter</span>, and ownership-preserving read/send error types.</p>
+
+<div class="callout">
+  <strong>Existing vocabulary wins:</strong> finite resolve/connect operations mirror HTTP <span class="mono">start</span>, <span class="mono">submit</span>, <span class="mono">execute</span>, <span class="mono">RequestId</span>, <span class="mono">ExecuteError</span>, and cloneable cancellation handles. Live TCP queue I/O mirrors the ownership lessons of <span class="mono">ResponseReader</span> and <span class="mono">UploadSender</span>, but it is not called <span class="mono">submit_stream</span> and does not adapt HTTP <span class="mono">Completion</span>.
+</div>
+
+<h2 id="work">5. Work Packages</h2>
+
+<h3>F0 — Freeze and compile-check the contract</h3>
+<p><span class="status status-progress">In progress</span></p>
+<ul>
+  <li>Record the ownership, terminal, name/cache, drop, half-close, budget, and backend-selection decisions in this tracker and the product specification.</li>
+  <li>Write public type skeletons and compile-only examples before connecting either facade to private modules.</li>
+  <li>Prove capability handles are cloneable tickets, connection/halves are <span class="mono">Send</span> but not <span class="mono">Clone</span>/<span class="mono">Sync</span>, and Engine remains <span class="mono">Send</span>/<span class="mono">!Sync</span>.</li>
+  <li>Freeze trailing-dot normalization, result/TTL representation, cache-mode semantics, and the exact blocking/manual errors.</li>
+  <li>Generalize <span class="mono">Engine::drive_until</span> through a tiny sealed waiter-target trait implemented by <span class="mono">PendingRequest</span>, <span class="mono">PendingResolve</span>, and <span class="mono">PendingTcpConnect</span>. Preserve the existing HTTP call shape and keep each target's own terminal type.</li>
+  <li>Define new Engine configuration and metrics names without reinterpreting existing HTTP limits silently.</li>
+</ul>
+<p><strong>Acceptance:</strong> a second implementer can build the resolver and TCP slices from public rustdoc and compile-checked examples without seeing Hickory, Mio, reactor slots, or HTTP internals.</p>
+
+<h3>F1 — Expose Resolver on the existing DNS service</h3>
+<p><span class="status status-open">Not started</span></p>
+<ul>
+  <li>Add the public resolver types, Engine-issued handle, request registry state, cancellation handle, waiter, callback path, and spawned execute sugar.</li>
+  <li>Add a strict public-resolver admission budget and reserve HTTP-internal progress from public saturation.</li>
+  <li>Translate current internal DNS results into Answer, NameNotFound, NoData, and payload-free failure categories without changing HTTP mappings.</li>
+  <li>Implement exact-name lookup first; add per-request system-search opt-in only with deterministic platform fixtures and bounded expansion.</li>
+  <li>Expose honest address order, cache source/validity, and bounded result truncation/rejection policy.</li>
+  <li>Add payload-free resolver metrics and documentation for spawned, callback, manual-drive, cancellation, and shutdown use.</li>
+</ul>
+<p><strong>Acceptance:</strong> Windows and exact-source Ubuntu prove positive/negative answers, ordering, cache modes/expiry, DNS server errors, malformed/truncated replies, bounds, cancellation races, manual drive, callback isolation, public-vs-HTTP fairness, and joined shutdown. Existing HTTP unknown-host tests remain byte-for-byte equivalent at the public error layer.</p>
+
+<h3>F2 — Expose TcpConnector and bounded live streams</h3>
+<p><span class="status status-open">Not started</span></p>
+<ul>
+  <li>Add finite hostname/literal connect requests on the existing resolver and reactor owners, with one Engine-scoped ID space and canonical connect terminal.</li>
+  <li>Reject port zero and unspecified literal destination addresses at <span class="mono">TcpConnectRequest::build()</span>, before admission or DNS/socket work.</li>
+  <li>Add standalone TCP admission/fairness independently of the HTTP idle pool while respecting the absolute socket/resource ceiling.</li>
+  <li>Implement one unique unsplit connection plus consuming split into unique reader/writer halves.</li>
+  <li>Implement bounded send and unread-receive queues, passive <span class="mono">try_*</span>, spawned blocking convenience, wakeups, and manual-drive behaviour.</li>
+  <li>Implement explicit writer finish, retained-byte-before-EOF, fail-closed drops, reset/error propagation, and cloneable connection cancellation.</li>
+  <li>Expose local/peer addresses and payload-free metrics, but no raw socket or TLS escape hatch.</li>
+</ul>
+<p><strong>Acceptance:</strong> literal and hostname connects, combined budget charging, unsplit and split duplex traffic, partial progress, backpressure, half-close, FIN with retained bytes, reset, cancel at every stage, drop races, Engine stop, and callback/manual modes pass on Windows and Ubuntu. The old-Wine fallback receives a focused lifecycle pass before any Wine support claim.</p>
+
+<h3>F3 — Remove the wire-only Hickory dependency</h3>
+<p><span class="status status-deferred">After F1 and F2 acceptance</span></p>
+<ul>
+  <li>Inventory the exact DNS message/name/question/record subset used by accepted HTTP and Resolver behaviour.</li>
+  <li>Implement a small internal bounded wire codec; NBReq continues to own sockets, retries, caching, cancellation, commands, and shutdown.</li>
+  <li>Reject pointer loops, excessive indirection, out-of-packet pointers, invalid labels, oversized names/messages, impossible counts, malformed RDATA, root CNAME targets, and trailing ambiguity before allocation or follow-up.</li>
+  <li>Preserve bounded A/AAAA question encoding, ID/question validation, CNAME following, TTL rules, negative answers, truncation/TCP fallback, and server failover.</li>
+  <li>Run retained corpus/golden-packet comparisons against the accepted Hickory-backed behaviour before removing the dependency.</li>
+  <li>Remove the Hickory RustSec exceptions and prove the Rust 1.85 dependency graph and package archive no longer contain Hickory.</li>
+</ul>
+<p><strong>Acceptance:</strong> all HTTP, Resolver, and TCP-hostname conformance tests pass unchanged on Windows and Ubuntu; focused DNS parser/state campaigns produce no unclassified panic, unbounded growth, or semantic drift; <span class="mono">cargo tree</span>, RustSec, licenses, package rehearsal, and an external consumer are clean.</p>
+
+<h3>F4 — Maintainability extraction</h3>
+<p><span class="status status-deferred">Behaviour-preserving follow-up</span></p>
+<ul>
+  <li>Extract the large native HTTP and DNS modules only along proven owner/framing/pool/stream/wire/policy/cache seams.</li>
+  <li>Do not combine mechanical movement with lifecycle changes or public API expansion.</li>
+  <li>Keep private types private; file size is not justification for publishing reactor machinery.</li>
+</ul>
+
+<h3>F5 — Observation and profiled improvements</h3>
+<p><span class="status status-deferred">Continuous after functional gates</span></p>
+<ul>
+  <li>Continue realistic Windows/Linux/Wine interruption, restart, and multi-hour lifecycle runs while retaining HTTP rollback during early observation.</li>
+  <li>Profile bulk body-span decoding, owned-chunk movement, bounded fixed-body growth, rustls batching, request maps/serialization, whole-process memory, and idle CPU.</li>
+  <li>Prefer removal of unreasonable retention and fixed cost over synthetic throughput ranking.</li>
+  <li>Do not weaken memory ceilings, framing, lost-wake recovery, cancellation, contamination safety, or joined shutdown for performance.</li>
+</ul>
+
+<h2 id="sequence">6. Dependency and Milestone Sequence</h2>
+
+<table>
+<tr><th>Milestone</th><th>Work</th><th>Usable outcome</th><th>Exit gate</th></tr>
+<tr><td><strong>F-M0 — Contract</strong></td><td>F0</td><td>Compile-checked DNS/TCP public boundary.</td><td>No private implementation type leaks; ownership and drop semantics reviewed.</td></tr>
+<tr><td><strong>F-M1 — Resolver</strong></td><td>F1</td><td>Cancellable public hostname resolution on the existing Engine.</td><td>Cross-platform resolver contract, fairness, and lifecycle suite passes; HTTP unchanged.</td></tr>
+<tr><td><strong>F-M2 — TCP</strong></td><td>F2</td><td>Cancellable cleartext connections with bounded duplex I/O.</td><td>Cross-platform connect/stream/backpressure/half-close/shutdown suite passes.</td></tr>
+<tr><td><strong>F-M3 — Hickory-free</strong></td><td>F3</td><td>Same public behaviour with NBReq-owned bounded DNS wire code.</td><td>Parity corpus, parser campaign, MSRV, RustSec, package, and consumer gates pass.</td></tr>
+<tr><td><strong>F-M4 — Sustainable</strong></td><td>F4–F5</td><td>Reviewable modules and evidence-led improvements.</td><td>Mechanical diffs separated from behaviour; performance changes retain adversarial gates.</td></tr>
+</table>
+
+<div class="callout">
+  <strong>Release policy:</strong> milestone completion does not automatically choose a version number or publish. A likely <span class="mono">0.2.x</span> line may contain the new facades, but the release boundary is chosen only after the API and package evidence are reviewed. Hickory removal may ship independently if it is behaviour-only and useful earlier.
+</div>
+
+<h2 id="verification">7. Verification Matrix</h2>
+
+<table>
+<tr><th>Area</th><th>Required evidence</th></tr>
+<tr><td>Ownership traits</td><td>Compile proofs for cloneable issued tickets, unique connection/halves, <span class="mono">Send</span>/<span class="mono">!Sync</span>, and no public construction or raw escape.</td></tr>
+<tr><td>Terminal races</td><td>Complete/fail/cancel/stop races commit exactly once; late same-Engine cancellation is harmless; wrong-Engine IDs fail closed.</td></tr>
+<tr><td>Callbacks</td><td>User callbacks never run on resolver/reactor owners or under locks; panic containment and callback-stack shutdown retain existing guarantees.</td></tr>
+<tr><td>Manual mode</td><td>Submit and <span class="mono">try_*</span> are passive; blocking methods reject; one drive advances HTTP, DNS, and TCP without nested drive.</td></tr>
+<tr><td>DNS semantics</td><td>Answer/NXDOMAIN/NoData, failure rcodes, exact/search policy, ordering, TTL/cache modes, CNAME bounds, UDP/TCP fallback, malformed input, cancellation, and shutdown.</td></tr>
+<tr><td>TCP semantics</td><td>Literal/hostname connect, duplex progress, bounds, partial queues, retained EOF, half-close, abortive close, drop rules, cancellation, and shutdown.</td></tr>
+<tr><td>Fairness and limits</td><td>Public DNS cannot starve HTTP resolution; TCP cannot consume HTTP reservation; aggregate queued bytes remain strict under concurrent HTTP/TCP pressure.</td></tr>
+<tr><td>Platforms</td><td>Ordinary Windows, exact-source Ubuntu 20.04/Rust 1.85, and focused stock-Wine fallback evidence for claims made.</td></tr>
+<tr><td>Security/package</td><td>Warning-denied lint, formatting, docs, dependency/RustSec/license gates, package contents, external consumer, and CI from the exact commit.</td></tr>
+</table>
+
+<h2 id="questions">8. Open API Footnotes</h2>
+
+<table>
+<tr><th>ID</th><th>Question</th><th>Recommended answer</th><th>Status</th></tr>
+<tr><td class="mono nowrap">FQ-01</td><td>Does obtaining an unavailable capability fail, or does its first operation fail?</td><td><span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> issue ordinary tickets; unavailable operations fail <span class="mono">Unsupported</span> before ID, permit, or queue acquisition. This keeps issuance cheap and feature-invariant.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-02</td><td>What does an optional trailing dot mean?</td><td>Accept zero or one terminal dot as an explicit absolute spelling; normalize cache/question identity to lowercase ASCII without the terminal dot. Reject the root name and malformed/multiple empty labels. No search expansion for either spelling unless explicitly requested.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-03</td><td>How do cache modes behave?</td><td><span class="mono">Use</span>: read and populate. <span class="mono">Refresh</span>: skip cache read and replace from the network. <span class="mono">Bypass</span>: neither read nor populate. Negative cache entries follow the same mode and expose honest validity.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-04</td><td>What is the default combined-family order?</td><td>Begin with <span class="mono">Ipv4ThenIpv6</span> for the public result order; make it explicit in rustdoc and configurable. This does not copy HTTP's lookup fallback. TCP Happy Eyeballs may later consume both families without changing resolver result semantics.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-05</td><td>How are blocking TCP queue operations named?</td><td>Use ownership-explicit <span class="mono">try_send(Vec&lt;u8&gt;)</span>/<span class="mono">send(Vec&lt;u8&gt;)</span>, returning the unaccepted suffix on refusal. Consider borrowed <span class="mono">Read</span>/<span class="mono">Write</span> adapters only later.</td><td><span class="status status-question">Prototype in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-06</td><td>Does a connect total timeout continue after connection?</td><td>No. Resolve/connect terminal clocks end when the live object is produced. Optional read/write inactivity policies govern the connected phase and pause under consumer backpressure where progress is impossible.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-07</td><td>Does a combined-family lookup mean fallback or collection?</td><td>Call the public variant <span class="mono">AddressFamily::Both</span>: collect A and AAAA and order the combined result explicitly. A failure in either required family fails the initial operation rather than hiding a partial result. HTTP retains its private serial A/AAAA-on-NoData policy.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-08</td><td>How does manual <span class="mono">drive_until</span> support three terminal types?</td><td>Make <span class="mono">Engine::drive_until</span> generic over a tiny sealed waiter-target trait with an associated output. Implement it only for HTTP, resolve, and connect pending types. Do not add a grab-bag completion enum or capability-specific method names.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-09</td><td>What happens when the unsplit connection is dropped?</td><td>Drop before writer finish plus reader EOF aborts; drop after both directions are terminal is harmless. Splitting transfers the same rule to the two unique halves.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+</table>
+
+<h2 id="later">9. Later Register</h2>
+
+<p>These remain separately justified projects, not accidental acceptance criteria for F0–F3:</p>
+<ul>
+  <li>Adaptive resolver-server health, richer search policy, full CNAME-chain cache policy, and Happy Eyeballs on hostname TCP connect.</li>
+  <li>A TLS facade layered over NBReq-owned TCP without socket escape.</li>
+  <li>A lightweight Tokio adapter using the public cancellation and waiter surfaces without adopting Tokio as an Engine runtime.</li>
+  <li>HTTP/2, compression, proxy support, generic TCP pooling, and shared cross-Engine pools.</li>
+  <li>Moving synchronous platform certificate verification off the HTTP owner, which requires owned worker cancellation and join semantics.</li>
+  <li>Profile-led native performance work and further module extraction.</li>
+</ul>
+
+<h2 id="decisions">10. Decision Log</h2>
+
+<table>
+<tr><th>Date</th><th>Decision</th><th>Reason</th></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Open a companion post-release tracker rather than extend WP0–WP11.</td><td>Preserves the exact history and acceptance boundary of published <span class="mono">0.1.0</span>.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Keep one public crate and issue Resolver/TcpConnector from Engine.</td><td>Reuses the proven lifecycle owner without multiplying packages or runtimes.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Expose Resolver first, TCP second, then remove Hickory.</td><td>Freezes observable behaviour on the accepted resolver before replacing its wire parser and avoids coupling API design to dependency surgery.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Public DNS negative answers are completed; HTTP semantics do not move.</td><td>A valid DNS negative response is useful resolver output, while HTTP still requires an address to perform its transport.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>TCP provides unsplit and split ownership with fail-closed drop rules.</td><td>Simple callers avoid ceremony while concurrent callers retain unique bounded halves and deterministic shutdown.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Hickory removal is a separate behaviour-preserving work package.</td><td>The public facade should not be designed around either Hickory or its replacement.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Public combined-family resolution is <span class="mono">Both</span>, not HTTP fallback.</td><td>A resolver consumer receives an explicit complete dual-family result; HTTP retains its accepted connection-oriented lookup policy.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Generalize manual <span class="mono">drive_until</span> with a sealed target trait.</td><td>Preserves the existing HTTP shape while returning each capability's own terminal type.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Unsplit TCP drop follows the same two-direction terminal rule as split ownership.</td><td>No accepted output is silently truncated and a wholly terminal connection needs no redundant cancellation.</td></tr>
+</table>
+
+<h2 id="progress">11. Progress Log</h2>
+
+<table>
+<tr><th>Date</th><th>Progress</th><th>Evidence / next move</th></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Follow-up tracker accepted after a second ownership review. Dual-family meaning, generic manual waiting, whole-connection drop, shared-cache visibility, permit lifetime, global cancellation/callback scope, and invalid TCP destinations are recorded.</td><td>Begin F0 by reconciling the illustrative types with current <span class="mono">Client</span>, registry, metrics, manual-mode, and backend feature surfaces. No transport mutation yet.</td></tr>
+</table>
+
+</body>
+</html>
