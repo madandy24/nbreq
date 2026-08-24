@@ -1,7 +1,6 @@
 # WP11.2 security and API audit
 
-Status: Windows implementation gate passed on 2026-08-24; exact-source Linux remains the acceptance
-step.
+Status: accepted on Windows and exact-source Ubuntu 20.04 / Rust 1.85 on 2026-08-24.
 
 ## 1. Audit scope
 
@@ -111,7 +110,6 @@ work, and any expansion of its features or encoder use invalidates this assessme
 
 Still outside this checkpoint:
 
-- run an exact-source Rust-1.85 Linux gate;
 - inspect packaged archives after `nbreq-winpoll` exists in the registry;
 - add CI and repository security settings on the real public host;
 - keep GDS ureq rollback through the initial public observation period.
@@ -121,3 +119,10 @@ run exposed a parallel-test laboratory race: a just-released refused-connect por
 by another adversarial fixture. All loopback fixture allocation is now serialized until the refused
 connection is observed; the complete adversarial suite passes ten additional repetitions before the
 clean full gate.
+
+The final MSRV-preserving graph is commit `de21963`, archived as 563,206 bytes with SHA-256
+`115E37BCF017AEECB4595BEC9A818E8BCB5E791C66CEAC5BAAF90926B8B3448A`. The complete 20-stage
+Windows verifier passes in 72.057 seconds. A fresh extraction of that authenticated archive then
+passes all 20 stages offline on Ubuntu 20.04.6 LTS with Rust/Cargo 1.85.0 in 265.644 seconds and
+records `EXIT=0`. WP11.2 is accepted; live repository controls and publication rehearsal move to
+WP11.3.

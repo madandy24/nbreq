@@ -83,11 +83,11 @@ handling recipes and the packaged security policy are now present.
 2. **WP11.1 — identity and package topology:** holder, dual license, repository identity, `0.1.0`,
    native-only public graph, versioned support-crate boundary, feature cleanup, and packaged contents
    are resolved. Publication itself remains gated.
-3. **WP11.2 — security and API audit:** implementation checkpoint closes the source review in
+3. **WP11.2 — security and API audit:** accepted source review in
    `wp11_security_api_audit.md`: unsafe remains isolated, panic/callback containment holds, raw TLS
    diagnostics become structured payload-free categories, resource ceilings remain owner-bounded,
    evolving policy types become non-exhaustive, and `SECURITY.md` defines reporting/support policy.
-   Current-advisory scanning and complete Windows/Linux verification remain before acceptance.
+   Current-advisory scanning and complete Windows/Linux verification pass at `de21963`.
 4. **WP11.3 — release automation:** add real repository CI, exact license/notice generation,
    `cargo package`/clean-consumer rehearsals, and continued lifecycle soak tiers.
 5. **WP11.4 — initial publication:** publish only from a clean exact commit after Windows/Linux gates
@@ -104,12 +104,14 @@ The WP11.2 implementation passes the complete 20-stage Windows verifier in 67.23
 current 1,225-advisory RustSec scan and ten additional adversarial-suite repetitions. Exact-source
 Rust 1.85 rejected the initially selected fixed `time 0.3.47` because that dev-only fixture
 dependency now requires Rust 1.88; 0.3.46 has the same MSRV. The graph therefore keeps
-Rust-1.85-compatible `time 0.3.45`; its
-RFC-2822 parser advisory is unreachable because the parsing feature is not compiled and rcgen only
+Rust-1.85-compatible `time 0.3.45`; its RFC-2822 parser advisory is unreachable because the
+parsing feature is not compiled and rcgen only
 constructs certificate dates. That dev-only exception and the two Hickory exceptions have
 source-locked rationales in `wp11_security_api_audit.md` and `SECURITY.md`; eliminating the
-wire-only Hickory dependency is early post-WP11 work. A clean exact-source Linux rerun remains
-before WP11.2 acceptance.
+wire-only Hickory dependency is early post-WP11 work. Final commit `de21963` passes the complete
+20-stage Windows verifier in 72.057 seconds; its authenticated 563,206-byte archive (SHA-256
+`115E37BCF017AEECB4595BEC9A818E8BCB5E791C66CEAC5BAAF90926B8B3448A`) passes all 20 stages
+offline on Ubuntu 20.04.6 / Rust 1.85.0 in 265.644 seconds. WP11.2 is accepted.
 
 ## 6. First realistic native observation
 
