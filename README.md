@@ -8,6 +8,18 @@ The architecture contract and backend-independent lifecycle kernel are complete.
 and ordinary constructor use NBReq's Rust-native HTTP implementation. The earlier curl Multi pilot
 remains in project history as reference and differential evidence; it is not in the public crate.
 
+## Highlights
+
+- Simple blocking HTTP requests for ordinary use, with callbacks, direct waiters, streaming
+  uploads, and streaming responses for advanced scenarios.
+- Prompt cancellation across DNS, connection, TLS, upload, and download work—shutdown does not
+  wait for slow network timeouts.
+- Run networking on an owned background thread, or drive it manually from a single thread.
+- No Tokio or other async runtime required.
+- Bounded queues, resource limits, connection pooling, structured errors, and deterministic joined
+  shutdown.
+- Rust-native HTTP/1.1 and TLS, supporting Windows and Linux.
+
 ## Quick start
 
 The default build is self-contained Rust HTTP/1.1. Create one independently owned Engine, issue
