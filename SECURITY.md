@@ -2,9 +2,8 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a suspected vulnerability. Once the public repository exists,
-use GitHub's **Report a vulnerability** link on the repository's Security page. Private
-vulnerability reporting must be enabled before the first release.
+Please do not open a public issue for a suspected vulnerability. Use GitHub's **Report a
+vulnerability** link on the repository's Security page; private vulnerability reporting is enabled.
 
 Include the affected NBReq version or commit, target platform, a minimal reproduction, and the
 expected impact. Say whether any credentials or other sensitive data may have been exposed, but do
@@ -12,8 +11,8 @@ not include production secrets, private certificates, customer payloads, or othe
 the initial report. We will acknowledge the report and coordinate investigation and disclosure as
 capacity permits; this pre-1.0 project does not yet promise a fixed response-time SLA.
 
-If private reporting is temporarily unavailable before repository setup is complete, retain the
-report and contact the maintainer through a private channel rather than publishing the details.
+If private reporting is temporarily unavailable, retain the report and contact the maintainer
+through a private channel rather than publishing the details.
 
 ## Supported versions
 

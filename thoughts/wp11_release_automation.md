@@ -86,7 +86,11 @@ A new isolated consumer depends on the unpacked normalized root package, resolve
 from crates.io, compiles the complete native graph, creates one spawned Engine and Client, and
 shuts the Engine down successfully. This closes WP11.3 without publishing the root crate.
 
-## 7. Remaining release gate
+## 7. WP11.4 root release candidate
 
-WP11.4 owns the explicit, permanent publication decision for `nbreq 0.1.0`. Before that action,
-reconfirm the exact root archive, clean Git/CI state, package metadata, and crates.io credentials.
+The root manifest now permits publication only to `crates-io`; it does not make publication an
+automatic CI action. Packaged security wording describes the live private-reporting route, and the
+complete local Windows verifier passes all 20 stages in 67.951 seconds. Before the explicit,
+permanent publication of `nbreq 0.1.0`, freeze a clean exact commit, rebuild and consume its
+normalized archive, require green hosted CI, and present the commit and archive hash for owner
+approval.

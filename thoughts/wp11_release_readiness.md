@@ -1,7 +1,7 @@
 # WP11 release-readiness ledger
 
-Status: opened 2026-08-24 after WP10 acceptance. This is a source-grounded checklist for turning the
-accepted private implementation into a public crate. It does not authorize publication by itself.
+Status: WP11.4 root release candidate opened 2026-08-24. This source-grounded checklist does not
+authorize the permanent crates.io publication by itself.
 
 ## 1. Accepted foundation
 
@@ -23,7 +23,7 @@ accepted private implementation into a public crate. It does not authorize publi
 |---|---|---|
 | License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
 | Version | **Resolved:** root and implementation-detail support crate are `0.1.0` | Keep 1.0 gated on post-publication production observation and API stability |
-| Registry metadata | **Hosted:** public repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Remove `publish = false` only at the explicit release gate |
+| Registry metadata | **Release candidate:** public repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; publication is explicitly limited to `crates-io` | Recheck the clean normalized manifest, exact archive, and hosted CI before upload |
 | Windows support crate | **Published and verified:** `nbreq-winpoll 0.1.0` is the crates.io-scoped implementation detail; the root uses path + registry version and its normalized package resolves the registry copy | Do not market or stabilize it as a direct consumer API; publish later versions only with their matching root release |
 | Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
 | Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
@@ -122,6 +122,12 @@ then passes stable Windows, stable Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-e
 order were then proved by the support publication, registry-resolved root package, and isolated
 consumer proof above. WP11.3 is accepted; only permanent root publication remains deliberately
 open.
+
+The WP11.4 root candidate replaces the publication lock with the explicit `publish =
+["crates-io"]` allowlist and updates packaged security wording to describe the live private route.
+The complete 20-stage Windows verifier passes in 67.951 seconds. Publication remains a separate,
+explicit owner action after the clean commit's normalized archive, external consumer, and hosted CI
+are rechecked.
 
 ## 6. First realistic native observation
 
