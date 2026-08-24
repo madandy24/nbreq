@@ -1,8 +1,8 @@
 # WP11.3 release-automation evidence
 
-Status: WP11.3 accepted 2026-08-24. The public GitHub repository, portable CI, private vulnerability
-reporting, support-crate publication, registry-resolution rehearsal, and clean consumer build pass.
-The root `nbreq` crate remains unpublished pending the separate WP11.4 decision.
+Status: WP11.4 and WP11 accepted 2026-08-24. The public GitHub repository, portable CI, private
+vulnerability reporting, both crate publications, registry verification, and clean consumer build
+pass.
 
 ## 1. Portable CI definition
 
@@ -95,3 +95,15 @@ the packaged guide/rustdoc. The replacement makes those consumer instructions du
 Before the explicit, permanent publication of `nbreq 0.1.0`, freeze the corrected clean commit,
 rebuild and consume its normalized archive, require green hosted CI, and present the commit and
 archive hash for owner approval.
+
+Corrected commit `f08ee60` passes all 20 local verifier stages in 68.943 seconds, a publication dry
+run, exact packaged-doc inspection, and a fresh isolated consumer. GitHub Actions run
+[#7](https://github.com/madandy24/nbreq/actions/runs/32683518229) passes stable Windows, stable
+Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-exact license jobs in 3 minutes 20 seconds. The final
+39-file archive is 187,498 bytes with SHA-256:
+
+`D93C96CB5000B34CAB35E0F771137BF2E994D569D17DDABBCC9032B5137C5DB8`
+
+After explicit owner approval, crates.io accepts and publishes `nbreq 0.1.0`. A registry lookup
+downloads the release and reports native as the default feature, Rust 1.85, `MIT OR Apache-2.0`,
+and the expected crates.io, GitHub, and docs.rs links. WP11.4 is accepted.

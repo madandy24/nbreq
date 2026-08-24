@@ -1,7 +1,6 @@
 # WP11 release-readiness ledger
 
-Status: WP11.4 root release candidate opened 2026-08-24. This source-grounded checklist does not
-authorize the permanent crates.io publication by itself.
+Status: WP11 accepted 2026-08-24. `nbreq 0.1.0` is published from the reviewed exact commit.
 
 ## 1. Accepted foundation
 
@@ -23,7 +22,7 @@ authorize the permanent crates.io publication by itself.
 |---|---|---|
 | License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
 | Version | **Resolved:** root and implementation-detail support crate are `0.1.0` | Keep 1.0 gated on post-publication production observation and API stability |
-| Registry metadata | **Release candidate:** public repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; publication is explicitly limited to `crates-io` | Recheck the clean normalized manifest, exact archive, and hosted CI before upload |
+| Registry metadata | **Published:** crates.io reports `nbreq 0.1.0`, native default, Rust 1.85, `MIT OR Apache-2.0`, GitHub repository/homepage, docs.rs URL, README, keywords, and categories | Recheck metadata and package contents before every later release |
 | Windows support crate | **Published and verified:** `nbreq-winpoll 0.1.0` is the crates.io-scoped implementation detail; the root uses path + registry version and its normalized package resolves the registry copy | Do not market or stabilize it as a direct consumer API; publish later versions only with their matching root release |
 | Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
 | Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
@@ -31,10 +30,10 @@ authorize the permanent crates.io publication by itself.
 | Security contact | **Live:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports; private reporting is enabled on the repository | Recheck the route before each release |
 | CI | **Live:** the least-privilege GitHub Actions workflow passes the complete verifier on stable Windows, stable Ubuntu, and Ubuntu/Rust 1.85, with separate successful RustSec and byte-exact license-report gates | Retain named target-host/Wine/GDS evidence for claims portable CI cannot reproduce |
 
-The topology gate is closed. `nbreq-winpoll 0.1.0` was published and verified first; packaging
-`nbreq` now rewrites its path dependency to registry version `0.1.0`, downloads that exact support
-crate from crates.io, and compiles successfully. The root crate remains unpublished pending the
-separate WP11.4 decision. Curl does not participate in the public resolution graph.
+The topology and publication gates are closed. `nbreq-winpoll 0.1.0` was published and verified
+first; packaging `nbreq` rewrites its path dependency to registry version `0.1.0`, downloads that
+exact support crate from crates.io, and compiles successfully. Root `nbreq 0.1.0` is published from
+the reviewed corrected commit. Curl does not participate in the public resolution graph.
 
 The 2026-08-24 rehearsal confirms that boundary. `cargo package --list` for each crate contains only
 the frozen files. The published eight-file support archive has SHA-256
@@ -123,7 +122,7 @@ order were then proved by the support publication, registry-resolved root packag
 consumer proof above. WP11.3 is accepted; only permanent root publication remains deliberately
 open.
 
-The WP11.4 root candidate replaces the publication lock with the explicit `publish =
+The WP11.4 root candidate replaced the publication lock with the explicit `publish =
 ["crates-io"]` allowlist and updates packaged security wording to describe the live private route.
 The first exact archive review then correctly holds publication: the packaged guide, also embedded
 in crate rustdoc, still used a path dependency, described curl as optional, and promised a future
@@ -131,7 +130,11 @@ platform matrix. The replacement uses `nbreq = "0.1"`, describes the native-only
 states the Windows 10 x64 and Ubuntu-20.04-baseline Linux x64 matrix, qualifies Wine 5 evidence, and
 makes the latest-0.x security wording durable. Publication remains a separate, explicit owner
 action after the corrected clean commit's normalized archive, external consumer, and hosted CI are
-rechecked.
+rechecked. Those gates pass on commit `f08ee60`; explicit owner approval then publishes the exact
+187,498-byte archive (SHA-256
+`D93C96CB5000B34CAB35E0F771137BF2E994D569D17DDABBCC9032B5137C5DB8`) permanently as
+`nbreq 0.1.0`. The registry record independently reports the expected native-default feature,
+Rust 1.85 MSRV, dual license, repository, homepage, and docs.rs metadata. WP11 is accepted.
 
 ## 6. First realistic native observation
 
