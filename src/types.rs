@@ -14,16 +14,13 @@ pub enum RunMode {
 
 /// Selects the HTTP implementation used by an [`Engine`](crate::Engine).
 ///
-/// Variants are present under every Cargo feature combination. Features control whether an
-/// implementation is compiled, not which implementation an otherwise unchanged constructor
-/// silently selects. Requesting an unavailable implementation fails during Engine construction.
+/// The variant remains present without the default `native` feature so portable configuration can
+/// fail explicitly during Engine construction rather than changing type shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum HttpBackend {
     /// NBReq's Rust-native DNS, TCP, TLS, and HTTP implementation.
     Native,
-    /// The optional libcurl diagnostic/reference implementation.
-    Curl,
 }
 
 /// Determines where owned callback jobs are executed.
@@ -552,7 +549,7 @@ impl Request {
         Ok(())
     }
 
-    #[cfg(any(feature = "curl-pilot", feature = "native", test))]
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn redirected(
         &self,
         url: String,
@@ -589,7 +586,7 @@ impl Request {
     }
 }
 
-#[cfg(any(feature = "curl-pilot", feature = "native", test))]
+#[cfg(any(feature = "native", test))]
 pub(crate) fn redirected_request(
     request: &Request,
     status: u16,

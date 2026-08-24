@@ -44,8 +44,8 @@ impl Client {
 
     /// Submits a request whose response is consumed through one unique reader.
     ///
-    /// Streaming is available on the native backend. Curl and internal non-networking test
-    /// backends return `Unsupported` without accepting the request.
+    /// Streaming is available on the native backend. Internal non-networking test backends return
+    /// `Unsupported` without accepting the request.
     pub fn submit_stream(&self, request: StreamRequest) -> Result<ResponseReader, Error> {
         self.shared.accept_stream(request)
     }

@@ -7,6 +7,11 @@ the cross-platform verification entry point, the scheduled Ubuntu campaign, expl
 rollout, and native ordinary/default selection all pass their named gates. Curl and ureq remain
 available rollback/reference paths, and the accepted P10-06 package remains separately preserved.
 
+WP11 publication disposition: the first public `0.1.0` crate is native-only. The locally patched
+curl pilot remains accepted historical/reference evidence and in frozen GDS artifacts, but its
+feature, public selector variant, dependency, and verifier stages are not part of the registry
+package. GDS retains ureq as its live rollback.
+
 ## 1. Meaning of parity
 
 Parity means that a consumer can determine before admission whether an operation and its

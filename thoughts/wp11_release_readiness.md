@@ -6,12 +6,14 @@ accepted private implementation into a public crate. It does not authorize publi
 ## 1. Accepted foundation
 
 - NBReq / `nbreq` means Non-Blocking Request.
-- Native HTTP is the default feature and ordinary constructor; curl is explicit.
+- Native HTTP is the default feature and ordinary constructor. The pre-release curl reference is
+  deliberately omitted from the first public package.
 - The crate MSRV is Rust 1.85 with Rust 2024 edition.
 - Windows 10, exact-source Ubuntu 20.04, controlled Windows x86 GDS, and stock-Wine-5 compatibility
   have named evidence. The public supported-target wording still needs a final freeze.
-- The 22-stage verifier covers formatting, minimal/default/native/curl/all-feature builds and tests,
-  warning-denied lint, doctests, documentation, and named pressure regressions.
+- The release verifier covers formatting, minimal/default/native/all-feature builds and tests,
+  warning-denied lint, doctests, documentation, and named pressure regressions. Removing the two
+  retired curl stages makes an ordinary run 20 stages.
 - Public code now enables the `missing_docs` lint; the existing warning-denied all-feature stage
   enforces it.
 
@@ -20,18 +22,26 @@ accepted private implementation into a public crate. It does not authorize publi
 | Item | Current state | Required WP11 decision/action |
 |---|---|---|
 | License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
-| Version | `0.0.0` | Choose the first public version, expected to be an explicitly pre-stable release |
+| Version | **Resolved:** root and implementation-detail support crate are `0.1.0` | Keep 1.0 gated on post-publication production observation and API stability |
 | Registry metadata | **Identity resolved:** planned repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Create the public remote, verify all URLs, and remove `publish = false` only at the release gate |
-| Windows support crate | Default native depends on path-only, unpublished `support/winpoll` / `nbreq-winpoll` | Either publish it as a versioned implementation-detail crate from the same workspace, or choose another packaging boundary that preserves NBReq's safe public API and audited unsafe isolation |
-| Curl reference | `curl-pilot` requires a locally patched path override and private feature/API extensions | Upstream the patch, publish and maintain a clearly named implementation-detail fork, or omit curl from the public package until a registry-resolvable solution exists |
-| Package contents | Dry-run package includes internal thoughts, experiments, proof scripts, and evidence while excluding both nested path packages | Add a deliberate include/exclude policy and inspect the exact `.crate`; retain only material useful to consumers and required licenses/notices |
-| Empty `ffi` feature | Manifest exposes `ffi = []` but no code uses it | Remove it before the first public version or define its promised contract; do not reserve a meaningless stable feature |
+| Windows support crate | **Topology resolved:** `nbreq-winpoll` is `0.1.0`, crates.io-scoped, explicitly described as an implementation detail, and the root uses path + registry version | Publish and verify this crate immediately before `nbreq`; do not market or stabilize it as a direct consumer API |
+| Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
+| Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
+| Empty `ffi` feature | **Resolved:** removed before 0.1.0 | Add a future FFI feature only with an implemented and documented contract |
 | Security contact | No `SECURITY.md` or public reporting route | Add supported-version and private-reporting policy after repository/contact choice |
 | CI | Portable CI intentionally deferred in P10-04 until a genuine public repository exists | Add the existing verifier to Windows and Linux CI without replacing named target-host/Wine/GDS evidence |
 
-The two path-dependency items are release blockers, not runtime defects. Cargo's package list omits
-the nested support and curl packages, so publishing the current root archive cannot reproduce the
-accepted feature matrix from crates.io alone.
+The remaining topology gate is publication order, not an architecture defect: publish and verify
+`nbreq-winpoll` first, then package `nbreq` so its normalized manifest resolves version `0.1.0` from
+crates.io. Both crates remain unpublished during WP11 review. Curl no longer participates in the
+public resolution graph.
+
+The 2026-08-24 rehearsal confirms that boundary. `cargo package --list` for each crate contains only
+the frozen files. Offline `cargo package -p nbreq-winpoll --allow-dirty` produced and compiled an
+eight-file support archive. Root packaging then stopped before archive creation because
+`nbreq-winpoll 0.1.0` is not yet present in the crates.io index. That is the intended fail-closed
+publish order; the root archive and external clean-consumer build remain a post-support-publication
+release rehearsal rather than being simulated with a local registry patch.
 
 ## 3. Dependency-license audit
 
@@ -42,8 +52,8 @@ alongside LGPL rather than requiring LGPL; `ring` is Apache-2.0 AND ISC. No depe
 unclassified.
 
 This inventory includes dev, target-specific, and optional dependencies. Before packaging, generate
-an exact normal-feature and all-feature notice/license report from the final release manifest, audit
-the locally modified MIT curl source if it remains, and retain any required upstream notices. Do
+an exact normal-feature and all-feature notice/license report from the final release manifest and
+retain any required upstream notices. Do
 not copy this summary into legal files as a substitute for the exact release-tree report.
 
 ## 4. Documentation audit
@@ -70,15 +80,29 @@ docs.rs metadata exist.
 
 1. **WP11.0 — public surface and guide audit:** enforce missing docs, add native-first onboarding,
    and freeze this ledger.
-2. **WP11.1 — identity and package topology:** holder, dual license, and repository identity are
-   resolved; decide the version, resolve both path dependencies, remove or define empty features,
-   and freeze packaged contents.
+2. **WP11.1 — identity and package topology:** holder, dual license, repository identity, `0.1.0`,
+   native-only public graph, versioned support-crate boundary, feature cleanup, and packaged contents
+   are resolved. Publication itself remains gated.
 3. **WP11.2 — security and API audit:** review unsafe boundary, panic/callback containment, secret
    redaction, TLS policy, denial-of-service limits, semver surface, and reporting policy.
 4. **WP11.3 — release automation:** add real repository CI, exact license/notice generation,
-   `cargo package`/clean-consumer rehearsals, and the longer lifecycle soak tier.
-5. **WP11.4 — alpha publication:** publish only from a clean exact commit after Windows/Linux gates
-   and a clean external consumer build. Keep curl and GDS ureq rollback during observation.
+   `cargo package`/clean-consumer rehearsals, and continued lifecycle soak tiers.
+5. **WP11.4 — initial publication:** publish only from a clean exact commit after Windows/Linux gates
+   and a clean external consumer build. Keep GDS ureq rollback during observation.
 
 Post-WP11 DNS/TCP facades remain separate follow-up work and must not expand the first HTTP release
 surface while these blockers are being closed.
+
+The WP11.1 implementation passes the complete revised 20-stage Windows verifier in 70.532 seconds.
+This records package-topology compatibility with the existing code gates; it is not the final
+cross-platform release run.
+
+## 6. First realistic native observation
+
+The controlled Windows/GDS run recorded in `wp11_native_soak_evidence.md` selected native at
+00:57:34 and closed normally at 11:12:15: 10 hours 14 minutes 41 seconds. Both real long-poll
+channels remained active, the authenticated website was still healthy at close, and 40 application
+responses mapped to 40 successful POST acknowledgements. There was no unexpected HTTP/transport
+failure; final individual cancellation joined the two WebRPC owners in 1 ms and 0 ms, and no
+process remained. This supports `0.1.0` and closes one realistic observation item without claiming
+multi-platform soak, fleet readiness, performance, or 1.0 stability.

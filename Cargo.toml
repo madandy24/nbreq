@@ -1,6 +1,6 @@
 [package]
 name = "nbreq"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Runtime-independent cancellable HTTP client"
@@ -12,6 +12,21 @@ readme = "README.md"
 keywords = ["http", "networking", "nonblocking", "cancellation", "client"]
 categories = ["web-programming::http-client", "network-programming"]
 publish = false
+autoexamples = false
+include = [
+    "/src/**",
+    "!/src/backend/curl.rs",
+    "!/src/curl_tests.rs",
+    "/tests/**",
+    "/examples/ffi_owner.rs",
+    "/examples/manual.rs",
+    "/examples/native_platform_https.rs",
+    "/examples/spawned.rs",
+    "/docs/getting-started.md",
+    "/README.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+]
 
 [workspace]
 members = ["support/winpoll"]
@@ -19,8 +34,6 @@ resolver = "2"
 
 [features]
 default = ["native"]
-curl-pilot = ["dep:curl"]
-curl-pilot-vendored = ["curl-pilot", "curl/ssl"]
 native = [
     "dep:hickory-proto",
     "dep:getrandom",
@@ -34,10 +47,8 @@ native = [
     "dep:url",
 ]
 test-support = []
-ffi = []
 
 [dependencies]
-curl = { version = "=0.4.50", optional = true, default-features = false, features = ["poll_7_68_0", "nbreq-explicit-init"] }
 getrandom = { version = "=0.3.4", optional = true }
 hickory-proto = { version = "=0.25.2", optional = true, default-features = false, features = ["std"] }
 httparse = { version = "=1.10.1", optional = true }
@@ -48,7 +59,7 @@ url = { version = "=2.5.8", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 ipconfig = { version = "=0.3.4", optional = true, default-features = false }
-nbreq-winpoll = { path = "support/winpoll", optional = true }
+nbreq-winpoll = { path = "support/winpoll", version = "0.1.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 resolv-conf = { version = "=0.7.6", optional = true, default-features = false }
@@ -58,9 +69,6 @@ rcgen = "=0.13.2"
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 socket2 = "=0.6.5"
 stats_alloc = "=0.1.10"
-
-[patch.crates-io]
-curl = { path = "vendor/curl" }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -75,11 +83,3 @@ unwrap_used = "deny"
 [[example]]
 name = "native_platform_https"
 required-features = ["native", "test-support"]
-
-[[example]]
-name = "wp9_compare"
-required-features = ["native", "curl-pilot", "test-support"]
-
-[[example]]
-name = "wp9_cancel_compare"
-required-features = ["native", "curl-pilot", "test-support"]

@@ -796,8 +796,9 @@ The core crate remains safe Rust wherever practical. Necessary OS and FFI unsafe
 The accepted stock-Wine-5 native path is one such isolation. Supported native Windows continues to
 use Mio. If and only if the first socket registration fails with `NotFound` for Mio's private
 `\\Device\\Afd` object, that poll owner uses documented WinSock `WSAPoll` with a 50 ms safety
-bound. The main `nbreq` crate retains `unsafe_code = "forbid"`; the minimal WinSock FFI lives in an
-unpublished workspace support crate behind a safe readiness API. Switching after any successful
+bound. The main `nbreq` crate retains `unsafe_code = "forbid"`; the minimal WinSock FFI lives in the
+separately packaged implementation-detail `nbreq-winpoll` crate behind a safe readiness API.
+Switching after any successful
 registration fails closed, and no reactor/socket ownership escapes. This is a compatibility route
 for the accepted Ubuntu-20.04/stock-Wine-5 Windows-binary target, not a new public backend.
 
@@ -904,8 +905,9 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 16. **Licensing and publication — identity accepted:** Aim for a public crates.io library under the
     customary dual `MIT OR Apache-2.0` grant. Copyright is held by Cave Rock Software Limited and
     the planned public repository is `https://github.com/madandy24/nbreq`. GDS authorship,
-    ownership, and licensing authority are confirmed; versioning, dependency notices, package
-    topology, and release gates remain.
+    ownership, and licensing authority are confirmed. The first public version is `0.1.0`; its
+    package is native-only and resolves the separately published implementation-detail
+    `nbreq-winpoll 0.1.0`. Dependency notices, security policy, and release gates remain.
 
 17. **Cancellation latency gate — provisional Windows value recorded:** The exact dynamic Windows package must release controlled slow-header and stalled-body sockets in less than 100 ms after cancellation; current 10-trial maxima are below 4 ms. The same 100 ms target is provisional for connect and for Windows 10, Wine, and Linux until named-stage measurements run there. Never leave “prompt” as the only acceptance language or silently weaken the gate when another platform is measured.
 
@@ -928,7 +930,7 @@ The architecture is closed for WP0. The following may be settled during normal i
 - any HTTP scope beyond the accepted buffered curl/GDS pilot;
 - TLS trust-root policy beyond the accepted explicit GDS no-verify compatibility switch;
 - numeric cancellation latency gates from WP2;
-- versioning, remaining publication metadata, and support promise for the accepted
+- remaining publication metadata and support promise for the accepted
   Cave Rock Software Limited `MIT OR Apache-2.0` grant.
 
 Decisions already accepted in principle:
@@ -970,7 +972,10 @@ Decisions already accepted in principle:
 - the settled project and proposed crate name is NBReq / `nbreq`, meaning Non-Blocking Request;
 - the project aims for a public crates.io release under `MIT OR Apache-2.0`; Cave Rock Software
   Limited is the copyright holder, `https://github.com/madandy24/nbreq` is the planned repository,
-  and GDS provenance/licensing authority are settled; versioning and the remaining publication
-  gates remain release work;
+  `0.1.0` is the first public version, and GDS provenance/licensing authority are settled; the
+  remaining publication gates remain release work;
+- the first public package is native-only; the pre-release patched curl reference remains
+  historical evidence, `nbreq-winpoll 0.1.0` is a separately packaged implementation detail, and
+  GDS uses ureq rather than a crates.io curl fork for rollback;
 - curl runs an explicit HTTP/1.1 compatibility profile rather than inheriting backend defaults;
 - the portable initial time model is connect timeout, inactivity timeout, and total deadline.

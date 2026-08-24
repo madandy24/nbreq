@@ -2,16 +2,12 @@
 
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "curl-pilot")]
-use crate::EngineConfig;
 use crate::metrics::Metrics;
 use crate::registry::Shared;
 use crate::stream::ResponseSink;
 use crate::{Completion, Error, Request, RequestId, ShutdownError, StreamRequest};
 use std::sync::Arc;
 
-#[cfg(feature = "curl-pilot")]
-mod curl;
 #[cfg(feature = "native")]
 mod native;
 #[cfg(feature = "native")]
@@ -44,25 +40,7 @@ pub(crate) enum PollMode {
     },
 }
 
-#[cfg(feature = "curl-pilot")]
-#[derive(Clone, Copy)]
-pub(crate) struct ResponseLimits {
-    pub(crate) body_bytes: usize,
-    pub(crate) header_bytes: usize,
-    pub(crate) header_count: usize,
-}
-
-#[cfg(feature = "curl-pilot")]
-#[derive(Clone, Copy)]
-pub(crate) struct CurlPoolLimits {
-    pub(crate) connections: usize,
-    pub(crate) connections_per_origin: usize,
-    pub(crate) idle_connections: usize,
-    pub(crate) idle_connections_per_origin: usize,
-    pub(crate) idle_timeout: Duration,
-}
-
-#[cfg_attr(not(any(feature = "native", feature = "curl-pilot")), allow(dead_code))]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) trait Backend {
     fn attach_metrics(&mut self, _metrics: Arc<Metrics>) {}
 
@@ -105,7 +83,7 @@ pub(crate) trait Backend {
     }
 }
 
-#[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) trait BackendFactory: Send {
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
 
@@ -126,45 +104,6 @@ pub(crate) fn scaffold() -> Box<dyn Backend + Send> {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn held() -> Box<dyn Backend + Send> {
     Box::new(scaffold::HeldBackend::default())
-}
-
-#[cfg(feature = "curl-pilot")]
-pub(crate) fn curl_factory(config: &EngineConfig) -> Box<dyn BackendFactory> {
-    Box::new(curl::CurlFactory::new(
-        ResponseLimits {
-            body_bytes: config.max_response_body_bytes(),
-            header_bytes: config.max_header_bytes(),
-            header_count: config.max_header_count(),
-        },
-        curl_pool_limits(config),
-    ))
-}
-
-#[cfg(all(test, feature = "curl-pilot"))]
-pub(crate) fn curl_factory_with_test_ca(
-    config: &EngineConfig,
-    ca_pem: Vec<u8>,
-) -> Box<dyn BackendFactory> {
-    Box::new(curl::CurlFactory::new_with_test_ca(
-        ResponseLimits {
-            body_bytes: config.max_response_body_bytes(),
-            header_bytes: config.max_header_bytes(),
-            header_count: config.max_header_count(),
-        },
-        curl_pool_limits(config),
-        ca_pem,
-    ))
-}
-
-#[cfg(feature = "curl-pilot")]
-fn curl_pool_limits(config: &EngineConfig) -> CurlPoolLimits {
-    CurlPoolLimits {
-        connections: config.max_connections().get(),
-        connections_per_origin: config.max_connections_per_origin().get(),
-        idle_connections: config.max_idle_connections(),
-        idle_connections_per_origin: config.max_idle_connections_per_origin(),
-        idle_timeout: config.idle_connection_timeout(),
-    }
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]

@@ -2,7 +2,7 @@
 //!
 //! This module is available to NBReq's own tests and through the opt-in `test-support` feature. It
 //! exposes no transport implementation types. The ordinary controller is deterministic and
-//! network-free; the curl constructor is an explicitly experimental exception.
+//! network-free.
 
 use std::sync::{Arc, Weak};
 
@@ -44,15 +44,6 @@ pub fn engine(config: EngineConfig) -> Result<(Engine, TestController), Error> {
         shared: Arc::downgrade(&shared),
     };
     Ok((engine, controller))
-}
-
-/// Creates an Engine using the private curl Multi proving backend.
-///
-/// This is experimental test support rather than a stable backend-selection API. It exists only
-/// when both the `curl-pilot` and `test-support` features are enabled (or in NBReq's own curl tests).
-#[cfg(feature = "curl-pilot")]
-pub fn curl_engine(config: EngineConfig) -> Result<Engine, Error> {
-    Engine::with_curl_backend(config)
 }
 
 /// Creates an Engine using the private Rust-native HTTP proving backend.
@@ -146,12 +137,4 @@ pub fn native_https_manual_engine_with_nameserver_and_test_root(
         &config, nameserver, root_der,
     )?;
     Engine::with_backend(config, backend)
-}
-
-#[cfg(all(test, feature = "curl-pilot"))]
-pub(crate) fn curl_engine_with_test_ca(
-    config: EngineConfig,
-    ca_pem: Vec<u8>,
-) -> Result<Engine, Error> {
-    Engine::with_curl_test_ca(config, ca_pem)
 }

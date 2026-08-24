@@ -221,7 +221,7 @@ fn spawned_main_inner<B: Backend + ?Sized>(
     }
 }
 
-#[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn spawned_main_factory(
     shared: Arc<Shared>,
     factory: Box<dyn BackendFactory>,

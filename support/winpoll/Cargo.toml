@@ -1,12 +1,14 @@
 [package]
 name = "nbreq-winpoll"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Private Windows polling compatibility support for NBReq"
+description = "Windows polling compatibility support for NBReq"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/madandy24/nbreq"
-publish = false
+readme = "README.md"
+publish = ["crates-io"]
+include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock"] }

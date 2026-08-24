@@ -73,15 +73,6 @@ fn ordinary_and_explicit_native_selection_are_available() {
 }
 
 #[test]
-#[cfg(all(feature = "native", feature = "curl-pilot"))]
-fn curl_feature_unification_does_not_change_ordinary_native_selection() {
-    let engine = Engine::new(EngineConfig::spawned())
-        .expect("ordinary construction must remain native when curl is compiled");
-    assert!(engine.metrics().connection_metrics_available());
-    engine.shutdown().expect("ordinary native Engine must stop");
-}
-
-#[test]
 #[cfg(not(feature = "native"))]
 fn ordinary_construction_fails_without_the_native_feature() {
     let spawned = Engine::new(EngineConfig::spawned())
@@ -114,28 +105,6 @@ fn explicit_native_selection_fails_when_unavailable() {
 }
 
 #[test]
-#[cfg(feature = "curl-pilot")]
-fn explicit_curl_selection_is_available_without_inventing_connection_metrics() {
-    let engine = Engine::builder()
-        .http_backend(HttpBackend::Curl)
-        .build()
-        .expect("compiled curl backend must construct explicitly");
-    assert!(!engine.metrics().connection_metrics_available());
-    engine.shutdown().expect("empty curl Engine must stop");
-}
-
-#[test]
-#[cfg(not(feature = "curl-pilot"))]
-fn explicit_curl_selection_fails_when_unavailable() {
-    let error = Engine::builder()
-        .http_backend(HttpBackend::Curl)
-        .build()
-        .err()
-        .expect("uncompiled curl backend must fail construction");
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-}
-
-#[test]
 #[cfg(feature = "native")]
 fn spawned_drive_fails_explicitly() {
     let mut engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
@@ -153,15 +122,4 @@ fn manual_drive_uses_the_same_public_engine_type() {
         .drive(Instant::now())
         .expect("manual native drive must succeed");
     engine.shutdown().expect("empty Engine must stop");
-}
-
-#[test]
-#[cfg(feature = "curl-pilot")]
-fn curl_pilot_rejects_manual_construction_explicitly() {
-    let error = EngineBuilder::manual()
-        .http_backend(HttpBackend::Curl)
-        .build()
-        .err()
-        .expect("explicit curl must reject manual construction");
-    assert_eq!(error.kind(), ErrorKind::WrongMode);
 }

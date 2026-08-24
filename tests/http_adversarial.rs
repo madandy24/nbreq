@@ -1,4 +1,4 @@
-#![cfg(any(feature = "curl-pilot", feature = "native"))]
+#![cfg(feature = "native")]
 
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -692,18 +692,7 @@ fn read_request_result(stream: &mut impl Read) -> std::io::Result<()> {
 }
 
 fn test_backends() -> Vec<(&'static str, HttpBackend)> {
-    #[cfg(all(feature = "native", feature = "curl-pilot"))]
-    {
-        vec![("native", HttpBackend::Native), ("curl", HttpBackend::Curl)]
-    }
-    #[cfg(all(feature = "native", not(feature = "curl-pilot")))]
-    {
-        vec![("native", HttpBackend::Native)]
-    }
-    #[cfg(all(feature = "curl-pilot", not(feature = "native")))]
-    {
-        vec![("curl", HttpBackend::Curl)]
-    }
+    vec![("native", HttpBackend::Native)]
 }
 
 fn test_engine(config: EngineConfig, backend: HttpBackend) -> Engine {
@@ -714,15 +703,7 @@ fn test_engine(config: EngineConfig, backend: HttpBackend) -> Engine {
         .expect("selected lab Engine must construct")
 }
 
-fn backend_has_tls(backend: HttpBackend) -> bool {
-    if backend == HttpBackend::Curl {
-        #[cfg(feature = "curl-pilot")]
-        {
-            return curl::Version::get().feature_ssl();
-        }
-        #[cfg(not(feature = "curl-pilot"))]
-        unreachable!("curl cannot be selected when its feature is absent");
-    }
+fn backend_has_tls(_backend: HttpBackend) -> bool {
     true
 }
 

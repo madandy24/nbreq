@@ -178,17 +178,19 @@ Client-specific escape hatch.
 
 `Engine::metrics` is a nonblocking, approximate, payload-free snapshot. Request and bounded-queue
 metrics are portable. Check `connection_metrics_available` before interpreting physical
-connection/pool counters; the native owner supplies them, while curl reports honest unavailable
-zeroes.
+connection/pool counters; the native owner supplies them, while internal non-networking test
+backends report honest unavailable zeroes.
 
 ## Backend and feature selection
 
 - Default features: native backend, ordinary `Engine::new` and unqualified builder construction.
 - `--no-default-features`: compiles the public types, but ordinary network construction returns
   `Unsupported`.
-- `curl-pilot`: compiles the curl backend in addition to the default; select it explicitly with
-  `EngineBuilder::http_backend(HttpBackend::Curl)`.
 - `test-support`: deterministic downstream conformance controls, not required by consumers.
+
+The pre-release curl Multi pilot is not part of the public crate feature matrix. It required a
+locally patched binding and remains project-history/reference evidence rather than a supported
+transport choice.
 
 The first public package will document its exact platform matrix. The accepted baseline is Windows
 10 or later and native Linux against an Ubuntu 20.04 ABI baseline; the Windows x86 GDS build also

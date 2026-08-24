@@ -40,58 +40,14 @@ runtime is installed globally.
 See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
 streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.
 
-## Curl pilot use
+## Historical curl reference
 
-Enable the `curl-pilot` feature, select `HttpBackend::Curl` on the builder, construct one
-independently owned Engine, and issue cheap cloneable Clients from it. Enabling the feature only
-compiles the backend; Cargo feature unification never changes what `Engine::new` selects, and no
-curl implementation type enters application code.
-
-```rust
-use std::time::Duration;
-
-use nbreq::{Completion, Engine, HttpBackend, Request};
-
-let engine = Engine::builder()
-    .http_backend(HttpBackend::Curl)
-    .build()?;
-let client = engine.client();
-
-let callback_handle = client.start(
-    Request::get("https://example.com/")
-        .total_timeout(Duration::from_secs(10))
-        .build()?,
-    |completion| match completion {
-        Completion::Completed(response) => println!("status {}", response.status()),
-        Completion::Failed(error) => eprintln!("request failed: {error}"),
-        Completion::Cancelled => eprintln!("request cancelled"),
-    },
-)?;
-
-let response = client.execute(
-    Request::get("https://example.com/")
-        .connect_timeout(Duration::from_secs(5))
-        .build()?,
-)?;
-
-// HTTP 4xx/5xx are responses. Transport/policy failures are errors.
-println!("{} bytes", response.body().len());
-callback_handle.cancel()?; // harmless if the callback request already completed
-engine.shutdown()?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-The curl pilot is spawned-only. Pilot deployments should configure finite connect/total deadlines;
-the backend deliberately makes no prompt connect/DNS teardown claim, and the native replacement
-retains that stronger proof obligation.
-Curl-backed modules and the pinned curl DLL remain loaded until process exit.
-Responses are buffered; HTTP error status codes remain responses, and portable trailer exposure is
-not yet defined. Cancellation stops local work but cannot undo a request already acted upon by the
-remote server.
-
-Portable request header values remain byte strings. The curl pilot's Rust binding can currently
-submit only UTF-8 header values; selecting that backend completes an otherwise valid opaque value
-as `Failed(Unsupported)`. The native backend must not inherit this pilot-only narrowing.
+NBReq's curl Multi pilot proved the public lifecycle and supplied differential transport evidence
+while the native implementation was built. It is deliberately absent from the first public crate:
+the pilot requires a locally patched binding, while maintaining a published fork would create a
+permanent support obligation for a reference backend. The accepted source, tests, scripts, and GDS
+artifacts remain recoverable from project history. Native NBReq is the supported crate backend;
+GDS retains ureq as its deployment rollback.
 
 Engine configuration independently bounds accepted/inflight requests, queued commands, and
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
@@ -104,8 +60,7 @@ cross-field inconsistent while work is moving. Native connection counters descri
 lifecycles beginning at DNS/connect reservation, matching the active cap rather than claiming that
 every reserved slot completed a TCP handshake.
 `EngineMetrics::connection_metrics_available()` distinguishes those native-owned physical
-connection measurements from curl/scaffold snapshots, where the connection fields remain zero
-rather than pretending curl exposed events that it does not.
+connection measurements from internal scaffold snapshots, where the connection fields remain zero.
 When a buffered waiter or streaming reader observes a terminal result, its matching outcome counter
 has already advanced; this ordering is part of the canonical terminal commit rather than eventual
 reactor bookkeeping.
@@ -121,8 +76,9 @@ and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, i
 fixed/chunked `UploadBody` pumping. The Windows build also passes live GDS traffic and shutdown on
 Ubuntu 20.04's stock Wine 5. Native Windows keeps Mio; only a first-registration missing-AFD error
 on old Wine selects a documented `WSAPoll` compatibility path with a 50 ms safety bound. NBReq
-proper forbids unsafe code; the minimal WinSock FFI is isolated in a private unpublished workspace
-crate behind a safe API. `Engine::new` and an unqualified builder select native in ordinary builds.
+proper forbids unsafe code; the minimal WinSock FFI is isolated in the implementation-detail
+`nbreq-winpoll` crate behind a safe API. `Engine::new` and an unqualified builder select native in
+ordinary builds.
 
 Explicit selection remains available when a caller wants to state the choice:
 
@@ -136,28 +92,17 @@ engine.shutdown()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`HttpBackend` has the same public variants under every feature combination. Selecting an
-implementation that was not compiled returns `Unsupported` at construction. A
-`--no-default-features` build therefore still compiles, but ordinary construction returns
-`Unsupported`; the lifecycle scaffold is internal test support rather than a third public runtime.
+`HttpBackend::Native` remains present under every feature combination. A
+`--no-default-features` build therefore still compiles its portable configuration surface, but
+network construction returns `Unsupported`; the lifecycle scaffold is internal test support rather
+than a second public runtime.
 
-## Project documents
+## Documentation
 
 - [Consumer guide](docs/getting-started.md)
-- [WP11 release-readiness ledger](thoughts/wp11_release_readiness.md)
-- [Initial product specification](thoughts/nbreq_initial_spec.md)
-- [Delivery plan](thoughts/project_nbreq_plan.html)
-- [WP2 curl pilot evidence](thoughts/wp2_curl_pilot_evidence.md)
-- [WP4 adversarial HTTP laboratory evidence](thoughts/wp4_http_lab_evidence.md)
-- [WP6 native reactor evidence](thoughts/wp6_native_reactor_evidence.md)
-- [WP7 native HTTP/1.1 evidence](thoughts/wp7_native_http_evidence.md)
-- [GDS native P10-06 Windows/Wine evidence](thoughts/gds_native_p10_06_evidence.md)
-- [GDS curl-pilot integration plan](thoughts/gds_curl_pilot_integration_plan.md)
-- [GDS G4 packaging and loader evidence](thoughts/gds_curl_pilot_g4_evidence.md)
-- [DPWebRPC plan sample](thoughts/project_dpwebrpc_sample.html)
 
 `test-support` exposes deterministic controls for downstream conformance tests; it is not needed
-by ordinary native or explicit curl consumers.
+by ordinary consumers.
 
 ## License
 

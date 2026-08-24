@@ -61,10 +61,8 @@ impl Drop for DrivingGuard<'_> {
 impl Engine {
     /// Creates one independent Engine from backend-neutral configuration.
     ///
-    /// The default build uses NBReq's native HTTP implementation in spawned or manual mode. Cargo
-    /// feature unification never changes this choice to curl. A build without the `native` feature
-    /// returns [`ErrorKind::Unsupported`]; select [`HttpBackend::Curl`] explicitly when the curl
-    /// reference backend is required.
+    /// The default build uses NBReq's native HTTP implementation in spawned or manual mode. A
+    /// build without the `native` feature returns [`ErrorKind::Unsupported`].
     pub fn new(config: EngineConfig) -> Result<Self, Error> {
         #[cfg(feature = "native")]
         {
@@ -88,17 +86,6 @@ impl Engine {
                 {
                     let _ = config;
                     Err(unavailable_http_backend("native"))
-                }
-            }
-            HttpBackend::Curl => {
-                #[cfg(feature = "curl-pilot")]
-                {
-                    Self::with_curl_backend(config)
-                }
-                #[cfg(not(feature = "curl-pilot"))]
-                {
-                    let _ = config;
-                    Err(unavailable_http_backend("curl"))
                 }
             }
         }
@@ -188,34 +175,7 @@ impl Engine {
         })
     }
 
-    #[cfg(feature = "curl-pilot")]
-    pub(crate) fn with_curl_backend(config: EngineConfig) -> Result<Self, Error> {
-        let factory = backend::curl_factory(&config);
-        Self::with_curl_factory(config, factory)
-    }
-
-    #[cfg(all(test, feature = "curl-pilot"))]
-    pub(crate) fn with_curl_test_ca(config: EngineConfig, ca_pem: Vec<u8>) -> Result<Self, Error> {
-        let factory = backend::curl_factory_with_test_ca(&config, ca_pem);
-        Self::with_curl_factory(config, factory)
-    }
-
-    #[cfg(feature = "curl-pilot")]
-    fn with_curl_factory(
-        config: EngineConfig,
-        factory: Box<dyn backend::BackendFactory>,
-    ) -> Result<Self, Error> {
-        if config.run_mode() != RunMode::Spawned {
-            return Err(Error::new(
-                ErrorKind::WrongMode,
-                "the private curl proving backend supports spawned mode only",
-            ));
-        }
-
-        Self::with_spawned_factory(config, factory)
-    }
-
-    #[cfg_attr(not(feature = "curl-pilot"), allow(dead_code))]
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn with_spawned_factory(
         config: EngineConfig,
         factory: Box<dyn backend::BackendFactory>,
@@ -706,7 +666,7 @@ impl EngineBuilder {
     }
 }
 
-#[cfg_attr(all(feature = "native", feature = "curl-pilot"), allow(dead_code))]
+#[cfg_attr(feature = "native", allow(dead_code))]
 fn unavailable_http_backend(backend: &str) -> Error {
     Error::new(
         ErrorKind::Unsupported,
