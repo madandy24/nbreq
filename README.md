@@ -107,6 +107,10 @@ than a second public runtime.
 `test-support` exposes deterministic controls for downstream conformance tests; it is not needed
 by ordinary consumers.
 
+## Project
+
+NBReq is developed by [Cave Rock Software Limited](https://www.caverock.com/).
+
 ## License
 
 NBReq is licensed under either of the following, at your option:
