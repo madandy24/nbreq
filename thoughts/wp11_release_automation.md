@@ -89,8 +89,9 @@ shuts the Engine down successfully. This closes WP11.3 without publishing the ro
 ## 7. WP11.4 root release candidate
 
 The root manifest now permits publication only to `crates-io`; it does not make publication an
-automatic CI action. Packaged security wording describes the live private-reporting route, and the
-complete local Windows verifier passes all 20 stages in 67.951 seconds. Before the explicit,
-permanent publication of `nbreq 0.1.0`, freeze a clean exact commit, rebuild and consume its
-normalized archive, require green hosted CI, and present the commit and archive hash for owner
-approval.
+automatic CI action. The first exact archive was held rather than published after review found
+pre-release path-dependency, optional-curl, future-platform-matrix, and security-support wording in
+the packaged guide/rustdoc. The replacement makes those consumer instructions durable for 0.1.0.
+Before the explicit, permanent publication of `nbreq 0.1.0`, freeze the corrected clean commit,
+rebuild and consume its normalized archive, require green hosted CI, and present the commit and
+archive hash for owner approval.

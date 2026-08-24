@@ -16,9 +16,9 @@ through a private channel rather than publishing the details.
 
 ## Supported versions
 
-Before the first crates.io release, only the current repository `main` is reviewed for security
-fixes. After 0.1.0, the latest published 0.x release is supported; older 0.x releases may be asked to
-upgrade before receiving a fix. This policy will be revisited before 1.0.
+NBReq 0.1.0 is the initial supported release. As later 0.x versions are published, only the latest
+published 0.x release is supported; users of older 0.x releases may be asked to upgrade before
+receiving a fix. This policy will be revisited before 1.0.
 
 ## Security posture
 

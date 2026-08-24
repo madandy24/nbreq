@@ -125,9 +125,13 @@ open.
 
 The WP11.4 root candidate replaces the publication lock with the explicit `publish =
 ["crates-io"]` allowlist and updates packaged security wording to describe the live private route.
-The complete 20-stage Windows verifier passes in 67.951 seconds. Publication remains a separate,
-explicit owner action after the clean commit's normalized archive, external consumer, and hosted CI
-are rechecked.
+The first exact archive review then correctly holds publication: the packaged guide, also embedded
+in crate rustdoc, still used a path dependency, described curl as optional, and promised a future
+platform matrix. The replacement uses `nbreq = "0.1"`, describes the native-only release surface,
+states the Windows 10 x64 and Ubuntu-20.04-baseline Linux x64 matrix, qualifies Wine 5 evidence, and
+makes the latest-0.x security wording durable. Publication remains a separate, explicit owner
+action after the corrected clean commit's normalized archive, external consumer, and hosted CI are
+rechecked.
 
 ## 6. First realistic native observation
 

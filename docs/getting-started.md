@@ -6,15 +6,13 @@ Client neither owns nor extends the Engine's lifetime. Keep the Engine in the se
 is responsible for stopping HTTP.
 
 The default Cargo feature is `native`. It provides NBReq's Rust-native HTTP/1.1, DNS, TCP, and
-rustls implementation without Tokio or another async runtime. The optional curl implementation is
-an explicitly selected diagnostic/reference backend; merely compiling it never changes ordinary
-construction.
+rustls implementation without Tokio or another async runtime.
 
-Until the first public package is cut, consumers use a workspace/path dependency:
+Add the released crate with the native backend enabled by default:
 
 ```toml
 [dependencies]
-nbreq = { path = "../nbreq" }
+nbreq = "0.1"
 ```
 
 ## Spawned mode and blocking requests
@@ -214,10 +212,11 @@ backends report honest unavailable zeroes.
   `Unsupported`.
 - `test-support`: deterministic downstream conformance controls, not required by consumers.
 
-The pre-release curl Multi pilot is not part of the public crate feature matrix. It required a
+The historical curl Multi pilot is not part of the public crate feature matrix. It required a
 locally patched binding and remains project-history/reference evidence rather than a supported
 transport choice.
 
-The first public package will document its exact platform matrix. The accepted baseline is Windows
-10 or later and native Linux against an Ubuntu 20.04 ABI baseline; the Windows x86 GDS build also
-passes its controlled compatibility workload under stock Wine 5.
+NBReq 0.1.0 supports Windows 10 x64 or later and native Linux x64 built against an Ubuntu 20.04 ABI
+baseline. The Windows x86 GDS integration also passes its controlled compatibility workload under
+Ubuntu 20.04's stock Wine 5; that is compatibility evidence for the Windows build, not a claim that
+every Wine release and host combination is supported.

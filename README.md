@@ -46,7 +46,7 @@ public issue.
 ## Historical curl reference
 
 NBReq's curl Multi pilot proved the public lifecycle and supplied differential transport evidence
-while the native implementation was built. It is deliberately absent from the first public crate:
+while the native implementation was built. It is deliberately absent from the 0.1.0 public crate:
 the pilot requires a locally patched binding, while maintaining a published fork would create a
 permanent support obligation for a reference backend. The accepted source, tests, scripts, and GDS
 artifacts remain recoverable from project history. Native NBReq is the supported crate backend;
