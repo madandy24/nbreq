@@ -101,10 +101,15 @@ This records package-topology compatibility with the existing code gates; it is 
 cross-platform release run.
 
 The WP11.2 implementation passes the complete 20-stage Windows verifier in 67.232 seconds after a
-current 1,225-advisory RustSec scan, the fixed `time 0.3.47` lock update, and ten additional
-adversarial-suite repetitions. The two ignored Hickory advisories have source-locked unreachable
-rationales in `wp11_security_api_audit.md` and `SECURITY.md`; eliminating that wire-only dependency
-is early post-WP11 work. Exact-source Rust-1.85 Linux remains before WP11.2 acceptance.
+current 1,225-advisory RustSec scan and ten additional adversarial-suite repetitions. Exact-source
+Rust 1.85 rejected the initially selected fixed `time 0.3.47` because that dev-only fixture
+dependency now requires Rust 1.88; 0.3.46 has the same MSRV. The graph therefore keeps
+Rust-1.85-compatible `time 0.3.45`; its
+RFC-2822 parser advisory is unreachable because the parsing feature is not compiled and rcgen only
+constructs certificate dates. That dev-only exception and the two Hickory exceptions have
+source-locked rationales in `wp11_security_api_audit.md` and `SECURITY.md`; eliminating the
+wire-only Hickory dependency is early post-WP11 work. A clean exact-source Linux rerun remains
+before WP11.2 acceptance.
 
 ## 6. First realistic native observation
 

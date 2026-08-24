@@ -90,8 +90,13 @@ must be enabled when `madandy24/nbreq` is created; until then this is a packaged
 contact mechanism.
 
 The 2026-08-24 `cargo-audit 0.22.2` scan loaded 1,225 RustSec advisories and checked 139 locked
-packages. It found `time 0.3.45` through the dev-only certificate fixtures; the lock is updated to
-fixed `time 0.3.47`. It also matched two Hickory advisories that are reviewed exceptions rather than
+packages. It found `time 0.3.45` through the dev-only certificate fixtures. Fixed `time 0.3.47`
+requires Rust 1.88, which the exact-source gate caught after the initial lock update. The test graph
+therefore keeps the newest Rust-1.85-compatible release, 0.3.45; 0.3.46 also requires Rust 1.88.
+`RUSTSEC-2026-0009` affects only
+RFC-2822 parsing; rcgen selects `time`'s `std`/`alloc` features without `parsing`, and NBReq uses it
+only to construct generated certificate dates. This is a dev-only reviewed exception, not runtime
+exposure. The scan also matched two Hickory advisories that are reviewed exceptions rather than
 reachable NBReq paths:
 
 - `RUSTSEC-2026-0118` requires Hickory's DNSSEC feature and `DnssecDnsHandle`; NBReq compiles neither.
@@ -99,10 +104,10 @@ reachable NBReq paths:
   encoder call is `prepare_name_query`, which emits one wire-bounded A/AAAA question and no records;
   untrusted responses are decoded. A dedicated regression locks this shape.
 
-Hickory 0.26.1 fixes the encoder but requires Rust 1.88. The audited command succeeds with only those
-two IDs explicitly ignored, preserving the stated Rust-1.85 MSRV. Eliminating the wire-only Hickory
-dependency is promoted to early post-WP11 work, and any expansion of its features or encoder use
-invalidates this assessment.
+Hickory 0.26.1 fixes the encoder but requires Rust 1.88. The audited command succeeds with the
+dev-only `RUSTSEC-2026-0009` and two unreachable Hickory IDs explicitly ignored, preserving the
+stated Rust-1.85 MSRV. Eliminating the wire-only Hickory dependency is promoted to early post-WP11
+work, and any expansion of its features or encoder use invalidates this assessment.
 
 Still outside this checkpoint:
 

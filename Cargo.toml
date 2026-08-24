@@ -72,6 +72,10 @@ rcgen = "=0.13.2"
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 socket2 = "=0.6.5"
 stats_alloc = "=0.1.10"
+# rcgen uses time only to construct generated test-certificate dates. 0.3.47 fixes an RFC-2822
+# parser issue but raises its MSRV to 1.88; NBReq does not compile time's parsing feature. Keep the
+# newest Rust-1.85-compatible release until the generated-fixture dependency can be removed.
+time = { version = "=0.3.45", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"

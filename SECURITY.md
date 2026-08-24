@@ -35,6 +35,14 @@ interface.
 
 ## Reviewed advisory exceptions
 
+The test graph pins `time` 0.3.45 through the `rcgen` certificate-fixture generator.
+`RUSTSEC-2026-0009` affects only RFC-2822 parsing functions. NBReq compiles neither `time`'s
+parsing feature nor any RFC-2822 parser; tests use it only to construct certificate validity dates.
+The newer 0.3.46 and fixed 0.3.47 releases require Rust 1.88. This dev-only exception preserves
+NBReq's Rust 1.85 MSRV and does not enter the library's runtime dependency graph. It must be
+reassessed if fixture generation starts parsing untrusted time values or the test-certificate
+machinery changes.
+
 The Rust-1.85 release graph currently pins `hickory-proto` 0.25.2 for DNS wire types. Two RustSec
 advisories match that package version but their affected paths are not reachable through NBReq:
 
