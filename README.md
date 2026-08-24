@@ -118,4 +118,7 @@ NBReq is licensed under either of the following, at your option:
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)); or
 - MIT License ([LICENSE-MIT](LICENSE-MIT)).
 
+The generated [component and dependency license report](THIRD_PARTY_LICENSES.html) records the
+locked Windows and Linux release graph.
+
 Copyright (c) 2026 Cave Rock Software Limited.

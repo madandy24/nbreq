@@ -74,7 +74,7 @@
   Product specification: <span class="mono">thoughts/nbreq_initial_spec.md</span> &nbsp;|&nbsp;
   First consumer: <span class="mono">GDS Rust DPWebRPC</span> &nbsp;|&nbsp;
   Initial plan: 2026-08-15 &nbsp;|&nbsp;
-  Overall status: <span class="gate-partial">WP1–WP10 and WP11.2 accepted; native is the ordinary/default HTTP backend; WP11.3 public-repository automation and release rehearsal are next</span>
+  Overall status: <span class="gate-partial">WP1–WP10 and WP11.2 accepted; native is the ordinary/default HTTP backend; WP11.3 release automation is in progress</span>
 </div>
 
 <div class="panel">
@@ -501,6 +501,7 @@
   <li>Define semantic-versioning policy and distinguish portable contract from backend extras.</li>
   <li>Publish only after reproducing builds and release tests from a clean environment.</li>
 </ul>
+<p><strong>Progress:</strong> the least-privilege public-repository workflow, reviewed RustSec policy, and exact generated component/dependency license report are prepared locally. The report reproduces byte-for-byte, is included in the package boundary, and the complete 20-stage Windows verifier passes in 29.940 seconds. Hosted GitHub runs, private vulnerability reporting, registry-resolution rehearsal, and publication remain open and are not claimed by this checkpoint.</p>
 <p><strong>Acceptance:</strong> a new consumer can use NBReq without GDS knowledge; docs state execution and shutdown honestly; release artifacts and tests are reproducible.</p>
 
 <h3>Post-WP11 — Expose reusable DNS and TCP capabilities</h3>

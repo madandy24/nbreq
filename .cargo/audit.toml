@@ -1,0 +1,17 @@
+[advisories]
+# Dev-only rcgen certificate-date construction does not compile time's affected RFC-2822 parser.
+ignore = [
+    "RUSTSEC-2026-0009",
+    # NBReq disables Hickory DNSSEC and never constructs the affected DnssecDnsHandle.
+    "RUSTSEC-2026-0118",
+    # Production DNS encoding is regression-locked to one bounded question and zero records.
+    "RUSTSEC-2026-0119",
+]
+
+[output]
+quiet = false
+show_tree = true
+
+[yanked]
+enabled = true
+update_index = true

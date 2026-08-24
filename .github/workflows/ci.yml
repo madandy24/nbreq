@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu stable
+            os: ubuntu-latest
+            toolchain: stable
+          - name: Windows stable
+            os: windows-latest
+            toolchain: stable
+          - name: Ubuntu MSRV 1.85
+            os: ubuntu-latest
+            toolchain: 1.85.0
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component clippy --component rustfmt
+
+      - name: Select Rust toolchain
+        run: rustup default ${{ matrix.toolchain }}
+
+      - name: Record toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Fetch exact locked graph
+        run: cargo fetch --locked
+
+      - name: Run complete offline verifier
+        run: cargo run --locked --offline --manifest-path tools/xtask/Cargo.toml -- verify --offline
+
+  rustsec:
+    name: RustSec advisory scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Select stable Rust
+        run: rustup default stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked --version 0.22.2 cargo-audit
+
+      - name: Scan exact lock graph
+        run: cargo audit --file Cargo.lock
+
+  licenses:
+    name: Component and dependency licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Select stable Rust
+        run: rustup default stable
+
+      - name: Install cargo-about
+        run: cargo install --locked --features cli --version 0.9.1 cargo-about
+
+      - name: Regenerate locked license report
+        run: cargo about generate --frozen --all-features --fail --output-file target/THIRD_PARTY_LICENSES.generated.html about.hbs
+
+      - name: Reject license-report drift
+        run: cmp THIRD_PARTY_LICENSES.html target/THIRD_PARTY_LICENSES.generated.html

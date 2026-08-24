@@ -25,6 +25,7 @@ include = [
     "/docs/getting-started.md",
     "/README.md",
     "/SECURITY.md",
+    "/THIRD_PARTY_LICENSES.html",
     "/LICENSE-APACHE",
     "/LICENSE-MIT",
 ]

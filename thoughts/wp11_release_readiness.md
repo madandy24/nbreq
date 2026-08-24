@@ -29,7 +29,7 @@ accepted private implementation into a public crate. It does not authorize publi
 | Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
 | Empty `ffi` feature | **Resolved:** removed before 0.1.0 | Add a future FFI feature only with an implemented and documented contract |
 | Security contact | **Policy resolved:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports | Enable private vulnerability reporting on the real repository before release; until then the route is not live |
-| CI | Portable CI intentionally deferred in P10-04 until a genuine public repository exists | Add the existing verifier to Windows and Linux CI without replacing named target-host/Wine/GDS evidence |
+| CI | **Prepared locally:** a least-privilege GitHub Actions workflow runs the complete verifier on stable Windows, stable Ubuntu, and Ubuntu/Rust 1.85, with separate RustSec and license-report gates | Create the genuine public repository, run the workflow there, and retain named target-host/Wine/GDS evidence for claims portable CI cannot reproduce |
 
 The remaining topology gate is publication order, not an architecture defect: publish and verify
 `nbreq-winpoll` first, then package `nbreq` so its normalized manifest resolves version `0.1.0` from
@@ -51,10 +51,11 @@ CDLA-Permissive-2.0, and compatible disjunctions/conjunctions. `r-efi` offers pe
 alongside LGPL rather than requiring LGPL; `ring` is Apache-2.0 AND ISC. No dependency is presently
 unclassified.
 
-This inventory includes dev, target-specific, and optional dependencies. Before packaging, generate
-an exact normal-feature and all-feature notice/license report from the final release manifest and
-retain any required upstream notices. Do
-not copy this summary into legal files as a substitute for the exact release-tree report.
+The checked-in `THIRD_PARTY_LICENSES.html` is generated from the locked non-development graph for
+both supported release targets with all release features enabled. Pinned `cargo-about 0.9.1`, the
+accepted-license policy in `about.toml`, and the deterministic `about.hbs` template reproduce it;
+CI regenerates the report and rejects byte-level drift. This exact report, rather than this summary,
+is included in the root package.
 
 ## 4. Documentation audit
 
@@ -112,6 +113,11 @@ wire-only Hickory dependency is early post-WP11 work. Final commit `de21963` pas
 20-stage Windows verifier in 72.057 seconds; its authenticated 563,206-byte archive (SHA-256
 `115E37BCF017AEECB4595BEC9A818E8BCB5E791C66CEAC5BAAF90926B8B3448A`) passes all 20 stages
 offline on Ubuntu 20.04.6 / Rust 1.85.0 in 265.644 seconds. WP11.2 is accepted.
+
+The local WP11.3 automation checkpoint is recorded in `wp11_release_automation.md`. It prepares the
+real-repository workflow, reviewed advisory policy, exact generated license report, and package
+contents, and passes the complete 20-stage Windows verifier in 29.940 seconds. GitHub-hosted runs,
+private vulnerability reporting, registry resolution, and publication remain deliberately open.
 
 ## 6. First realistic native observation
 

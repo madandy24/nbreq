@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NBReq component and dependency licenses</title>
+  <style>
+    body { font-family: sans-serif; line-height: 1.4; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ccc; padding: 0.4rem; text-align: left; vertical-align: top; }
+    pre { border: 1px solid #ccc; padding: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>NBReq component and dependency licenses</h1>
+  <p>
+    This generated report covers NBReq's workspace components and locked non-development dependency
+    graph for the supported Windows x64 and Linux x64 targets with all release features enabled. It
+    is an inventory and reproduction aid, not legal advice.
+  </p>
+  <h2>Components</h2>
+  <table>
+    <thead><tr><th>Component</th><th>Version</th><th>Selected license</th></tr></thead>
+    <tbody>
+    {{#each crates}}
+      <tr>
+        <td><a href="{{#if package.repository}}{{package.repository}}{{else}}https://crates.io/crates/{{package.name}}{{/if}}">{{package.name}}</a></td>
+        <td>{{package.version}}</td>
+        <td>{{license}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+  <h2>License texts</h2>
+  {{#each overview}}
+    <h3 id="{{id}}">{{name}}</h3>
+    <pre>{{text}}</pre>
+  {{/each}}
+</body>
+</html>

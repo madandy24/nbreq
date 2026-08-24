@@ -4,6 +4,9 @@
 .gitignore text eol=lf
 *.md text eol=lf
 *.html text eol=lf
+THIRD_PARTY_LICENSES.html -whitespace linguist-generated=true
+*.hbs text eol=lf
+*.yml text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf

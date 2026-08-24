@@ -50,6 +50,22 @@ cargo doc --all-features --no-deps
 The crate enables Rust's `missing_docs` lint. The existing warning-denied all-feature lint stage
 therefore also prevents undocumented public API from entering the release surface.
 
+The public-repository CI runs that same complete verifier on current stable Rust for Windows and
+Ubuntu, and on Rust 1.85 for Ubuntu. Each job fetches the exact lock graph first and then executes
+the verifier offline. A separate stable-Ubuntu job runs `cargo-audit 0.22.2`; the three reviewed
+exceptions in `.cargo/audit.toml` are justified in `SECURITY.md` and must not be expanded without a
+source-level reachability review.
+
+The checked-in component and dependency license report is generated with pinned `cargo-about
+0.9.1`. After installing that tool, refresh and verify the report with:
+
+```text
+cargo about generate --frozen --all-features --fail --output-file THIRD_PARTY_LICENSES.html about.hbs
+```
+
+CI regenerates the report independently and rejects drift from the exact locked graph or accepted
+license policy in `about.toml`.
+
 The accepted pre-release curl pilot is no longer part of the public manifest or ordinary verifier.
 Its source, tests, and Windows proof scripts remain historical/reference material. To reproduce the
 accepted pilot, check out commit `b60dbe0` (or an earlier named evidence commit) before running:
