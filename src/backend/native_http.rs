@@ -23,7 +23,7 @@ use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, 
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
-    Response, ResponseHead, ShutdownError, StreamRequest, TimeoutKind, TransportStage,
+    Response, ResponseHead, ShutdownError, StreamRequest, TimeoutKind, TlsFailure, TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -2663,8 +2663,9 @@ impl NativeHttpBackend {
             .and_then(|transfer| transfer.tls.as_ref())
             .is_some_and(NativeTls::is_handshaking);
         let error = if tls_handshake {
-            Error::transport(
+            Error::tls(
                 TransportStage::Tls,
+                TlsFailure::Io,
                 format!(
                     "the connection failed during the TLS handshake: {}",
                     failure.message
@@ -2882,8 +2883,9 @@ impl NativeHttpBackend {
                     if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
                         self.finish(
                             slot,
-                            Completion::Failed(Error::transport(
+                            Completion::Failed(Error::tls(
                                 TransportStage::Tls,
+                                TlsFailure::Io,
                                 format!(
                                     "native TLS ClientHello queueing failed: {}",
                                     failure.message
@@ -3441,7 +3443,11 @@ impl NativeHttpBackend {
             if let Err(failure) = self.reactor.queue_write(slot, &outbound) {
                 self.finish(
                     slot,
-                    Completion::Failed(Error::transport(TransportStage::Tls, failure.message)),
+                    Completion::Failed(Error::tls(
+                        TransportStage::Tls,
+                        TlsFailure::Io,
+                        failure.message,
+                    )),
                     completions,
                 );
                 return Ok(());
@@ -3519,7 +3525,11 @@ impl NativeHttpBackend {
                 };
                 self.finish(
                     slot,
-                    Completion::Failed(Error::transport(stage, failure.message)),
+                    Completion::Failed(if stage == TransportStage::Tls {
+                        Error::tls(stage, TlsFailure::Io, failure.message)
+                    } else {
+                        Error::transport(stage, failure.message)
+                    }),
                     completions,
                 );
                 return Ok(());
@@ -3677,8 +3687,9 @@ impl NativeHttpBackend {
                     if tls_state == Some(true) {
                         self.finish(
                             slot,
-                            Completion::Failed(Error::transport(
+                            Completion::Failed(Error::tls(
                                 TransportStage::Tls,
+                                TlsFailure::Protocol,
                                 "the peer closed during the TLS handshake",
                             )),
                             &mut completions,

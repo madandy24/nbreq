@@ -7,6 +7,7 @@
 //! build and ordinary [`Engine::new`] constructor use NBReq's native HTTP implementation.
 #![doc = include_str!("../docs/getting-started.md")]
 
+mod atomic;
 mod backend;
 mod callback;
 mod client;
@@ -41,5 +42,5 @@ pub use stream::{
 pub use types::{
     CallbackDispatch, Completion, DriveStatus, EngineConfig, Error, ErrorKind, ExecuteError,
     Header, HttpBackend, LimitKind, Method, Request, RequestBuilder, RequestId, RequestOptions,
-    Response, RunMode, ShutdownError, TimeoutKind, TlsVerification, TransportStage,
+    Response, RunMode, ShutdownError, TimeoutKind, TlsFailure, TlsVerification, TransportStage,
 };

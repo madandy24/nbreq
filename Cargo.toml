@@ -24,6 +24,7 @@ include = [
     "/examples/spawned.rs",
     "/docs/getting-started.md",
     "/README.md",
+    "/SECURITY.md",
     "/LICENSE-APACHE",
     "/LICENSE-MIT",
 ]
@@ -50,6 +51,8 @@ test-support = []
 
 [dependencies]
 getrandom = { version = "=0.3.4", optional = true }
+# Wire types only: DNSSEC is disabled and production encoding emits one bounded question with no
+# records. See SECURITY.md for the reviewed RustSec exceptions on this Rust-1.85-compatible pin.
 hickory-proto = { version = "=0.25.2", optional = true, default-features = false, features = ["std"] }
 httparse = { version = "=1.10.1", optional = true }
 mio = { version = "=1.0.4", optional = true, features = ["net", "os-poll"] }

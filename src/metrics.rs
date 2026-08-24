@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::atomic::{try_update_u64, try_update_usize};
+
 use crate::Completion;
 
 /// Current or historical pressure on the Engine's bounded resources.
@@ -287,29 +289,28 @@ impl Metrics {
 }
 
 fn saturating_increment(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    let _ = try_update_u64(counter, Ordering::AcqRel, Ordering::Acquire, |value| {
         Some(value.saturating_add(1))
     });
 }
 
 fn increment_gauge(gauge: &AtomicUsize, high: &AtomicUsize) {
-    let previous = gauge
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            Some(value.saturating_add(1))
-        })
-        .unwrap_or_else(|value| value);
+    let previous = try_update_usize(gauge, Ordering::AcqRel, Ordering::Acquire, |value| {
+        Some(value.saturating_add(1))
+    })
+    .unwrap_or_else(|value| value);
     let value = previous.saturating_add(1);
     update_max(high, value);
 }
 
 fn subtract_gauge(gauge: &AtomicUsize, amount: usize) {
-    let _ = gauge.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    let _ = try_update_usize(gauge, Ordering::AcqRel, Ordering::Acquire, |value| {
         Some(value.saturating_sub(amount))
     });
 }
 
 fn update_max(high: &AtomicUsize, value: usize) {
-    let _ = high.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+    let _ = try_update_usize(high, Ordering::AcqRel, Ordering::Acquire, |current| {
         (value > current).then_some(value)
     });
 }

@@ -1496,6 +1496,30 @@ mod tests {
     }
 
     #[test]
+    fn production_query_encoder_has_one_question_and_no_records() {
+        let name = fqdn("bounded-query.test");
+        let mut next_id = 41;
+        let (id, query) = prepare_name_query(
+            ResolveKey(9),
+            name.clone(),
+            RecordType::A,
+            0,
+            &HashMap::new(),
+            &mut next_id,
+        )
+        .expect("ordinary DNS query must encode");
+        let message = Message::from_vec(&query.wire).expect("ordinary DNS query must decode");
+
+        assert_eq!(message.id(), id);
+        assert_eq!(message.queries().len(), 1);
+        assert_eq!(message.queries()[0].name(), &name);
+        assert_eq!(message.queries()[0].query_type(), RecordType::A);
+        assert!(message.answers().is_empty());
+        assert!(message.name_servers().is_empty());
+        assert!(message.additionals().is_empty());
+    }
+
+    #[test]
     fn parser_accepts_bounded_cname_chain_and_aaaa_answers() {
         let alias = fqdn("alias.test");
         let canonical = fqdn("canonical.test");

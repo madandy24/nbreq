@@ -125,6 +125,32 @@ counterparts are passive and are suitable for manual driving. `collect` is valid
 body byte has been consumed. Dropping a reader before known EOF requests cancellation; dropping it
 after final EOF or a no-body response is harmless.
 
+## Errors and TLS diagnosis
+
+Use the structured fields on `Error` for decisions and treat `message()` as a payload-free human
+diagnostic. In particular, `transport_stage()` identifies DNS, connect, TLS, send, receive, or HTTP
+framing, while `tls_failure()` can distinguish safe categories such as hostname mismatch, unknown
+issuer, expiry, peer alert, protocol failure, and local TLS I/O. Both enums are non-exhaustive, so
+portable callers must retain a fallback arm:
+
+```rust
+use nbreq::{Error, TlsFailure};
+
+fn tls_hint(error: &Error) -> &'static str {
+    match error.tls_failure() {
+        Some(TlsFailure::CertificateHostnameMismatch) => "check the requested hostname",
+        Some(TlsFailure::CertificateUnknownIssuer) => "check the installed trust roots",
+        Some(TlsFailure::CertificateExpired) => "renew the server certificate",
+        Some(_) => "inspect the TLS category and deployment",
+        None => "this was not a classified TLS failure",
+    }
+}
+```
+
+NBReq deliberately provides no raw-TLS-diagnostic switch: backend-native certificate errors can
+contain requested or presented names. The structured category preserves operational usefulness
+without making ordinary logging a data-disclosure path.
+
 ## Manual driving and GUI loops
 
 Manual mode creates no reactor thread and dispatches callbacks inline only from explicit drive

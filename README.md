@@ -5,8 +5,8 @@ deterministic shutdown, and synchronous or callback-oriented APIs without adopti
 runtime.
 
 The architecture contract and backend-independent lifecycle kernel are complete. The default build
-and ordinary constructor use NBReq's Rust-native HTTP implementation. The feature-gated curl Multi
-pilot remains an explicitly selected reference/rollback backend.
+and ordinary constructor use NBReq's Rust-native HTTP implementation. The earlier curl Multi pilot
+remains in project history as reference and differential evidence; it is not in the public crate.
 
 ## Quick start
 
@@ -39,6 +39,9 @@ runtime is installed globally.
 
 See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
 streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.
+
+Security issues should be reported privately as described in [SECURITY.md](SECURITY.md), not in a
+public issue.
 
 ## Historical curl reference
 

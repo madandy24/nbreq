@@ -2,10 +2,11 @@
 //!
 //! NBReq normally uses Mio. Older Wine releases do not implement the private AFD object Mio uses,
 //! so Windows binaries need this deliberately boring compatibility path. Keeping the FFI in this
-//! private crate preserves `#![forbid(unsafe_code)]` in NBReq proper and makes the unsafe surface
-//! small enough to audit in one screen.
+//! implementation-detail crate preserves `#![forbid(unsafe_code)]` in NBReq proper and makes the
+//! unsafe surface small enough to audit in one screen.
 
 #![cfg(windows)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::io;
 use std::thread;

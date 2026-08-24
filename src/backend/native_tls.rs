@@ -24,10 +24,12 @@ use rustls::crypto::{
     CryptoProvider, WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
 };
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use rustls::{
+    CertificateError, ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+};
 use rustls_platform_verifier::BuilderVerifierExt;
 
-use crate::{Error, ErrorKind, TlsVerification, TransportStage};
+use crate::{Error, ErrorKind, TlsFailure, TlsVerification, TransportStage};
 
 pub(super) const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
 const TLS_PLAINTEXT_CHUNK: usize = 16 * 1024;
@@ -141,9 +143,10 @@ impl NativeTlsConfigs {
             }
         };
         let connection = ClientConnection::new(config, name).map_err(|error| {
-            Error::transport(
+            Error::tls(
                 TransportStage::Tls,
-                format!("native TLS client setup failed: {error}"),
+                classify_rustls_error(&error),
+                "native TLS client setup failed",
             )
         })?;
         Ok(NativeTls {
@@ -235,9 +238,10 @@ impl NativeTls {
                 } else {
                     TransportStage::Receive
                 };
-                Error::transport(
+                Error::tls(
                     stage,
-                    format!("native TLS packet processing failed: {error}"),
+                    classify_rustls_error(&error),
+                    "native TLS packet processing failed",
                 )
             })?;
             peer_closed |= state.peer_has_closed();
@@ -387,10 +391,11 @@ impl NativeTls {
                 .connection
                 .writer()
                 .write(&request.bytes[request.offset..end])
-                .map_err(|error| {
-                    Error::transport(
+                .map_err(|_| {
+                    Error::tls(
                         TransportStage::Send,
-                        format!("native TLS request encryption failed: {error}"),
+                        TlsFailure::Io,
+                        "native TLS request encryption failed",
                     )
                 })?;
             if written == 0 {
@@ -424,10 +429,11 @@ impl NativeTls {
     ) -> Result<(), Error> {
         while self.connection.wants_write() && output.len() < ciphertext_limit {
             let mut writer = CappedWriter::new(output, ciphertext_limit);
-            let written = self.connection.write_tls(&mut writer).map_err(|error| {
-                Error::transport(
+            let written = self.connection.write_tls(&mut writer).map_err(|_| {
+                Error::tls(
                     TransportStage::Send,
-                    format!("native TLS record output failed: {error}"),
+                    TlsFailure::Io,
+                    "native TLS record output failed",
                 )
             })?;
             if written == 0 {
@@ -445,8 +451,8 @@ impl NativeTls {
             } else {
                 TransportStage::Send
             };
-            let written = self.connection.write_tls(&mut output).map_err(|error| {
-                Error::transport(stage, format!("native TLS record output failed: {error}"))
+            let written = self.connection.write_tls(&mut output).map_err(|_| {
+                Error::tls(stage, TlsFailure::Io, "native TLS record output failed")
             })?;
             if written == 0 {
                 break;
@@ -621,20 +627,66 @@ impl ServerCertVerifier for GatedFirstVerification {
     }
 }
 
-fn tls_config_error(operation: &str, error: impl fmt::Display) -> Error {
-    Error::transport(
+fn tls_config_error(operation: &str, _error: impl fmt::Display) -> Error {
+    Error::tls(
         TransportStage::Tls,
-        format!("native TLS {operation} configuration failed: {error}"),
+        TlsFailure::Configuration,
+        format!("native TLS {operation} configuration failed"),
     )
 }
 
-fn tls_io_error(handshaking: bool, operation: &str, error: io::Error) -> Error {
+fn tls_io_error(handshaking: bool, operation: &str, _error: io::Error) -> Error {
     let stage = if handshaking {
         TransportStage::Tls
     } else {
         TransportStage::Receive
     };
-    Error::transport(stage, format!("native TLS {operation} failed: {error}"))
+    Error::tls(
+        stage,
+        TlsFailure::Io,
+        format!("native TLS {operation} failed"),
+    )
+}
+
+fn classify_rustls_error(error: &RustlsError) -> TlsFailure {
+    match error {
+        RustlsError::InvalidCertificate(error) => classify_certificate_error(error),
+        RustlsError::NoCertificatesPresented | RustlsError::UnsupportedNameType => {
+            TlsFailure::CertificateInvalid
+        }
+        RustlsError::AlertReceived(_) => TlsFailure::PeerAlert,
+        RustlsError::InappropriateMessage { .. }
+        | RustlsError::InappropriateHandshakeMessage { .. }
+        | RustlsError::InvalidEncryptedClientHello(_)
+        | RustlsError::InvalidMessage(_)
+        | RustlsError::DecryptError
+        | RustlsError::EncryptError
+        | RustlsError::PeerIncompatible(_)
+        | RustlsError::PeerMisbehaved(_)
+        | RustlsError::HandshakeNotComplete
+        | RustlsError::PeerSentOversizedRecord
+        | RustlsError::NoApplicationProtocol
+        | RustlsError::BadMaxFragmentSize
+        | RustlsError::InconsistentKeys(_) => TlsFailure::Protocol,
+        _ => TlsFailure::Unknown,
+    }
+}
+
+fn classify_certificate_error(error: &CertificateError) -> TlsFailure {
+    match error {
+        CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. } => {
+            TlsFailure::CertificateHostnameMismatch
+        }
+        CertificateError::UnknownIssuer => TlsFailure::CertificateUnknownIssuer,
+        CertificateError::Expired | CertificateError::ExpiredContext { .. } => {
+            TlsFailure::CertificateExpired
+        }
+        CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. } => {
+            TlsFailure::CertificateNotYetValid
+        }
+        CertificateError::Revoked => TlsFailure::CertificateRevoked,
+        _ => TlsFailure::CertificateInvalid,
+    }
 }
 
 fn tls_handshake_flight_limit() -> Error {
@@ -650,7 +702,7 @@ mod tests {
     use rustls::ServerConnection;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
-    use rcgen::{CertificateParams, KeyPair, date_time_ymd};
+    use rcgen::{CertificateParams, DnType, KeyPair, date_time_ymd};
 
     use super::*;
 
@@ -665,6 +717,7 @@ mod tests {
         let key = KeyPair::generate().expect("TLS test key must generate");
         let mut params =
             CertificateParams::new(vec![host.to_owned()]).expect("TLS test parameters must build");
+        params.distinguished_name.push(DnType::CommonName, host);
         if expired {
             params.not_before = date_time_ymd(2010, 1, 1);
             params.not_after = date_time_ymd(2011, 1, 1);
@@ -882,7 +935,20 @@ mod tests {
                     .write_tls(&mut server_flight)
                     .expect("server flight must encode");
             }
-            assert_eq!(client.receive(&server_flight).is_ok(), should_succeed);
+            let result = client.receive(&server_flight);
+            if should_succeed {
+                assert!(result.is_ok());
+            } else {
+                let error = result.expect_err("verified wrong host must fail");
+                assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+                assert_eq!(
+                    error.tls_failure(),
+                    Some(TlsFailure::CertificateHostnameMismatch)
+                );
+                assert_eq!(error.message(), "native TLS packet processing failed");
+                assert!(!error.message().contains("wrong.test"));
+                assert!(!error.message().contains("resolved.test"));
+            }
         }
     }
 
@@ -893,7 +959,7 @@ mod tests {
 
     #[test]
     fn verified_unknown_root_and_expired_certificate_fail_at_tls() {
-        let (trusted, _) = identity_for("resolved.test", false);
+        let (trusted, _) = identity_for("trusted-root.test", false);
         let configs = NativeTlsConfigs::with_test_root(trusted)
             .expect("trusted TLS client config must build");
 
@@ -904,6 +970,14 @@ mod tests {
         let unknown_error = first_server_flight(&mut unknown_client, unknown, unknown_key)
             .expect_err("unknown root must fail");
         assert_eq!(unknown_error.transport_stage(), Some(TransportStage::Tls));
+        assert_eq!(
+            unknown_error.tls_failure(),
+            Some(TlsFailure::CertificateUnknownIssuer)
+        );
+        assert_eq!(
+            unknown_error.message(),
+            "native TLS packet processing failed"
+        );
 
         let (expired, expired_key) = identity_for("resolved.test", true);
         let expired_configs = NativeTlsConfigs::with_test_root(expired.clone())
@@ -914,6 +988,14 @@ mod tests {
         let expired_error = first_server_flight(&mut expired_client, expired, expired_key)
             .expect_err("expired certificate must fail");
         assert_eq!(expired_error.transport_stage(), Some(TransportStage::Tls));
+        assert_eq!(
+            expired_error.tls_failure(),
+            Some(TlsFailure::CertificateExpired)
+        );
+        assert_eq!(
+            expired_error.message(),
+            "native TLS packet processing failed"
+        );
     }
 
     #[test]
@@ -932,6 +1014,7 @@ mod tests {
             .expect_err("peer handshake alert must fail");
         assert_eq!(error.kind(), ErrorKind::Transport);
         assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+        assert_eq!(error.tls_failure(), Some(TlsFailure::PeerAlert));
     }
 
     #[test]

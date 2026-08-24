@@ -3,9 +3,9 @@
 use std::io::{ErrorKind as IoErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,19 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use socket2::SockRef;
+
+static LOOPBACK_BIND: Mutex<()> = Mutex::new(());
+
+fn lock_loopback_bind() -> MutexGuard<'static, ()> {
+    LOOPBACK_BIND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn bind_loopback() -> TcpListener {
+    let _guard = lock_loopback_bind();
+    TcpListener::bind("127.0.0.1:0").expect("loopback listener must bind")
+}
 
 #[derive(Clone, Copy)]
 enum Script {
@@ -44,7 +57,7 @@ struct ScriptedServer {
 
 impl ScriptedServer {
     fn start(script: Script) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("lab listener must bind");
+        let listener = bind_loopback();
         listener
             .set_nonblocking(true)
             .expect("lab listener must become nonblocking");
@@ -224,7 +237,7 @@ struct RedirectServer {
 
 impl RedirectServer {
     fn start(scenario: RedirectScenario) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("redirect listener must bind");
+        let listener = bind_loopback();
         listener
             .set_nonblocking(true)
             .expect("redirect listener must become nonblocking");
@@ -403,7 +416,7 @@ struct TlsServer {
 
 impl TlsServer {
     fn start(identity: &TlsIdentity) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("TLS listener must bind");
+        let listener = bind_loopback();
         listener
             .set_nonblocking(true)
             .expect("TLS listener must become nonblocking");
@@ -1165,6 +1178,10 @@ fn failed_limit_releases_admission_and_updates_portable_metrics() {
 #[test]
 fn closed_loopback_endpoint_stays_in_the_connect_category() {
     for (backend_name, backend) in test_backends() {
+        // Keep every other fixture in this process from acquiring the just-released ephemeral
+        // port until the refused connection has been observed. Without this guard, parallel tests
+        // can legitimately bind the same port and turn this into a request against the wrong lab.
+        let _allocation_guard = lock_loopback_bind();
         let listener = TcpListener::bind("127.0.0.1:0").expect("closed port must reserve");
         let address = listener
             .local_addr()

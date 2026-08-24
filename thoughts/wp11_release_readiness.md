@@ -26,9 +26,9 @@ accepted private implementation into a public crate. It does not authorize publi
 | Registry metadata | **Identity resolved:** planned repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Create the public remote, verify all URLs, and remove `publish = false` only at the release gate |
 | Windows support crate | **Topology resolved:** `nbreq-winpoll` is `0.1.0`, crates.io-scoped, explicitly described as an implementation detail, and the root uses path + registry version | Publish and verify this crate immediately before `nbreq`; do not market or stabilize it as a direct consumer API |
 | Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
-| Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
+| Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
 | Empty `ffi` feature | **Resolved:** removed before 0.1.0 | Add a future FFI feature only with an implemented and documented contract |
-| Security contact | No `SECURITY.md` or public reporting route | Add supported-version and private-reporting policy after repository/contact choice |
+| Security contact | **Policy resolved:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports | Enable private vulnerability reporting on the real repository before release; until then the route is not live |
 | CI | Portable CI intentionally deferred in P10-04 until a genuine public repository exists | Add the existing verifier to Windows and Linux CI without replacing named target-host/Wine/GDS evidence |
 
 The remaining topology gate is publication order, not an architecture defect: publish and verify
@@ -72,9 +72,9 @@ The first guide covers:
 - GUI dispatch and DLL/FFI shutdown order;
 - limits, pools, metrics, TLS defaults, and explicit backend selection.
 
-Remaining public documentation includes a compact feature/platform matrix, error-handling recipes,
-security policy, release/semver policy, and generated API-documentation links after repository and
-docs.rs metadata exist.
+Remaining public documentation includes a compact feature/platform matrix, release/semver policy,
+and generated API-documentation links after repository and docs.rs metadata exist. Error/TLS
+handling recipes and the packaged security policy are now present.
 
 ## 5. Proposed WP11 sequence
 
@@ -83,8 +83,11 @@ docs.rs metadata exist.
 2. **WP11.1 — identity and package topology:** holder, dual license, repository identity, `0.1.0`,
    native-only public graph, versioned support-crate boundary, feature cleanup, and packaged contents
    are resolved. Publication itself remains gated.
-3. **WP11.2 — security and API audit:** review unsafe boundary, panic/callback containment, secret
-   redaction, TLS policy, denial-of-service limits, semver surface, and reporting policy.
+3. **WP11.2 — security and API audit:** implementation checkpoint closes the source review in
+   `wp11_security_api_audit.md`: unsafe remains isolated, panic/callback containment holds, raw TLS
+   diagnostics become structured payload-free categories, resource ceilings remain owner-bounded,
+   evolving policy types become non-exhaustive, and `SECURITY.md` defines reporting/support policy.
+   Current-advisory scanning and complete Windows/Linux verification remain before acceptance.
 4. **WP11.3 — release automation:** add real repository CI, exact license/notice generation,
    `cargo package`/clean-consumer rehearsals, and continued lifecycle soak tiers.
 5. **WP11.4 — initial publication:** publish only from a clean exact commit after Windows/Linux gates
@@ -96,6 +99,12 @@ surface while these blockers are being closed.
 The WP11.1 implementation passes the complete revised 20-stage Windows verifier in 70.532 seconds.
 This records package-topology compatibility with the existing code gates; it is not the final
 cross-platform release run.
+
+The WP11.2 implementation passes the complete 20-stage Windows verifier in 67.232 seconds after a
+current 1,225-advisory RustSec scan, the fixed `time 0.3.47` lock update, and ten additional
+adversarial-suite repetitions. The two ignored Hickory advisories have source-locked unreachable
+rationales in `wp11_security_api_audit.md` and `SECURITY.md`; eliminating that wire-only dependency
+is early post-WP11 work. Exact-source Rust-1.85 Linux remains before WP11.2 acceptance.
 
 ## 6. First realistic native observation
 

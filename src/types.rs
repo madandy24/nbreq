@@ -5,6 +5,7 @@ use std::time::Duration;
 
 /// Determines who progresses an [`Engine`](crate::Engine).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum RunMode {
     /// NBReq owns the reactor thread.
     Spawned,
@@ -25,6 +26,7 @@ pub enum HttpBackend {
 
 /// Determines where owned callback jobs are executed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CallbackDispatch {
     /// Dispatch callbacks at safe points on the manual driving thread.
     Inline,
@@ -399,6 +401,7 @@ impl Header {
 
 /// Controls server-certificate and hostname verification for HTTPS requests.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum TlsVerification {
     /// Verify the certificate chain and requested hostname.
     #[default]
@@ -412,6 +415,7 @@ pub enum TlsVerification {
 
 /// Portable request policy and timeout options.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct RequestOptions {
     /// Maximum time allowed to establish a connection.
     pub connect_timeout: Option<Duration>,
@@ -941,6 +945,37 @@ pub enum TransportStage {
     Http,
 }
 
+/// Payload-free reason attached to a TLS-related transport [`Error`] when known.
+///
+/// This deliberately classifies failures without retaining hostnames, certificate contents, peer
+/// alerts, or backend-native diagnostic text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TlsFailure {
+    /// TLS configuration could not be constructed.
+    Configuration,
+    /// The certificate does not cover the requested hostname or IP address.
+    CertificateHostnameMismatch,
+    /// The certificate chain does not lead to a trusted issuer.
+    CertificateUnknownIssuer,
+    /// The certificate is expired.
+    CertificateExpired,
+    /// The certificate is not valid yet.
+    CertificateNotYetValid,
+    /// The certificate was revoked.
+    CertificateRevoked,
+    /// Certificate validation failed for another reason.
+    CertificateInvalid,
+    /// The peer sent a fatal TLS alert.
+    PeerAlert,
+    /// TLS framing, negotiation, cryptography, or protocol state failed.
+    Protocol,
+    /// Local encrypted-record input or output failed.
+    Io,
+    /// The implementation could not classify the TLS failure more precisely.
+    Unknown,
+}
+
 /// Portable resource category attached to a limit [`Error`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -968,6 +1003,7 @@ pub struct Error {
     message: String,
     timeout_kind: Option<TimeoutKind>,
     transport_stage: Option<TransportStage>,
+    tls_failure: Option<TlsFailure>,
     limit_kind: Option<LimitKind>,
 }
 
@@ -978,6 +1014,7 @@ impl Error {
             message: message.into(),
             timeout_kind: None,
             transport_stage: None,
+            tls_failure: None,
             limit_kind: None,
         }
     }
@@ -993,6 +1030,17 @@ impl Error {
     pub(crate) fn transport(stage: TransportStage, message: impl Into<String>) -> Self {
         let mut error = Self::new(ErrorKind::Transport, message);
         error.transport_stage = Some(stage);
+        error
+    }
+
+    #[allow(dead_code)] // Used by the native TLS backend; minimal builds retain the public detail.
+    pub(crate) fn tls(
+        stage: TransportStage,
+        failure: TlsFailure,
+        message: impl Into<String>,
+    ) -> Self {
+        let mut error = Self::transport(stage, message);
+        error.tls_failure = Some(failure);
         error
     }
 
@@ -1024,6 +1072,12 @@ impl Error {
     #[must_use]
     pub fn transport_stage(&self) -> Option<TransportStage> {
         self.transport_stage
+    }
+
+    /// Returns a payload-free TLS failure reason when one is known.
+    #[must_use]
+    pub fn tls_failure(&self) -> Option<TlsFailure> {
+        self.tls_failure
     }
 
     /// Returns the violated portable resource limit when this is a limit error.

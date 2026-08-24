@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
+use crate::atomic::try_update_usize;
 use crate::context;
 use crate::dispatch::{CallbackDomain, CallbackJob};
 use crate::metrics::{EngineMetrics, Metrics};
@@ -34,7 +35,7 @@ struct BytePermit {
 
 impl BytePermit {
     fn try_acquire(used: &Arc<AtomicUsize>, limit: usize, bytes: usize) -> Option<Self> {
-        used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        try_update_usize(used, Ordering::AcqRel, Ordering::Acquire, |current| {
             current.checked_add(bytes).filter(|next| *next <= limit)
         })
         .ok()?;
@@ -59,11 +60,10 @@ impl Drop for AdmissionPermit {
 
 impl AdmissionPermit {
     fn try_acquire(inflight: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
-        inflight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < limit).then_some(current + 1)
-            })
-            .ok()?;
+        try_update_usize(inflight, Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < limit).then_some(current + 1)
+        })
+        .ok()?;
         Some(Self {
             inflight: Arc::clone(inflight),
         })
