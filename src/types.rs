@@ -15,6 +15,10 @@ pub enum RunMode {
 
 /// Selects the HTTP implementation used by an [`Engine`](crate::Engine).
 ///
+/// This enum selects HTTP only. It does not select DNS or TCP. With native support compiled, an
+/// Engine using an explicit HTTP backend may still issue native DNS/TCP handles; without native
+/// support, those operations fail [`ErrorKind::Unsupported`] before admission.
+///
 /// The variant remains present without the default `native` feature so portable configuration can
 /// fail explicitly during Engine construction rather than changing type shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +57,10 @@ pub struct EngineConfig {
     max_idle_connections: usize,
     max_idle_connections_per_origin: usize,
     idle_connection_timeout: Duration,
+    max_inflight_resolutions: NonZeroUsize,
+    max_standalone_tcp_connections: NonZeroUsize,
+    max_resolve_results: NonZeroUsize,
+    max_tcp_queue_bytes_per_connection: usize,
 }
 
 const DEFAULT_BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -65,6 +73,10 @@ const DEFAULT_MAX_CONNECTIONS_PER_ORIGIN: usize = 8;
 const DEFAULT_MAX_IDLE_CONNECTIONS: usize = 32;
 const DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
 const DEFAULT_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_INFLIGHT_RESOLUTIONS: usize = 256;
+const DEFAULT_MAX_STANDALONE_TCP_CONNECTIONS: usize = 32;
+const DEFAULT_MAX_RESOLVE_RESULTS: usize = 32;
+const DEFAULT_TCP_QUEUE_LIMIT: usize = 256 * 1024;
 
 impl EngineConfig {
     /// Returns the convenient default: an owned reactor and one callback worker.
@@ -87,6 +99,10 @@ impl EngineConfig {
             max_idle_connections: DEFAULT_MAX_IDLE_CONNECTIONS,
             max_idle_connections_per_origin: DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN,
             idle_connection_timeout: DEFAULT_IDLE_CONNECTION_TIMEOUT,
+            max_inflight_resolutions: nonzero(DEFAULT_MAX_INFLIGHT_RESOLUTIONS),
+            max_standalone_tcp_connections: nonzero(DEFAULT_MAX_STANDALONE_TCP_CONNECTIONS),
+            max_resolve_results: nonzero(DEFAULT_MAX_RESOLVE_RESULTS),
+            max_tcp_queue_bytes_per_connection: DEFAULT_TCP_QUEUE_LIMIT,
         }
     }
 
@@ -110,6 +126,10 @@ impl EngineConfig {
             max_idle_connections: DEFAULT_MAX_IDLE_CONNECTIONS,
             max_idle_connections_per_origin: DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN,
             idle_connection_timeout: DEFAULT_IDLE_CONNECTION_TIMEOUT,
+            max_inflight_resolutions: nonzero(DEFAULT_MAX_INFLIGHT_RESOLUTIONS),
+            max_standalone_tcp_connections: nonzero(DEFAULT_MAX_STANDALONE_TCP_CONNECTIONS),
+            max_resolve_results: nonzero(DEFAULT_MAX_RESOLVE_RESULTS),
+            max_tcp_queue_bytes_per_connection: DEFAULT_TCP_QUEUE_LIMIT,
         }
     }
 
@@ -227,6 +247,42 @@ impl EngineConfig {
         self
     }
 
+    /// Selects the public-resolver inflight budget. HTTP-internal DNS is reserved separately.
+    #[must_use]
+    pub fn with_max_inflight_resolutions(mut self, resolutions: NonZeroUsize) -> Self {
+        self.max_inflight_resolutions = resolutions;
+        self
+    }
+
+    /// Selects the standalone TCP connect/live-connection budget.
+    ///
+    /// This is independent of the HTTP idle pool. The absolute Engine socket ceiling remains
+    /// authoritative when it is smaller.
+    #[must_use]
+    pub fn with_max_standalone_tcp_connections(mut self, connections: NonZeroUsize) -> Self {
+        self.max_standalone_tcp_connections = connections;
+        self
+    }
+
+    /// Selects the Engine ceiling for addresses returned by one public resolution.
+    ///
+    /// Per-request [`ResolveRequest`](crate::ResolveRequest) caps may reduce this value, never
+    /// exceed it.
+    #[must_use]
+    pub fn with_max_resolve_results(mut self, results: NonZeroUsize) -> Self {
+        self.max_resolve_results = results;
+        self
+    }
+
+    /// Selects the maximum send or unread-receive queue window for one standalone TCP connection.
+    ///
+    /// Zero disables standalone TCP admission once that facade is wired.
+    #[must_use]
+    pub fn with_max_tcp_queue_bytes_per_connection(mut self, bytes: usize) -> Self {
+        self.max_tcp_queue_bytes_per_connection = bytes;
+        self
+    }
+
     /// Returns the configured run mode.
     #[must_use]
     pub fn run_mode(&self) -> RunMode {
@@ -321,6 +377,30 @@ impl EngineConfig {
     #[must_use]
     pub fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
+    }
+
+    /// Returns the public-resolver inflight budget.
+    #[must_use]
+    pub fn max_inflight_resolutions(&self) -> NonZeroUsize {
+        self.max_inflight_resolutions
+    }
+
+    /// Returns the standalone TCP connect/live-connection budget.
+    #[must_use]
+    pub fn max_standalone_tcp_connections(&self) -> NonZeroUsize {
+        self.max_standalone_tcp_connections
+    }
+
+    /// Returns the Engine ceiling for addresses returned by one public resolution.
+    #[must_use]
+    pub fn max_resolve_results(&self) -> NonZeroUsize {
+        self.max_resolve_results
+    }
+
+    /// Returns the maximum send or unread-receive queue window for one standalone TCP connection.
+    #[must_use]
+    pub fn max_tcp_queue_bytes_per_connection(&self) -> usize {
+        self.max_tcp_queue_bytes_per_connection
     }
 }
 
@@ -921,7 +1001,11 @@ pub enum TimeoutKind {
     Connect,
     /// No useful request or response I/O progress occurred for the configured duration.
     Inactivity,
-    /// The total request deadline expired.
+    /// The total operation deadline expired.
+    ///
+    /// Public DNS [`ResolveRequest::total_timeout`](crate::ResolveRequest::total_timeout) uses this
+    /// category. The DNS facade already identifies the operation; timeout classification stays
+    /// independent of [`DnsFailure`].
     Total,
     /// The backend reported a timeout but did not provide enough stage evidence to classify it.
     Unknown,
@@ -976,6 +1060,31 @@ pub enum TlsFailure {
     Unknown,
 }
 
+/// Payload-free reason attached to a DNS-related transport [`Error`] when known.
+///
+/// NXDOMAIN and NoData are successful public-resolver exchanges and are not encoded here. Timeout
+/// remains classified by [`TimeoutKind`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum DnsFailure {
+    /// The nameserver returned SERVFAIL.
+    ServerFailure,
+    /// The nameserver refused the query.
+    Refused,
+    /// The nameserver returned FORMERR or the reply could not be parsed.
+    Malformed,
+    /// The reply was truncated after the bounded TCP fallback.
+    Truncated,
+    /// No usable nameserver remained.
+    NoNameserver,
+    /// DNS protocol state failed after a well-formed exchange could not be completed.
+    Protocol,
+    /// Local resolver I/O failed.
+    Io,
+    /// The implementation could not classify the DNS failure more precisely.
+    Unknown,
+}
+
 /// Portable resource category attached to a limit [`Error`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -994,6 +1103,10 @@ pub enum LimitKind {
     ResponseHeaderCount,
     /// Queued upload and unread response bytes reserved for streaming flow control.
     StreamingQueueBytes,
+    /// Addresses requested from one public resolution.
+    ResolveResults,
+    /// Queued standalone TCP send or unread-receive bytes.
+    TcpQueueBytes,
 }
 
 /// A backend-neutral NBReq error.
@@ -1004,6 +1117,7 @@ pub struct Error {
     timeout_kind: Option<TimeoutKind>,
     transport_stage: Option<TransportStage>,
     tls_failure: Option<TlsFailure>,
+    dns_failure: Option<DnsFailure>,
     limit_kind: Option<LimitKind>,
 }
 
@@ -1015,6 +1129,7 @@ impl Error {
             timeout_kind: None,
             transport_stage: None,
             tls_failure: None,
+            dns_failure: None,
             limit_kind: None,
         }
     }
@@ -1041,6 +1156,13 @@ impl Error {
     ) -> Self {
         let mut error = Self::transport(stage, message);
         error.tls_failure = Some(failure);
+        error
+    }
+
+    #[allow(dead_code)] // Used once public Resolver wiring classifies DNS failures.
+    pub(crate) fn dns(failure: DnsFailure, message: impl Into<String>) -> Self {
+        let mut error = Self::transport(TransportStage::Dns, message);
+        error.dns_failure = Some(failure);
         error
     }
 
@@ -1080,6 +1202,12 @@ impl Error {
         self.tls_failure
     }
 
+    /// Returns a payload-free DNS failure reason when one is known.
+    #[must_use]
+    pub fn dns_failure(&self) -> Option<DnsFailure> {
+        self.dns_failure
+    }
+
     /// Returns the violated portable resource limit when this is a limit error.
     #[must_use]
     pub fn limit_kind(&self) -> Option<LimitKind> {
@@ -1099,20 +1227,20 @@ impl StdError for Error {}
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ExecuteError {
-    /// The request was rejected before acceptance.
+    /// The operation was rejected before acceptance.
     Submission(Error),
-    /// An accepted request reached a failed terminal state.
+    /// An accepted operation reached a failed terminal state.
     Failed(Error),
-    /// An accepted request was cancelled.
+    /// An accepted operation was cancelled.
     Cancelled,
 }
 
 impl fmt::Display for ExecuteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Submission(error) => write!(formatter, "request was not accepted: {error}"),
-            Self::Failed(error) => write!(formatter, "request failed: {error}"),
-            Self::Cancelled => formatter.write_str("request was cancelled"),
+            Self::Submission(error) => write!(formatter, "operation was not accepted: {error}"),
+            Self::Failed(error) => write!(formatter, "operation failed: {error}"),
+            Self::Cancelled => formatter.write_str("operation was cancelled"),
         }
     }
 }

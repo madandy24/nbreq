@@ -244,6 +244,8 @@ impl Engine {
 }
 ```
 
+The post-release F0 DNS/TCP ticket surface is recorded in Section 28. It does not change this HTTP model.
+
 Callback-oriented use:
 
 ```rust
@@ -979,3 +981,136 @@ Decisions already accepted in principle:
   GDS uses ureq rather than a crates.io curl fork for rollback;
 - curl runs an explicit HTTP/1.1 compatibility profile rather than inheriting backend defaults;
 - the portable initial time model is connect timeout, inactivity timeout, and total deadline.
+
+## 28. Public DNS and TCP contract (F0 accepted)
+
+This section records the accepted, compile-checked post-`0.1.0` F0 surface. Operations
+currently fail `Unsupported` before ID allocation, admission permits, callback reservation, or
+command queuing. They are not connected to `native_dns` or the reactor. HTTP unknown-host remains
+`Failed(ErrorKind::Transport, TransportStage::Dns)`. `HttpBackend` remains HTTP-only.
+
+Capability tickets:
+
+```text
+Engine::resolver(&self) -> Resolver
+Engine::tcp_connector(&self) -> TcpConnector
+```
+
+`Resolver` and `TcpConnector` are `Clone + Send + Sync`, have no public constructors, and neither
+own nor extend Engine lifetime. Detached tickets reject new work with `EngineStopped`.
+
+Manual waiting is one generic method:
+
+```text
+Engine::drive_until<T: WaiterTarget>(&mut self, pending: T) -> Result<T::Output, Error>
+```
+
+`WaiterTarget` is sealed. Only associated type `Output` is public. Polling and numeric Engine
+identity are crate-private associated functions on the sealed supertrait (no `self` receiver), so
+downstream generic code can use exactly `T: WaiterTarget`. `PendingRequest` yields `Completion`,
+`PendingResolve` yields `ResolveCompletion`, and `PendingTcpConnect` yields
+`TcpConnectCompletion`. The HTTP call shape is unchanged. There is no grab-bag completion enum.
+
+Resolver family: `ResolveRequest` / `ResolveRequestBuilder`, `Resolver`, `PendingResolve`,
+`ResolveHandle`, `ResolveCompletion`, `ResolveWaitOutcome`, `ResolveResponse`, `ResolveStatus`,
+`ResolvedAddress`, `AddressFamily`, `AddressOrder`, `CacheMode`, `DnsFailure`.
+
+```text
+ResolveRequest::hostname(impl Into<String>) -> ResolveRequestBuilder
+  .address_family(AddressFamily)      // default Both
+  .address_order(AddressOrder)        // default Ipv4ThenIpv6
+  .cache_mode(CacheMode)              // default Use
+  .max_results(usize)                 // optional; 0 rejected at build
+  .use_search_suffixes(bool)          // default false; trailing-dot spelling suppresses expansion
+  .total_timeout(Duration)            // classified as TimeoutKind::Total
+  .build() -> Result<ResolveRequest, Error>
+
+Resolver::start(request, FnOnce(ResolveCompletion)) -> Result<ResolveHandle, Error>
+Resolver::submit(request) -> Result<PendingResolve, Error>
+Resolver::execute(request) -> Result<ResolveResponse, ExecuteError>
+Resolver::cancel(RequestId) -> Result<(), Error>
+```
+
+Name identity is exact ASCII/punycode. Zero or one terminal dot is accepted; the normalized
+identity is lowercase ASCII without that dot, and `ResolveRequest::is_absolute()` records whether
+the caller supplied the explicit absolute spelling. Root, empty names, empty labels, labels over 63
+octets, names over 253 octets, leading/trailing hyphens, underscores, spaces, and Unicode are
+rejected at build. A trailing-dot spelling never receives search-suffix expansion, even when
+`use_search_suffixes(true)` is set. `Both` means collect A and AAAA; it is not HTTP's
+A-first/AAAA-on-NoData fallback. `CacheMode::{Use, Refresh, Bypass}` have the documented meanings
+and are not executed in F0. Per-request `max_results` may reduce the Engine ceiling
+(`max_resolve_results`, default 32) and is rejected with `LimitKind::ResolveResults` before
+admission if it exceeds that ceiling.
+
+TCP family: `TcpConnectRequest` / `TcpConnectRequestBuilder`, `TcpConnectTarget`, `TcpConnector`,
+`PendingTcpConnect`, `TcpConnectHandle`, `TcpConnectCompletion`, `TcpConnectWaitOutcome`,
+`TcpConnection`, `TcpConnectionHandle`, `TcpReader`, `TcpWriter`, `TcpRead`, `TcpStreamError`,
+`TcpSendError` / `TcpSendErrorKind`, `TcpFinishError`.
+
+```text
+TcpConnectRequest::hostname(impl Into<String>, u16) -> TcpConnectRequestBuilder
+TcpConnectRequest::literal(SocketAddr) -> TcpConnectRequestBuilder
+  .connect_timeout(Duration)              // admission through connection establishment
+  .read_inactivity_timeout(Duration)      // pauses under consumer backpressure
+  .write_inactivity_timeout(Duration)     // runs only while accepted output waits for the socket
+  .send_queue_bytes(usize)
+  .receive_queue_bytes(usize)
+  .build() -> Result<TcpConnectRequest, Error>
+
+TcpConnector::start/submit/execute/cancel  // same finite-operation shape as Resolver
+TcpConnection::try_send/send(&mut self, Vec<u8>) -> Result<(), TcpSendError>
+TcpWriter::try_send/send(&mut self, Vec<u8>) -> Result<(), TcpSendError>
+TcpSendError::into_remaining(self) -> Vec<u8>
+TcpConnection::finish(&mut self) -> Result<(), TcpFinishError>
+TcpWriter::finish(self) -> Result<(), TcpFinishError>
+```
+
+Hostname TCP connect uses the public resolver defaults: exact name with no search expansion,
+`AddressFamily::Both`, `AddressOrder::Ipv4ThenIpv6`, and `CacheMode::Use`. It tries addresses
+serially in result order until one succeeds; this is not Happy Eyeballs. NXDOMAIN and NoData are
+completed public resolver results but fail a hostname connect because no address was produced. Any
+future per-connect DNS policy is expressed through new builder options rather than silently copying
+HTTP's private A/AAAA fallback.
+
+`TcpFinishError` distinguishes already-closed write half, reset, Engine stop, manual-mode
+rejection, transport failure, cancellation, and F0 `Unsupported`. Blocking connected `read`,
+`send`, and `finish` reject manual mode rather than driving it.
+
+Port zero and unspecified literals (`0.0.0.0`, `::`, and IPv4-mapped unspecified) are rejected at
+build. Cleartext only; no `into_std`, raw handle, descriptor, or socket escape.
+`TcpConnection`, `TcpReader`, and `TcpWriter` are unique, `Send`, and neither `Clone` nor `Sync`.
+Unsplit drop before writer-finished plus reader-EOF aborts; after both terminal it is harmless.
+Writer drop unfinished aborts. Reader drop before EOF cancels; after EOF it is harmless. Those
+runtime drop rules are type/rustdoc contract in F0; there is no hidden socket simulation.
+
+`TcpConnection::finish` takes `&mut self` so the unsplit reader remains usable after write-half-close.
+The split writer uses consuming `finish(self)`. This is the one spelling adjustment forced by the
+two-direction drop rule.
+
+Engine configuration added without changing HTTP 0.1.0 limits:
+
+- `max_inflight_resolutions` (default 256)
+- `max_standalone_tcp_connections` (default 32)
+- `max_resolve_results` (default 32)
+- `max_tcp_queue_bytes_per_connection` (default 256 KiB)
+
+HTTP pool limits and standalone TCP limits are independent. `max_connections` and
+`max_connections_per_origin` remain HTTP-only; `max_standalone_tcp_connections` bounds pending and
+live standalone TCP. OS/process limits may cap their combined resource use, but standalone TCP does
+not consume or shrink the configured HTTP pool.
+
+The Engine-wide `max_queued_bytes` name is retained in the follow-up plan and is introduced in F2
+when HTTP streaming and standalone TCP queues can charge it atomically. HTTP streaming continues to
+use `max_stream_queued_bytes`.
+
+Payload-free metrics added and remain zero until F1/F2: `resolutions_*` for finite public DNS
+operations; `tcp_connects_*` for finite connect attempts; occupancy gauges
+`inflight_resolutions`, `standalone_tcp_connections`, and `reserved_tcp_queue_bytes`. Live TCP
+lifetime/capacity is `standalone_tcp_connections`, not the attempt counters.
+
+`Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
+standalone TCP). F0 has no accepted DNS/TCP work, so behaviour remains HTTP-only in practice.
+
+F1 wires `Resolver` onto the existing Engine-owned DNS service. F2 wires `TcpConnector` onto the
+existing reactor. F0 acceptance freezes the consumer contract; it must not be treated as a fake
+transport.

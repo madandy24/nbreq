@@ -13,9 +13,10 @@ use crate::metrics::Metrics;
 use crate::reactor::spawned_main_factory;
 use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
+use crate::waiter::sealed::Sealed;
 use crate::{
-    Client, Completion, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, PendingRequest,
-    RunMode, ShutdownError, ShutdownOutcome,
+    Client, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, Resolver, RunMode,
+    ShutdownError, ShutdownOutcome, TcpConnector, WaiterTarget,
 };
 
 static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
@@ -30,8 +31,9 @@ enum RuntimeOwner {
 /// Unique owner of one lifecycle, resource, and bulk-cancellation domain.
 ///
 /// Engine is `Send`, deliberately non-cloneable, and deliberately not `Sync` in the initial
-/// contract. Clients are obtained only through [`Engine::client`]. Explicit shutdown consumes the
-/// Engine owner.
+/// contract. [`Engine::client`], [`Engine::resolver`], and [`Engine::tcp_connector`] issue cheap
+/// cloneable capability tickets. Tickets neither own nor extend Engine lifetime. Explicit shutdown
+/// consumes the Engine owner.
 ///
 /// ```compile_fail
 /// use nbreq::Engine;
@@ -259,6 +261,55 @@ impl Engine {
         Client::new(Arc::clone(&self.shared))
     }
 
+    /// Issues a cheap cloneable hostname-resolution handle for this Engine.
+    ///
+    /// The ticket is always issued. Public resolve operations currently fail
+    /// [`ErrorKind::Unsupported`] before identity allocation, admission, callback reservation, or
+    /// command queuing.
+    ///
+    /// ```no_run
+    /// use nbreq::{Engine, EngineConfig, ResolveRequest};
+    ///
+    /// let engine = Engine::new(EngineConfig::spawned())?;
+    /// let resolver = engine.resolver();
+    /// let request = ResolveRequest::hostname("example.com")
+    ///     .max_results(8)
+    ///     .build()?;
+    /// let _pending = resolver.submit(request);
+    /// engine.shutdown()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn resolver(&self) -> Resolver {
+        Resolver::new(Arc::clone(&self.shared), self.config.max_resolve_results())
+    }
+
+    /// Issues a cheap cloneable cleartext TCP handle for this Engine.
+    ///
+    /// The ticket is always issued. Standalone connect operations currently fail
+    /// [`ErrorKind::Unsupported`] before identity allocation, admission, callback reservation, or
+    /// command queuing.
+    ///
+    /// ```no_run
+    /// use nbreq::{Engine, EngineConfig, TcpConnectRequest};
+    ///
+    /// let engine = Engine::new(EngineConfig::spawned())?;
+    /// let tcp = engine.tcp_connector();
+    /// let request = TcpConnectRequest::hostname("example.com", 1234)
+    ///     .connect_timeout(std::time::Duration::from_secs(5))
+    ///     .build()?;
+    /// let _pending = tcp.submit(request);
+    /// engine.shutdown()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn tcp_connector(&self) -> TcpConnector {
+        TcpConnector::new(
+            Arc::clone(&self.shared),
+            self.config.max_tcp_queue_bytes_per_connection(),
+        )
+    }
+
     /// Returns a nonblocking, payload-free snapshot of this Engine's lifetime activity.
     ///
     /// Fields are loaded independently and may be cross-field inconsistent while work is moving.
@@ -267,7 +318,11 @@ impl Engine {
         self.shared.metrics_snapshot()
     }
 
-    /// Cancels requests accepted before the cancellation barrier while keeping the Engine alive.
+    /// Cancels HTTP requests, public resolutions, pending connects, and live standalone TCP
+    /// accepted before the cancellation barrier while keeping the Engine alive.
+    ///
+    /// F0 has no accepted public DNS or standalone TCP work, so this remains an HTTP-domain cancel
+    /// in practice. The documented intent is engine-wide.
     pub fn cancel_all(&self) {
         self.shared.cancel_all();
     }
@@ -327,22 +382,26 @@ impl Engine {
     }
 
     /// Drives a manual Engine until `pending` reaches its canonical terminal outcome.
-    pub fn drive_until(&mut self, pending: PendingRequest) -> Result<Completion, Error> {
+    ///
+    /// The existing HTTP call shape is unchanged: passing a [`PendingRequest`](crate::PendingRequest)
+    /// still returns [`Completion`](crate::Completion). Public resolve and connect waiters return
+    /// their own terminal types through the same method.
+    pub fn drive_until<T: WaiterTarget>(&mut self, pending: T) -> Result<T::Output, Error> {
         if self.config.run_mode() != RunMode::Manual {
             return Err(Error::new(
                 ErrorKind::WrongMode,
                 "drive_until is available only for a manual Engine",
             ));
         }
-        if pending.request_id().engine != self.shared.id {
+        if Sealed::engine_id(&pending) != self.shared.id {
             return Err(Error::new(
                 ErrorKind::WrongEngine,
-                "PendingRequest belongs to another Engine",
+                "the waiter belongs to another Engine",
             ));
         }
         loop {
-            if let Some(completion) = pending.try_completion() {
-                return Ok(completion);
+            if let Some(output) = Sealed::try_output(&pending) {
+                return Ok(output);
             }
             self.drive(Instant::now() + Duration::from_millis(10))?;
         }
@@ -657,6 +716,34 @@ impl EngineBuilder {
         self
     }
 
+    /// Selects the public-resolver inflight budget.
+    #[must_use]
+    pub fn max_inflight_resolutions(mut self, resolutions: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_inflight_resolutions(resolutions);
+        self
+    }
+
+    /// Selects the standalone TCP connect/live-connection budget.
+    #[must_use]
+    pub fn max_standalone_tcp_connections(mut self, connections: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_standalone_tcp_connections(connections);
+        self
+    }
+
+    /// Selects the Engine ceiling for addresses returned by one public resolution.
+    #[must_use]
+    pub fn max_resolve_results(mut self, results: NonZeroUsize) -> Self {
+        self.config = self.config.with_max_resolve_results(results);
+        self
+    }
+
+    /// Selects the maximum send or unread-receive queue window for one standalone TCP connection.
+    #[must_use]
+    pub fn max_tcp_queue_bytes_per_connection(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_tcp_queue_bytes_per_connection(bytes);
+        self
+    }
+
     /// Builds one independent Engine.
     pub fn build(self) -> Result<Engine, Error> {
         match self.http_backend {
@@ -684,7 +771,7 @@ mod tests {
     use crate::CallbackDispatch;
     use crate::backend::BackendCompletion;
     use crate::stream::ResponseSink;
-    use crate::{Request, RequestId, StreamError, StreamRequest};
+    use crate::{Completion, Request, RequestId, StreamError, StreamRequest};
 
     use super::*;
 
@@ -960,6 +1047,10 @@ mod tests {
             .max_idle_connections(6)
             .max_idle_connections_per_origin(2)
             .idle_connection_timeout(idle_timeout)
+            .max_inflight_resolutions(command_capacity)
+            .max_standalone_tcp_connections(origin_capacity)
+            .max_resolve_results(origin_capacity)
+            .max_tcp_queue_bytes_per_connection(6)
             .build()
             .expect("Engine must construct");
         assert_eq!(
@@ -974,5 +1065,12 @@ mod tests {
         assert_eq!(engine.config.max_idle_connections(), 6);
         assert_eq!(engine.config.max_idle_connections_per_origin(), 2);
         assert_eq!(engine.config.idle_connection_timeout(), idle_timeout);
+        assert_eq!(engine.config.max_inflight_resolutions(), command_capacity);
+        assert_eq!(
+            engine.config.max_standalone_tcp_connections(),
+            origin_capacity
+        );
+        assert_eq!(engine.config.max_resolve_results(), origin_capacity);
+        assert_eq!(engine.config.max_tcp_queue_bytes_per_connection(), 6);
     }
 }

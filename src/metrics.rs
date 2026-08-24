@@ -12,6 +12,9 @@ pub struct ResourceMetrics {
     queued_commands: usize,
     queued_callbacks: usize,
     reserved_stream_queue_bytes: usize,
+    inflight_resolutions: usize,
+    standalone_tcp_connections: usize,
+    reserved_tcp_queue_bytes: usize,
     active_connections: usize,
     idle_connections: usize,
     connection_waiters: usize,
@@ -38,6 +41,23 @@ impl ResourceMetrics {
     /// Returns bytes reserved against the Engine-wide streaming queue budget.
     pub fn reserved_stream_queue_bytes(&self) -> usize {
         self.reserved_stream_queue_bytes
+    }
+
+    /// Returns public resolutions that are accepted but not fully released.
+    pub fn inflight_resolutions(&self) -> usize {
+        self.inflight_resolutions
+    }
+
+    /// Returns accepted standalone TCP connects and live connections.
+    ///
+    /// This occupancy gauge is independent of the finite `tcp_connects_*` attempt counters.
+    pub fn standalone_tcp_connections(&self) -> usize {
+        self.standalone_tcp_connections
+    }
+
+    /// Returns bytes reserved against standalone TCP send and unread-receive queues.
+    pub fn reserved_tcp_queue_bytes(&self) -> usize {
+        self.reserved_tcp_queue_bytes
     }
 
     /// Returns native connection-capacity slots, including DNS, connecting, leased, and idle.
@@ -72,6 +92,14 @@ pub struct EngineMetrics {
     connections_reused: u64,
     connections_closed: u64,
     idle_connections_evicted: u64,
+    resolutions_accepted: u64,
+    resolutions_completed: u64,
+    resolutions_failed: u64,
+    resolutions_cancelled: u64,
+    tcp_connects_accepted: u64,
+    tcp_connects_completed: u64,
+    tcp_connects_failed: u64,
+    tcp_connects_cancelled: u64,
     current: ResourceMetrics,
     high_water: ResourceMetrics,
 }
@@ -129,6 +157,49 @@ impl EngineMetrics {
         self.idle_connections_evicted
     }
 
+    /// Returns public resolutions accepted during this Engine's lifetime.
+    pub fn resolutions_accepted(&self) -> u64 {
+        self.resolutions_accepted
+    }
+
+    /// Returns accepted public resolutions whose terminal outcome was a DNS exchange.
+    pub fn resolutions_completed(&self) -> u64 {
+        self.resolutions_completed
+    }
+
+    /// Returns accepted public resolutions whose terminal outcome was failure.
+    pub fn resolutions_failed(&self) -> u64 {
+        self.resolutions_failed
+    }
+
+    /// Returns accepted public resolutions whose terminal outcome was cancellation.
+    pub fn resolutions_cancelled(&self) -> u64 {
+        self.resolutions_cancelled
+    }
+
+    /// Returns accepted standalone TCP connect operations during this Engine's lifetime.
+    ///
+    /// These counters track finite connect attempts. Live occupancy and in-flight connects are
+    /// [`ResourceMetrics::standalone_tcp_connections`].
+    pub fn tcp_connects_accepted(&self) -> u64 {
+        self.tcp_connects_accepted
+    }
+
+    /// Returns accepted standalone TCP connects whose terminal outcome was a live connection.
+    pub fn tcp_connects_completed(&self) -> u64 {
+        self.tcp_connects_completed
+    }
+
+    /// Returns accepted standalone TCP connects whose terminal outcome was failure.
+    pub fn tcp_connects_failed(&self) -> u64 {
+        self.tcp_connects_failed
+    }
+
+    /// Returns accepted standalone TCP connects whose terminal outcome was cancellation.
+    pub fn tcp_connects_cancelled(&self) -> u64 {
+        self.tcp_connects_cancelled
+    }
+
     /// Returns the current bounded-resource snapshot.
     pub fn current(&self) -> ResourceMetrics {
         self.current
@@ -151,6 +222,14 @@ pub(crate) struct Metrics {
     connections_reused: AtomicU64,
     connections_closed: AtomicU64,
     idle_connections_evicted: AtomicU64,
+    resolutions_accepted: AtomicU64,
+    resolutions_completed: AtomicU64,
+    resolutions_failed: AtomicU64,
+    resolutions_cancelled: AtomicU64,
+    tcp_connects_accepted: AtomicU64,
+    tcp_connects_completed: AtomicU64,
+    tcp_connects_failed: AtomicU64,
+    tcp_connects_cancelled: AtomicU64,
     queued_commands: AtomicUsize,
     queued_callbacks: AtomicUsize,
     active_connections: AtomicUsize,
@@ -160,6 +239,12 @@ pub(crate) struct Metrics {
     high_queued_commands: AtomicUsize,
     high_queued_callbacks: AtomicUsize,
     high_reserved_stream_queue_bytes: AtomicUsize,
+    inflight_resolutions: AtomicUsize,
+    standalone_tcp_connections: AtomicUsize,
+    reserved_tcp_queue_bytes: AtomicUsize,
+    high_inflight_resolutions: AtomicUsize,
+    high_standalone_tcp_connections: AtomicUsize,
+    high_reserved_tcp_queue_bytes: AtomicUsize,
     high_active_connections: AtomicUsize,
     high_idle_connections: AtomicUsize,
     high_connection_waiters: AtomicUsize,
@@ -264,11 +349,22 @@ impl Metrics {
             connections_reused: self.connections_reused.load(Ordering::Acquire),
             connections_closed: self.connections_closed.load(Ordering::Acquire),
             idle_connections_evicted: self.idle_connections_evicted.load(Ordering::Acquire),
+            resolutions_accepted: self.resolutions_accepted.load(Ordering::Acquire),
+            resolutions_completed: self.resolutions_completed.load(Ordering::Acquire),
+            resolutions_failed: self.resolutions_failed.load(Ordering::Acquire),
+            resolutions_cancelled: self.resolutions_cancelled.load(Ordering::Acquire),
+            tcp_connects_accepted: self.tcp_connects_accepted.load(Ordering::Acquire),
+            tcp_connects_completed: self.tcp_connects_completed.load(Ordering::Acquire),
+            tcp_connects_failed: self.tcp_connects_failed.load(Ordering::Acquire),
+            tcp_connects_cancelled: self.tcp_connects_cancelled.load(Ordering::Acquire),
             current: ResourceMetrics {
                 inflight_requests: inflight,
                 queued_commands: self.queued_commands.load(Ordering::Acquire),
                 queued_callbacks: self.queued_callbacks.load(Ordering::Acquire),
                 reserved_stream_queue_bytes: stream_bytes,
+                inflight_resolutions: self.inflight_resolutions.load(Ordering::Acquire),
+                standalone_tcp_connections: self.standalone_tcp_connections.load(Ordering::Acquire),
+                reserved_tcp_queue_bytes: self.reserved_tcp_queue_bytes.load(Ordering::Acquire),
                 active_connections: self.active_connections.load(Ordering::Acquire),
                 idle_connections: self.idle_connections.load(Ordering::Acquire),
                 connection_waiters: self.connection_waiters.load(Ordering::Acquire),
@@ -279,6 +375,13 @@ impl Metrics {
                 queued_callbacks: self.high_queued_callbacks.load(Ordering::Acquire),
                 reserved_stream_queue_bytes: self
                     .high_reserved_stream_queue_bytes
+                    .load(Ordering::Acquire),
+                inflight_resolutions: self.high_inflight_resolutions.load(Ordering::Acquire),
+                standalone_tcp_connections: self
+                    .high_standalone_tcp_connections
+                    .load(Ordering::Acquire),
+                reserved_tcp_queue_bytes: self
+                    .high_reserved_tcp_queue_bytes
                     .load(Ordering::Acquire),
                 active_connections: self.high_active_connections.load(Ordering::Acquire),
                 idle_connections: self.high_idle_connections.load(Ordering::Acquire),

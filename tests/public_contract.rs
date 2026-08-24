@@ -4,7 +4,8 @@ use std::time::Instant;
 use nbreq::EngineBuilder;
 use nbreq::{
     Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
-    PendingRequest, RequestHandle, ResourceMetrics, ResponseReader, StreamRequest, UploadBody,
+    PendingRequest, PendingResolve, PendingTcpConnect, RequestHandle, Resolver, ResourceMetrics,
+    ResponseReader, StreamRequest, TcpConnection, TcpConnector, TcpReader, TcpWriter, UploadBody,
     UploadSender,
 };
 
@@ -24,6 +25,13 @@ fn public_thread_traits_match_the_contract() {
     assert_send::<ResponseReader>();
     assert_send_sync::<EngineMetrics>();
     assert_send_sync::<ResourceMetrics>();
+    assert_send_sync::<Resolver>();
+    assert_send_sync::<TcpConnector>();
+    assert_send::<PendingResolve>();
+    assert_send::<PendingTcpConnect>();
+    assert_send::<TcpConnection>();
+    assert_send::<TcpReader>();
+    assert_send::<TcpWriter>();
 }
 
 #[test]
@@ -121,5 +129,92 @@ fn manual_drive_uses_the_same_public_engine_type() {
     let _status = engine
         .drive(Instant::now())
         .expect("manual native drive must succeed");
+    engine.shutdown().expect("empty Engine must stop");
+}
+
+fn drive_http(
+    engine: &mut Engine,
+    pending: PendingRequest,
+) -> Result<nbreq::Completion, nbreq::Error> {
+    engine.drive_until(pending)
+}
+
+fn drive_resolve(
+    engine: &mut Engine,
+    pending: PendingResolve,
+) -> Result<nbreq::ResolveCompletion, nbreq::Error> {
+    engine.drive_until(pending)
+}
+
+fn drive_connect(
+    engine: &mut Engine,
+    pending: PendingTcpConnect,
+) -> Result<nbreq::TcpConnectCompletion, nbreq::Error> {
+    engine.drive_until(pending)
+}
+
+fn drive_with_public_bound<T: nbreq::WaiterTarget>(
+    engine: &mut Engine,
+    pending: T,
+) -> Result<T::Output, nbreq::Error> {
+    engine.drive_until(pending)
+}
+
+#[test]
+fn generic_drive_until_returns_each_terminal_type() {
+    let _http: fn(&mut Engine, PendingRequest) -> Result<nbreq::Completion, nbreq::Error> =
+        drive_http;
+    let _dns: fn(&mut Engine, PendingResolve) -> Result<nbreq::ResolveCompletion, nbreq::Error> =
+        drive_resolve;
+    let _tcp: fn(
+        &mut Engine,
+        PendingTcpConnect,
+    ) -> Result<nbreq::TcpConnectCompletion, nbreq::Error> = drive_connect;
+}
+
+#[test]
+fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
+    let _http: fn(&mut Engine, PendingRequest) -> Result<nbreq::Completion, nbreq::Error> =
+        drive_with_public_bound;
+    let _dns: fn(&mut Engine, PendingResolve) -> Result<nbreq::ResolveCompletion, nbreq::Error> =
+        drive_with_public_bound;
+    let _tcp: fn(
+        &mut Engine,
+        PendingTcpConnect,
+    ) -> Result<nbreq::TcpConnectCompletion, nbreq::Error> = drive_with_public_bound;
+}
+
+#[test]
+#[cfg(feature = "native")]
+fn resolver_and_tcp_tickets_are_engine_issued_and_unavailable_before_admission() {
+    let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
+    let resolver = engine.resolver();
+    let tcp = engine.tcp_connector();
+    let clone = resolver.clone();
+    drop(clone);
+    let before = engine.metrics();
+    assert_eq!(before.resolutions_accepted(), 0);
+    assert_eq!(before.tcp_connects_accepted(), 0);
+    assert_eq!(before.current().inflight_resolutions(), 0);
+    assert_eq!(before.current().standalone_tcp_connections(), 0);
+
+    let resolve = nbreq::ResolveRequest::hostname("example.com")
+        .build()
+        .expect("resolve request must build");
+    let resolve_error = resolver
+        .submit(resolve)
+        .expect_err("F0 public DNS must reject before admission");
+    assert_eq!(resolve_error.kind(), ErrorKind::Unsupported);
+
+    let connect = nbreq::TcpConnectRequest::hostname("example.com", 9)
+        .build()
+        .expect("connect request must build");
+    let connect_error = tcp
+        .submit(connect)
+        .expect_err("F0 standalone TCP must reject before admission");
+    assert_eq!(connect_error.kind(), ErrorKind::Unsupported);
+
+    let after = engine.metrics();
+    assert_eq!(before, after);
     engine.shutdown().expect("empty Engine must stop");
 }

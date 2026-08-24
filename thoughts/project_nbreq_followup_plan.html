@@ -71,7 +71,7 @@
   Published baseline: <span class="mono">nbreq 0.1.0</span> &nbsp;|&nbsp;
   Original tracker: <span class="mono">thoughts/project_nbreq_plan.html</span> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">Follow-up plan accepted; F0 API skeleton next</span>
+  Overall status: <span class="status status-progress">F0 contract accepted; F1 Resolver wiring next</span>
 </div>
 
 <div class="panel">
@@ -167,10 +167,12 @@
 <ul>
   <li>A connect is a finite operation with <span class="mono">start</span>, <span class="mono">submit</span>, and spawned-mode <span class="mono">execute</span>. Its completed value is one unique live <span class="mono">TcpConnection</span>.</li>
   <li><span class="mono">TcpConnectRequest</span> accepts either a hostname plus port or a literal <span class="mono">SocketAddr</span>. A hostname connect charges public DNS and standalone TCP budgets; a literal skips DNS.</li>
-  <li>Connect timeout includes capacity waiting, DNS when required, and TCP establishment. The accepted-operation total clock begins at admission.</li>
+  <li>Hostname connect uses an exact name with no search-suffix expansion and the public resolver defaults: <span class="mono">AddressFamily::Both</span>, <span class="mono">AddressOrder::Ipv4ThenIpv6</span>, and <span class="mono">CacheMode::Use</span>. It tries addresses serially in that order until one connects; this is not Happy Eyeballs. NXDOMAIN or NoData fails the connect because no live address was produced. Any later per-connect DNS policy requires explicit builder options rather than silently inheriting HTTP's private fallback.</li>
+  <li>Connect timeout includes capacity waiting, DNS when required, and TCP connection establishment. The clock begins at admission and ends when the live connection is produced.</li>
+  <li>Optional connected-phase <span class="mono">read_inactivity_timeout</span> and <span class="mono">write_inactivity_timeout</span> govern the live object. Write inactivity runs only while accepted output is waiting for socket progress. Read inactivity pauses under consumer backpressure. Blocking connected operations reject manual mode rather than driving it.</li>
   <li>The unsplit connection supports simple bidirectional use. <span class="mono">split(self)</span> returns unique reader and writer halves for concurrent ownership.</li>
   <li>Connected reads and writes are bounded queue I/O with passive <span class="mono">try_*</span> operations. They do not create a second Completion protocol.</li>
-  <li>An unfinished writer drop aborts the connection. <span class="mono">finish(self)</span> drains accepted output and then half-closes the write side.</li>
+  <li>An unfinished writer drop aborts the connection. Split <span class="mono">TcpWriter::finish(self)</span> drains accepted output and then half-closes the write side. Unsplit <span class="mono">TcpConnection::finish(&amp;mut self)</span> performs the same write-side operation without consuming the still-live reader.</li>
   <li>A reader drop before observed EOF cancels the connection, including after writer finish. Reader drop after EOF is harmless.</li>
   <li>Dropping an unsplit connection before its writer has finished and its reader has observed EOF aborts it. Dropping it after both directions are terminal is harmless.</li>
   <li>The reader drains retained bytes before reporting EOF. Reset, cancellation, Engine stop, and local fail-closed drop wake blocked readers and writers promptly.</li>
@@ -180,7 +182,8 @@
 <h3>3.3 Shared budgets</h3>
 <ul>
   <li>HTTP pool capacity, public DNS inflight capacity, and standalone TCP capacity are distinct anti-starvation budgets.</li>
-  <li>An Engine-wide queued-byte ceiling covers HTTP upload/unread-response queues plus standalone TCP send/unread-receive queues.</li>
+  <li><span class="mono">max_connections</span> and <span class="mono">max_connections_per_origin</span> remain HTTP-only. <span class="mono">max_standalone_tcp_connections</span> independently bounds pending and live standalone TCP. OS/process resource limits may cap their sum, but standalone TCP occupancy does not consume or shrink the configured HTTP pool.</li>
+  <li>An Engine-wide queued-byte ceiling will cover HTTP upload/unread-response queues plus standalone TCP send/unread-receive queues once F2 can charge <span class="mono">max_queued_bytes</span> atomically. F0 does not publish that field. HTTP streaming keeps <span class="mono">max_stream_queued_bytes</span>.</li>
   <li>Per-operation and per-connection windows may request less than their Engine limit, never more.</li>
   <li>HTTP-internal DNS remains reserved from public-resolver exhaustion. A hostname connect reserves its standalone TCP permit for the lifetime of the accepted connect/live connection and borrows one public-DNS permit only while resolving. The DNS permit is released before socket establishment; the connect retains one ID and one canonical terminal throughout.</li>
   <li><span class="mono">Engine::cancel_all</span> covers HTTP, public DNS, pending connects, and live standalone TCP. The callback-event budget is shared by callback-bearing HTTP, resolve, and connect terminals; connected queue I/O does not invent callbacks.</li>
@@ -189,7 +192,7 @@
 
 <h2 id="shape">4. Proposed API Shape</h2>
 
-<p>The exact spelling remains compile-checkable F0 work. The intended consumer shape is:</p>
+<p>F0 compiled the consumer shape below. Operations currently return <span class="mono">Unsupported</span> before admission; they are not connected to the private resolver or reactor.</p>
 
 <pre><code>let engine = Engine::new(config)?;
 
@@ -198,7 +201,7 @@ let resolver = engine.resolver();
 let tcp = engine.tcp_connector();</code></pre>
 
 <h3>4.1 Resolution</h3>
-<pre><code>let request = ResolveRequest::new("example.com")
+<pre><code>let request = ResolveRequest::hostname("example.com")
     .address_family(AddressFamily::Both)
     .address_order(AddressOrder::Ipv4ThenIpv6)
     .cache_mode(CacheMode::Use)
@@ -212,7 +215,7 @@ match response.status() {
     ResolveStatus::NameNotFound | ResolveStatus::NoData =&gt; { /* valid negative answer */ }
 }</code></pre>
 
-<p>Expected public family: <span class="mono">Resolver</span>, <span class="mono">ResolveRequest</span>/<span class="mono">ResolveRequestBuilder</span>, <span class="mono">PendingResolve</span>, <span class="mono">ResolveHandle</span>, <span class="mono">ResolveCompletion</span>, <span class="mono">ResolveResponse</span>, <span class="mono">ResolveStatus</span>, <span class="mono">ResolvedAddress</span>, <span class="mono">AddressFamily</span>, <span class="mono">AddressOrder</span>, <span class="mono">CacheMode</span>, and <span class="mono">DnsFailure</span>.</p>
+<p>Compiled public family: <span class="mono">Resolver</span>, <span class="mono">ResolveRequest</span>/<span class="mono">ResolveRequestBuilder</span>, <span class="mono">PendingResolve</span>, <span class="mono">ResolveHandle</span>, <span class="mono">ResolveCompletion</span>, <span class="mono">ResolveResponse</span>, <span class="mono">ResolveStatus</span>, <span class="mono">ResolvedAddress</span>, <span class="mono">AddressFamily</span>, <span class="mono">AddressOrder</span>, <span class="mono">CacheMode</span>, <span class="mono">DnsFailure</span>, and <span class="mono">ResolveWaitOutcome</span>.</p>
 
 <h3>4.2 TCP</h3>
 <pre><code>let request = TcpConnectRequest::hostname("example.com", 1234)
@@ -231,21 +234,56 @@ while let Some(count) = reader.read(&mut buffer)? {
     consume(&buffer[..count]);
 }</code></pre>
 
-<p>Expected public family: <span class="mono">TcpConnector</span>, <span class="mono">TcpConnectRequest</span>/<span class="mono">TcpConnectRequestBuilder</span>, <span class="mono">PendingTcpConnect</span>, <span class="mono">TcpConnectHandle</span>, <span class="mono">TcpConnectCompletion</span>, <span class="mono">TcpConnection</span>, <span class="mono">TcpConnectionHandle</span>, <span class="mono">TcpReader</span>, <span class="mono">TcpWriter</span>, and ownership-preserving read/send error types.</p>
+<p>Compiled public family: <span class="mono">TcpConnector</span>, <span class="mono">TcpConnectRequest</span>/<span class="mono">TcpConnectRequestBuilder</span>, <span class="mono">TcpConnectTarget</span>, <span class="mono">PendingTcpConnect</span>, <span class="mono">TcpConnectHandle</span>, <span class="mono">TcpConnectCompletion</span>, <span class="mono">TcpConnectWaitOutcome</span>, <span class="mono">TcpConnection</span>, <span class="mono">TcpConnectionHandle</span>, <span class="mono">TcpReader</span>, <span class="mono">TcpWriter</span>, <span class="mono">TcpRead</span>, <span class="mono">TcpStreamError</span>, <span class="mono">TcpSendError</span>/<span class="mono">TcpSendErrorKind</span>, and <span class="mono">TcpFinishError</span>.</p>
 
 <div class="callout">
   <strong>Existing vocabulary wins:</strong> finite resolve/connect operations mirror HTTP <span class="mono">start</span>, <span class="mono">submit</span>, <span class="mono">execute</span>, <span class="mono">RequestId</span>, <span class="mono">ExecuteError</span>, and cloneable cancellation handles. Live TCP queue I/O mirrors the ownership lessons of <span class="mono">ResponseReader</span> and <span class="mono">UploadSender</span>, but it is not called <span class="mono">submit_stream</span> and does not adapt HTTP <span class="mono">Completion</span>.
 </div>
 
+<h3>4.3 Compiled F0 signatures</h3>
+<pre><code>Engine::resolver(&amp;self) -&gt; Resolver
+Engine::tcp_connector(&amp;self) -&gt; TcpConnector
+Engine::drive_until&lt;T: WaiterTarget&gt;(&amp;mut self, pending: T) -&gt; Result&lt;T::Output, Error&gt;
+
+impl WaiterTarget for PendingRequest { type Output = Completion; }
+impl WaiterTarget for PendingResolve { type Output = ResolveCompletion; }
+impl WaiterTarget for PendingTcpConnect { type Output = TcpConnectCompletion; }
+
+Resolver::start&lt;F: FnOnce(ResolveCompletion) + Send + 'static&gt;(&amp;self, ResolveRequest, F) -&gt; Result&lt;ResolveHandle, Error&gt;
+Resolver::submit(&amp;self, ResolveRequest) -&gt; Result&lt;PendingResolve, Error&gt;
+Resolver::execute(&amp;self, ResolveRequest) -&gt; Result&lt;ResolveResponse, ExecuteError&gt;
+Resolver::cancel(&amp;self, RequestId) -&gt; Result&lt;(), Error&gt;
+
+ResolveRequest::hostname(impl Into&lt;String&gt;) -&gt; ResolveRequestBuilder
+TcpConnectRequest::hostname(impl Into&lt;String&gt;, u16) -&gt; TcpConnectRequestBuilder
+TcpConnectRequest::literal(SocketAddr) -&gt; TcpConnectRequestBuilder
+TcpConnectRequestBuilder::connect_timeout(Duration)
+TcpConnectRequestBuilder::read_inactivity_timeout(Duration)
+TcpConnectRequestBuilder::write_inactivity_timeout(Duration)
+
+TcpConnector::start&lt;F: FnOnce(TcpConnectCompletion) + Send + 'static&gt;(&amp;self, TcpConnectRequest, F) -&gt; Result&lt;TcpConnectHandle, Error&gt;
+TcpConnector::submit(&amp;self, TcpConnectRequest) -&gt; Result&lt;PendingTcpConnect, Error&gt;
+TcpConnector::execute(&amp;self, TcpConnectRequest) -&gt; Result&lt;TcpConnection, ExecuteError&gt;
+TcpConnector::cancel(&amp;self, RequestId) -&gt; Result&lt;(), Error&gt;
+
+TcpConnection::try_send/send(&amp;mut self, Vec&lt;u8&gt;) -&gt; Result&lt;(), TcpSendError&gt;
+TcpConnection::try_read(&amp;mut self, &amp;mut [u8]) -&gt; Result&lt;TcpRead, TcpStreamError&gt;
+TcpConnection::read(&amp;mut self, &amp;mut [u8]) -&gt; Result&lt;Option&lt;usize&gt;, TcpStreamError&gt;
+TcpConnection::finish(&amp;mut self) -&gt; Result&lt;(), TcpFinishError&gt;
+TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
+<div class="callout warning">
+  <strong>F0 accepted.</strong> The contract skeleton compiles and rejects work before admission. F1 wires <span class="mono">Resolver</span> onto the existing DNS owner; F2 wires <span class="mono">TcpConnector</span> onto the existing reactor. HTTP streaming still uses <span class="mono">max_stream_queued_bytes</span> exactly as in 0.1.0. The Engine-wide <span class="mono">max_queued_bytes</span> name is retained for F2, when HTTP and TCP reservations can share one charged counter.
+</div>
+
 <h2 id="work">5. Work Packages</h2>
 
 <h3>F0 — Freeze and compile-check the contract</h3>
-<p><span class="status status-progress">In progress</span></p>
+<p><span class="status status-done">Accepted</span></p>
 <ul>
   <li>Record the ownership, terminal, name/cache, drop, half-close, budget, and backend-selection decisions in this tracker and the product specification.</li>
   <li>Write public type skeletons and compile-only examples before connecting either facade to private modules.</li>
   <li>Prove capability handles are cloneable tickets, connection/halves are <span class="mono">Send</span> but not <span class="mono">Clone</span>/<span class="mono">Sync</span>, and Engine remains <span class="mono">Send</span>/<span class="mono">!Sync</span>.</li>
-  <li>Freeze trailing-dot normalization, result/TTL representation, cache-mode semantics, and the exact blocking/manual errors.</li>
+  <li>Freeze trailing-dot normalization, including that an explicit absolute spelling suppresses suffix expansion even when search is requested, plus result/TTL representation, cache-mode semantics, and the exact blocking/manual errors.</li>
   <li>Generalize <span class="mono">Engine::drive_until</span> through a tiny sealed waiter-target trait implemented by <span class="mono">PendingRequest</span>, <span class="mono">PendingResolve</span>, and <span class="mono">PendingTcpConnect</span>. Preserve the existing HTTP call shape and keep each target's own terminal type.</li>
   <li>Define new Engine configuration and metrics names without reinterpreting existing HTTP limits silently.</li>
 </ul>
@@ -268,9 +306,10 @@ while let Some(count) = reader.read(&mut buffer)? {
 <ul>
   <li>Add finite hostname/literal connect requests on the existing resolver and reactor owners, with one Engine-scoped ID space and canonical connect terminal.</li>
   <li>Reject port zero and unspecified literal destination addresses at <span class="mono">TcpConnectRequest::build()</span>, before admission or DNS/socket work.</li>
-  <li>Add standalone TCP admission/fairness independently of the HTTP idle pool while respecting the absolute socket/resource ceiling.</li>
+  <li>Add standalone TCP admission/fairness independently of the HTTP idle pool. The standalone budget does not consume <span class="mono">max_connections</span>; ordinary OS/process limits still bound the combined sockets.</li>
   <li>Implement one unique unsplit connection plus consuming split into unique reader/writer halves.</li>
   <li>Implement bounded send and unread-receive queues, passive <span class="mono">try_*</span>, spawned blocking convenience, wakeups, and manual-drive behaviour.</li>
+  <li>Introduce <span class="mono">max_queued_bytes</span> when HTTP streaming and TCP queues can charge the Engine-wide ceiling atomically.</li>
   <li>Implement explicit writer finish, retained-byte-before-EOF, fail-closed drops, reset/error propagation, and cloneable connection cancellation.</li>
   <li>Expose local/peer addresses and payload-free metrics, but no raw socket or TLS escape hatch.</li>
 </ul>
@@ -339,12 +378,12 @@ while let Some(count) = reader.read(&mut buffer)? {
 
 <table>
 <tr><th>ID</th><th>Question</th><th>Recommended answer</th><th>Status</th></tr>
-<tr><td class="mono nowrap">FQ-01</td><td>Does obtaining an unavailable capability fail, or does its first operation fail?</td><td><span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> issue ordinary tickets; unavailable operations fail <span class="mono">Unsupported</span> before ID, permit, or queue acquisition. This keeps issuance cheap and feature-invariant.</td><td><span class="status status-question">Review in F0</span></td></tr>
-<tr><td class="mono nowrap">FQ-02</td><td>What does an optional trailing dot mean?</td><td>Accept zero or one terminal dot as an explicit absolute spelling; normalize cache/question identity to lowercase ASCII without the terminal dot. Reject the root name and malformed/multiple empty labels. No search expansion for either spelling unless explicitly requested.</td><td><span class="status status-question">Review in F0</span></td></tr>
-<tr><td class="mono nowrap">FQ-03</td><td>How do cache modes behave?</td><td><span class="mono">Use</span>: read and populate. <span class="mono">Refresh</span>: skip cache read and replace from the network. <span class="mono">Bypass</span>: neither read nor populate. Negative cache entries follow the same mode and expose honest validity.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-01</td><td>Does obtaining an unavailable capability fail, or does its first operation fail?</td><td><span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> issue ordinary tickets; unavailable operations fail <span class="mono">Unsupported</span> before ID, permit, or queue acquisition. This keeps issuance cheap and feature-invariant.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-02</td><td>What does an optional trailing dot mean?</td><td>Accept zero or one terminal dot as an explicit absolute spelling; normalize cache/question identity to lowercase ASCII without the terminal dot, and retain the absolute bit so execution can suppress search-suffix expansion even when <span class="mono">use_search_suffixes(true)</span> is requested. Reject the root name and malformed/multiple empty labels.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-03</td><td>How do cache modes behave?</td><td><span class="mono">Use</span>: read and populate. <span class="mono">Refresh</span>: skip cache read and replace from the network. <span class="mono">Bypass</span>: neither read nor populate. Negative cache entries follow the same mode and expose honest validity.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-04</td><td>What are the default address family and combined-family order?</td><td>Default to <span class="mono">AddressFamily::Both</span> and <span class="mono">AddressOrder::Ipv4ThenIpv6</span>. This collects both families and orders the public result; it does not copy HTTP's lookup fallback. TCP Happy Eyeballs may later consume both families without changing resolver result semantics.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
-<tr><td class="mono nowrap">FQ-05</td><td>How are blocking TCP queue operations named?</td><td>Use ownership-explicit <span class="mono">try_send(Vec&lt;u8&gt;)</span>/<span class="mono">send(Vec&lt;u8&gt;)</span>, returning the unaccepted suffix on refusal. Consider borrowed <span class="mono">Read</span>/<span class="mono">Write</span> adapters only later.</td><td><span class="status status-question">Prototype in F0</span></td></tr>
-<tr><td class="mono nowrap">FQ-06</td><td>Does a connect total timeout continue after connection?</td><td>No. Resolve/connect terminal clocks end when the live object is produced. Optional read/write inactivity policies govern the connected phase and pause under consumer backpressure where progress is impossible.</td><td><span class="status status-question">Review in F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-05</td><td>How are blocking TCP queue operations named?</td><td>Use ownership-explicit <span class="mono">try_send(Vec&lt;u8&gt;)</span>/<span class="mono">send(Vec&lt;u8&gt;)</span>, returning the unaccepted suffix on refusal. Consider borrowed <span class="mono">Read</span>/<span class="mono">Write</span> adapters only later.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-06</td><td>Does a connect total timeout continue after connection?</td><td>No. Resolve/connect terminal clocks end when the live object is produced. Optional read/write inactivity policies govern the connected phase and pause under consumer backpressure where progress is impossible.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-07</td><td>Does a combined-family lookup mean fallback or collection?</td><td>Call the public variant <span class="mono">AddressFamily::Both</span>: collect A and AAAA and order the combined result explicitly. A failure in either required family fails the initial operation rather than hiding a partial result. HTTP retains its private serial A/AAAA-on-NoData policy.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-08</td><td>How does manual <span class="mono">drive_until</span> support three terminal types?</td><td>Make <span class="mono">Engine::drive_until</span> generic over a tiny sealed waiter-target trait with an associated output. Implement it only for HTTP, resolve, and connect pending types. Do not add a grab-bag completion enum or capability-specific method names.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-09</td><td>What happens when the unsplit connection is dropped?</td><td>Drop before writer finish plus reader EOF aborts; drop after both directions are terminal is harmless. Splitting transfers the same rule to the two unique halves.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
@@ -376,6 +415,13 @@ while let Some(count) = reader.read(&mut buffer)? {
 <tr><td class="nowrap">2026-08-25</td><td>Default public resolution to <span class="mono">Both</span> with IPv4-then-IPv6 result order.</td><td>The strict dual-family behaviour is visible without relying on an example's explicit builder calls, so it cannot accidentally drift toward HTTP fallback.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Generalize manual <span class="mono">drive_until</span> with a sealed target trait.</td><td>Preserves the existing HTTP shape while returning each capability's own terminal type.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Unsplit TCP drop follows the same two-direction terminal rule as split ownership.</td><td>No accepted output is silently truncated and a wholly terminal connection needs no redundant cancellation.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Name the resolve builder <span class="mono">ResolveRequest::hostname</span> rather than <span class="mono">new</span>.</td><td>Project clippy denies <span class="mono">new_ret_no_self</span>; HTTP already uses <span class="mono">builder</span>/<span class="mono">get</span> and TCP already uses <span class="mono">hostname</span>/<span class="mono">literal</span>.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Unsplit <span class="mono">TcpConnection::finish</span> takes <span class="mono">&amp;mut self</span>; split <span class="mono">TcpWriter::finish</span> consumes <span class="mono">self</span>.</td><td>Consuming the unsplit connection on finish would drop the reader before EOF and abort under the two-direction rule.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Do not publish <span class="mono">max_queued_bytes</span> in F0.</td><td>Resource limits must be real. HTTP streaming keeps <span class="mono">max_stream_queued_bytes</span>. Introduce the Engine-wide name in F2 when HTTP and TCP can charge it atomically.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Keep only <span class="mono">type Output</span> on public <span class="mono">WaiterTarget</span>.</td><td>Polling and numeric Engine identity are crate-private associated functions on the sealed supertrait, not methods. Supertrait methods remain callable; a second public bound such as crate-private <span class="mono">Poll</span> cannot be named by downstream generic code.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Public DNS total deadline uses <span class="mono">TimeoutKind::Total</span>, not a Resolve stage.</td><td>The DNS facade already identifies the operation; <span class="mono">DnsFailure</span> remains for protocol/server categories.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Hostname TCP connect uses exact public-resolver defaults and serial first-success address attempts.</td><td>No search expansion or private HTTP fallback is inherited. NXDOMAIN/NoData cannot complete a connect without an address; Happy Eyeballs and per-connect DNS knobs remain explicit future changes.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>HTTP and standalone TCP connection budgets remain independent.</td><td><span class="mono">max_connections</span> stays HTTP-only; <span class="mono">max_standalone_tcp_connections</span> owns standalone pending/live occupancy. Platform limits may cap their sum without silently reallocating either configured budget.</td></tr>
 </table>
 
 <h2 id="progress">11. Progress Log</h2>
@@ -383,6 +429,10 @@ while let Some(count) = reader.read(&mut buffer)? {
 <table>
 <tr><th>Date</th><th>Progress</th><th>Evidence / next move</th></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Follow-up tracker accepted after a second ownership review. Dual-family meaning, generic manual waiting, whole-connection drop, shared-cache visibility, permit lifetime, global cancellation/callback scope, and invalid TCP destinations are recorded.</td><td>Begin F0 by reconciling the illustrative types with current <span class="mono">Client</span>, registry, metrics, manual-mode, and backend feature surfaces. No transport mutation yet.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>F0 public DNS/TCP contract skeleton compiled. Tickets issue from Engine; resolve/connect operations fail <span class="mono">Unsupported</span> before ID, permit, callback reservation, or command queuing. Builder validation, sealed <span class="mono">WaiterTarget</span> <span class="mono">drive_until</span>, config/metrics names, and ownership trait proofs are in the working tree. F0 is not accepted.</td><td>Review the working-tree diff. Do not begin Resolver wiring until this checkpoint is accepted.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>F0 public-contract refinement: waiter internals sealed, FQ-06 read/write inactivity published, <span class="mono">max_queued_bytes</span> removed from the F0 surface, <span class="mono">TimeoutKind::Resolve</span> removed, trailing-dot absolute names suppress search, temporary capabilities example deleted.</td><td>Review the working-tree diff. Do not mark F0 accepted until that review passes.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>F0 waiter bound restored to exactly <span class="mono">T: WaiterTarget</span>. Polling uses crate-private associated functions (no method receiver) so downstream generic code can name the public bound.</td><td>Focused generic contract test plus the complete verification gate. Do not mark F0 accepted until that review passes.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>F0 accepted after worker, overseer, and companion review. The public DNS/TCP skeleton matches the ownership freeze, leaves HTTP behaviour unchanged, and passes the focused contract and complete verification gates.</td><td>Begin F1 by wiring <span class="mono">Resolver</span> onto the existing Engine-owned DNS service. Do not begin standalone TCP wiring in the same slice.</td></tr>
 </table>
 
 </body>
