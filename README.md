@@ -4,10 +4,6 @@ NBReq is a Rust HTTP client for programs that need concurrent network access, pr
 deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async
 runtime.
 
-The architecture contract and backend-independent lifecycle kernel are complete. The default build
-and ordinary constructor use NBReq's Rust-native HTTP implementation. The earlier curl Multi pilot
-remains in project history as reference and differential evidence; it is not in the public crate.
-
 ## Highlights
 
 - Simple blocking HTTP requests for ordinary use, with callbacks, direct waiters, streaming
@@ -61,8 +57,7 @@ NBReq's curl Multi pilot proved the public lifecycle and supplied differential t
 while the native implementation was built. It is deliberately absent from the 0.1.0 public crate:
 the pilot requires a locally patched binding, while maintaining a published fork would create a
 permanent support obligation for a reference backend. The accepted source, tests, scripts, and GDS
-artifacts remain recoverable from project history. Native NBReq is the supported crate backend;
-GDS retains ureq as its deployment rollback.
+artifacts remain recoverable from project history. Native NBReq is the supported crate backend.
 
 Engine configuration independently bounds accepted/inflight requests, queued commands, and
 callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
@@ -132,5 +127,9 @@ NBReq is licensed under either of the following, at your option:
 
 The generated [component and dependency license report](THIRD_PARTY_LICENSES.html) records the
 locked Windows and Linux release graph.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
 Copyright (c) 2026 Cave Rock Software Limited.
