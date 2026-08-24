@@ -93,6 +93,9 @@ jobs:
       - name: Select stable Rust
         run: rustup default stable
 
+      - name: Fetch exact locked graph
+        run: cargo fetch --locked
+
       - name: Install cargo-about
         run: cargo install --locked --features cli --version 0.9.1 cargo-about
 
