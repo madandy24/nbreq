@@ -1,11 +1,11 @@
 # WP11.3 release-automation evidence
 
-Status: local checkpoint prepared 2026-08-24. This record does not claim that the public GitHub
-repository, hosted CI, private vulnerability reporting, or crates.io publication exists yet.
+Status: hosted automation accepted 2026-08-24. The public GitHub repository, portable CI, and
+private vulnerability reporting are live. No crate has been published.
 
 ## 1. Portable CI definition
 
-`.github/workflows/ci.yml` is prepared for the genuine public repository with read-only contents
+`.github/workflows/ci.yml` runs on the genuine public repository with read-only contents
 permission and an immutable full-length `actions/checkout` v6.0.2 commit pin. It runs the existing
 complete verifier on:
 
@@ -17,6 +17,13 @@ Each verification job fetches the exact locked graph and then runs the verifier 
 Ubuntu jobs run pinned `cargo-audit 0.22.2` and regenerate the dependency-license report with pinned
 `cargo-about 0.9.1`. These portable jobs supplement rather than replace the accepted Ubuntu 20.04,
 Windows 10, Wine 5, GDS x86, DLL-load, and live-canary records.
+
+GitHub Actions run [#3](https://github.com/madandy24/nbreq/actions/runs/32680496609) on commit
+`9015961` completes successfully in 3 minutes 2 seconds. The matrix passes stable Ubuntu, stable
+Windows, and Ubuntu/Rust 1.85; the RustSec and byte-exact license jobs pass separately. The first
+fresh runner usefully exposed and closed two workflow-only assumptions: the frozen license job now
+fetches the lock graph before generation, and its temporary output no longer assumes another job
+has created `target/`.
 
 ## 2. Advisory policy
 
@@ -54,15 +61,18 @@ notice files are present. `git diff --check` is clean. `cargo package --list --a
 the generated report and continues to exclude planning records, proving tools, archived pilot
 materials, and other non-product files.
 
-## 5. Remaining WP11.3 gates
+## 5. Public repository controls
 
-1. Create `https://github.com/madandy24/nbreq` without generated starter files and push the exact
-   reviewed local history.
-2. Observe the Windows, Ubuntu, MSRV, RustSec, and license-report jobs succeeding on GitHub.
-3. Enable GitHub private vulnerability reporting and verify the packaged `SECURITY.md` route.
-4. Rehearse registry resolution by publishing and verifying `nbreq-winpoll 0.1.0` before packaging
+The empty public repository was created at `https://github.com/madandy24/nbreq`, then populated by
+pushing the reviewed local `main` history. GitHub Actions is enabled. Private vulnerability
+reporting is enabled, making the packaged `SECURITY.md` route live. Secret scanning and push
+protection remain enabled by GitHub for the public repository.
+
+## 6. Remaining WP11.3 gates
+
+1. Rehearse registry resolution by publishing and verifying `nbreq-winpoll 0.1.0` before packaging
    the root crate. Publication itself requires a separate explicit release decision.
-5. Build the root archive and a clean external consumer only after the support crate resolves from
+2. Build the root archive and a clean external consumer only after the support crate resolves from
    the registry.
 
 No crate has been published by this checkpoint.

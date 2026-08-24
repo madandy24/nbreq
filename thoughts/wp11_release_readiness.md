@@ -23,13 +23,13 @@ accepted private implementation into a public crate. It does not authorize publi
 |---|---|---|
 | License grant | **Resolved:** Copyright (c) 2026 Cave Rock Software Limited; standard `LICENSE-MIT` and `LICENSE-APACHE`; manifest `MIT OR Apache-2.0` | Recheck packaged license inclusion at the release rehearsal |
 | Version | **Resolved:** root and implementation-detail support crate are `0.1.0` | Keep 1.0 gated on post-publication production observation and API stability |
-| Registry metadata | **Identity resolved:** planned repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Create the public remote, verify all URLs, and remove `publish = false` only at the release gate |
+| Registry metadata | **Hosted:** public repository/homepage `https://github.com/madandy24/nbreq`, docs.rs URL, README, keywords, and categories are in the manifest; `publish = false` remains | Remove `publish = false` only at the explicit release gate |
 | Windows support crate | **Topology resolved:** `nbreq-winpoll` is `0.1.0`, crates.io-scoped, explicitly described as an implementation detail, and the root uses path + registry version | Publish and verify this crate immediately before `nbreq`; do not market or stabilize it as a direct consumer API |
 | Curl reference | **Resolved for 0.1.0:** feature, dependency, patch, public variant, and verifier stages are absent from the public package graph | Retain the accepted pilot in history/evidence; GDS rollback is ureq; reconsider only after an upstreamable registry-resolvable binding exists |
 | Package contents | **Resolved:** explicit include list retains source, public tests/examples/guide, README, security policy, and both licenses; it excludes thoughts, experiments, proof tools, archived curl source/tests, and comparison examples | Inspect both final `.crate` archives and clean-consumer builds again at publication |
 | Empty `ffi` feature | **Resolved:** removed before 0.1.0 | Add a future FFI feature only with an implemented and documented contract |
-| Security contact | **Policy resolved:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports | Enable private vulnerability reporting on the real repository before release; until then the route is not live |
-| CI | **Prepared locally:** a least-privilege GitHub Actions workflow runs the complete verifier on stable Windows, stable Ubuntu, and Ubuntu/Rust 1.85, with separate RustSec and license-report gates | Create the genuine public repository, run the workflow there, and retain named target-host/Wine/GDS evidence for claims portable CI cannot reproduce |
+| Security contact | **Live:** packaged `SECURITY.md` selects GitHub private vulnerability reporting, latest-0.x support, and no public/secret-bearing initial reports; private reporting is enabled on the repository | Recheck the route before each release |
+| CI | **Live:** the least-privilege GitHub Actions workflow passes the complete verifier on stable Windows, stable Ubuntu, and Ubuntu/Rust 1.85, with separate successful RustSec and byte-exact license-report gates | Retain named target-host/Wine/GDS evidence for claims portable CI cannot reproduce |
 
 The remaining topology gate is publication order, not an architecture defect: publish and verify
 `nbreq-winpoll` first, then package `nbreq` so its normalized manifest resolves version `0.1.0` from
@@ -114,10 +114,11 @@ wire-only Hickory dependency is early post-WP11 work. Final commit `de21963` pas
 `115E37BCF017AEECB4595BEC9A818E8BCB5E791C66CEAC5BAAF90926B8B3448A`) passes all 20 stages
 offline on Ubuntu 20.04.6 / Rust 1.85.0 in 265.644 seconds. WP11.2 is accepted.
 
-The local WP11.3 automation checkpoint is recorded in `wp11_release_automation.md`. It prepares the
-real-repository workflow, reviewed advisory policy, exact generated license report, and package
-contents, and passes the complete 20-stage Windows verifier in 29.940 seconds. GitHub-hosted runs,
-private vulnerability reporting, registry resolution, and publication remain deliberately open.
+WP11.3 automation evidence is recorded in `wp11_release_automation.md`. The local checkpoint passes
+the complete 20-stage Windows verifier in 29.940 seconds. Public GitHub Actions run #3 on `9015961`
+then passes stable Windows, stable Ubuntu, Ubuntu/Rust 1.85, RustSec, and byte-exact license gates in
+3 minutes 2 seconds. Private vulnerability reporting is live. Registry resolution and publication
+remain deliberately open.
 
 ## 6. First realistic native observation
 
