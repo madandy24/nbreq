@@ -7,9 +7,8 @@
 //! build and ordinary [`Engine::new`] constructor use NBReq's native HTTP implementation.
 //!
 //! [`Engine::resolver`] and [`Engine::tcp_connector`] issue cloneable capability tickets into the
-//! same Engine lifecycle. The F0 public DNS/TCP surface is compile-checked; operations currently
-//! fail [`ErrorKind::Unsupported`] before admission and are not connected to the private resolver
-//! or reactor.
+//! same Engine lifecycle. Public hostname resolution is served by the Engine-owned native DNS
+//! service when that owner is present. Standalone TCP remains unwired until F2.
 #![doc = include_str!("../docs/getting-started.md")]
 
 mod atomic;
@@ -37,6 +36,9 @@ pub mod fuzzing;
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(all(test, feature = "native"))]
+mod dns_wiring_tests;
 
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};

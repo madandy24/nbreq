@@ -74,6 +74,13 @@ const DEFAULT_MAX_IDLE_CONNECTIONS: usize = 32;
 const DEFAULT_MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
 const DEFAULT_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_INFLIGHT_RESOLUTIONS: usize = 256;
+/// Native DNS transaction IDs reserved for HTTP-internal lookups.
+pub(crate) const HTTP_DNS_TXID_RESERVE: usize = 1_024;
+/// 16-bit DNS transaction-ID space.
+pub(crate) const DNS_TRANSACTION_ID_SPACE: usize = u16::MAX as usize + 1;
+/// Public resolutions may occupy at most this many native DNS transaction IDs.
+pub(crate) const MAX_PUBLIC_DNS_TRANSACTIONS: usize =
+    DNS_TRANSACTION_ID_SPACE - HTTP_DNS_TXID_RESERVE;
 const DEFAULT_MAX_STANDALONE_TCP_CONNECTIONS: usize = 32;
 const DEFAULT_MAX_RESOLVE_RESULTS: usize = 32;
 const DEFAULT_TCP_QUEUE_LIMIT: usize = 256 * 1024;
@@ -248,9 +255,14 @@ impl EngineConfig {
     }
 
     /// Selects the public-resolver inflight budget. HTTP-internal DNS is reserved separately.
+    ///
+    /// The budget is capped so public work cannot consume the native DNS transaction-ID band
+    /// reserved for HTTP-internal lookups.
     #[must_use]
     pub fn with_max_inflight_resolutions(mut self, resolutions: NonZeroUsize) -> Self {
-        self.max_inflight_resolutions = resolutions;
+        let capped = resolutions.get().min(MAX_PUBLIC_DNS_TRANSACTIONS);
+        self.max_inflight_resolutions = NonZeroUsize::new(capped)
+            .expect("HTTP DNS reservation leaves a public transaction cap");
         self
     }
 
@@ -1159,7 +1171,7 @@ impl Error {
         error
     }
 
-    #[allow(dead_code)] // Used once public Resolver wiring classifies DNS failures.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn dns(failure: DnsFailure, message: impl Into<String>) -> Self {
         let mut error = Self::transport(TransportStage::Dns, message);
         error.dns_failure = Some(failure);
@@ -1287,6 +1299,20 @@ impl StdError for ShutdownError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_resolution_budget_cannot_consume_http_dns_txid_reserve() {
+        let huge = NonZeroUsize::new(usize::MAX).expect("usize::MAX is non-zero");
+        let config = EngineConfig::spawned().with_max_inflight_resolutions(huge);
+        assert_eq!(
+            config.max_inflight_resolutions().get(),
+            MAX_PUBLIC_DNS_TRANSACTIONS
+        );
+        assert_eq!(
+            config.max_inflight_resolutions().get() + HTTP_DNS_TXID_RESERVE,
+            DNS_TRANSACTION_ID_SPACE
+        );
+    }
 
     #[test]
     fn request_builder_rejects_non_http_urls_invalid_tokens_and_header_injection() {

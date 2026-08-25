@@ -11,10 +11,11 @@ use crate::metrics::{EngineMetrics, Metrics};
 use crate::stream::{ResponseControl, ResponseSink, response_pair};
 use crate::{
     Client, Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestHandle,
-    RequestId, ResponseReader, RunMode, StreamRequest,
+    RequestId, ResolveCompletion, ResolveRequest, ResponseReader, RunMode, StreamRequest,
 };
 
 pub(crate) type CompletionCallback = Box<dyn FnOnce(Completion) + Send + 'static>;
+pub(crate) type ResolveCallback = Box<dyn FnOnce(ResolveCompletion) + Send + 'static>;
 type ExternalWaker = Arc<dyn Fn() -> Result<(), Error> + Send + Sync + 'static>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +207,142 @@ impl RequestState {
     }
 }
 
+struct ResolveInner {
+    completion: Option<ResolveCompletion>,
+    callback: Option<ResolveCallback>,
+    callback_active: bool,
+    inflight_permit: Option<AdmissionPermit>,
+    callback_permit: Option<AdmissionPermit>,
+}
+
+pub(crate) struct ResolveState {
+    id: RequestId,
+    inner: Mutex<ResolveInner>,
+    changed: Condvar,
+    metrics: Arc<Metrics>,
+}
+
+impl fmt::Debug for ResolveState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolveState")
+            .field("id", &self.id)
+            .field("terminal", &self.is_terminal())
+            .finish()
+    }
+}
+
+impl ResolveState {
+    fn new(
+        id: RequestId,
+        callback: Option<ResolveCallback>,
+        inflight_permit: AdmissionPermit,
+        callback_permit: Option<AdmissionPermit>,
+        metrics: Arc<Metrics>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            inner: Mutex::new(ResolveInner {
+                completion: None,
+                callback,
+                callback_active: false,
+                inflight_permit: Some(inflight_permit),
+                callback_permit,
+            }),
+            changed: Condvar::new(),
+            metrics,
+        })
+    }
+
+    pub(crate) fn id(&self) -> RequestId {
+        self.id
+    }
+
+    pub(crate) fn is_terminal(&self) -> bool {
+        lock_unpoisoned(&self.inner).completion.is_some()
+    }
+
+    pub(crate) fn completion(&self) -> Option<ResolveCompletion> {
+        lock_unpoisoned(&self.inner).completion.clone()
+    }
+
+    pub(crate) fn wait(&self) -> ResolveCompletion {
+        assert!(
+            !context::is_active(self.id.engine),
+            "blocking wait on the active drive/callback stack is forbidden"
+        );
+        let inner = lock_unpoisoned(&self.inner);
+        let inner = self
+            .changed
+            .wait_while(inner, |inner| inner.completion.is_none())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner
+            .completion
+            .clone()
+            .expect("terminal wait predicate completed without a result")
+    }
+
+    pub(crate) fn wait_for(&self, duration: std::time::Duration) -> Option<ResolveCompletion> {
+        assert!(
+            !context::is_active(self.id.engine),
+            "blocking wait on the active drive/callback stack is forbidden"
+        );
+        let inner = lock_unpoisoned(&self.inner);
+        let (inner, _timeout) = self
+            .changed
+            .wait_timeout_while(inner, duration, |inner| inner.completion.is_none())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.completion.clone()
+    }
+
+    fn commit(&self, completion: ResolveCompletion) -> (bool, Option<CallbackJob>) {
+        let mut inner = lock_unpoisoned(&self.inner);
+        if inner.completion.is_some() {
+            return (false, None);
+        }
+
+        self.metrics.resolution_terminal(&completion);
+        inner.completion = Some(completion);
+        self.changed.notify_all();
+        let job = Self::take_terminal_job(self.id, &mut inner);
+        if inner.callback.is_none() && job.is_none() {
+            drop(inner.inflight_permit.take());
+            drop(inner.callback_permit.take());
+        }
+        (true, job)
+    }
+
+    fn activate_callback(&self) -> Option<CallbackJob> {
+        let mut inner = lock_unpoisoned(&self.inner);
+        inner.callback_active = true;
+        Self::take_terminal_job(self.id, &mut inner)
+    }
+
+    fn take_terminal_job(id: RequestId, inner: &mut ResolveInner) -> Option<CallbackJob> {
+        if !inner.callback_active || inner.completion.is_none() {
+            return None;
+        }
+        let callback = inner.callback.take()?;
+        let completion = inner
+            .completion
+            .clone()
+            .expect("terminal callback requires canonical completion");
+        let inflight_permit = inner
+            .inflight_permit
+            .take()
+            .expect("terminal callback requires its admission permit");
+        let callback_permit = inner
+            .callback_permit
+            .take()
+            .expect("terminal callback requires its callback-capacity permit");
+        Some(CallbackJob::new(id, move || {
+            let _inflight_permit = inflight_permit;
+            let _callback_permit = callback_permit;
+            callback(completion);
+        }))
+    }
+}
+
 pub(crate) struct StreamRequestState {
     id: RequestId,
     control: ResponseControl,
@@ -266,6 +403,12 @@ pub(crate) enum Submission {
         state: Arc<StreamRequestState>,
         response: ResponseSink,
         accepted_at: Instant,
+    },
+    Resolve {
+        request: ResolveRequest,
+        state: Arc<ResolveState>,
+        accepted_at: Instant,
+        max_results: usize,
     },
 }
 
@@ -398,10 +541,15 @@ struct CoreState {
     next_sequence: u64,
     requests: HashMap<RequestId, Arc<RequestState>>,
     stream_requests: HashMap<RequestId, Arc<StreamRequestState>>,
+    resolutions: HashMap<RequestId, Arc<ResolveState>>,
 }
 
 pub(crate) struct AcceptedRequest {
     pub(crate) state: Arc<RequestState>,
+}
+
+pub(crate) struct AcceptedResolve {
+    pub(crate) state: Arc<ResolveState>,
 }
 
 pub(crate) struct Shared {
@@ -414,6 +562,9 @@ pub(crate) struct Shared {
     core: Mutex<CoreState>,
     inflight: Arc<AtomicUsize>,
     inflight_limit: usize,
+    resolution_inflight: Arc<AtomicUsize>,
+    resolution_inflight_limit: usize,
+    public_resolver_supported: AtomicBool,
     callback_inflight: Arc<AtomicUsize>,
     callback_inflight_limit: usize,
     streaming_supported: bool,
@@ -473,9 +624,13 @@ impl Shared {
                 next_sequence: 1,
                 requests: HashMap::new(),
                 stream_requests: HashMap::new(),
+                resolutions: HashMap::new(),
             }),
             inflight: Arc::new(AtomicUsize::new(0)),
             inflight_limit: config.max_inflight_requests().get(),
+            resolution_inflight: Arc::new(AtomicUsize::new(0)),
+            resolution_inflight_limit: config.max_inflight_resolutions().get(),
+            public_resolver_supported: AtomicBool::new(false),
             callback_inflight: Arc::new(AtomicUsize::new(0)),
             callback_inflight_limit: callback_capacity,
             streaming_supported,
@@ -582,6 +737,123 @@ impl Shared {
         }
         drop(activation);
         Ok(AcceptedRequest { state })
+    }
+
+    pub(crate) fn set_public_resolver_supported(&self, supported: bool) {
+        self.public_resolver_supported
+            .store(supported, Ordering::Release);
+    }
+
+    pub(crate) fn public_resolver_supported(&self) -> bool {
+        self.public_resolver_supported.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn accept_resolve(
+        self: &Arc<Self>,
+        request: ResolveRequest,
+        callback: Option<ResolveCallback>,
+        max_resolve_results: usize,
+    ) -> Result<AcceptedResolve, Error> {
+        let has_callback = callback.is_some();
+        let mut core = lock_unpoisoned(&self.core);
+        if core.lifecycle != LifecycleState::Running {
+            return Err(Error::new(
+                ErrorKind::EngineStopped,
+                "the owning Engine has stopped accepting work",
+            ));
+        }
+        if let Some(max_results) = request.max_results() {
+            if max_results > max_resolve_results {
+                return Err(Error::limit(
+                    LimitKind::ResolveResults,
+                    format!(
+                        "resolution max_results exceeds the Engine ceiling of {max_resolve_results}"
+                    ),
+                ));
+            }
+        }
+        if !self.public_resolver_supported() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "public hostname resolution is not available on this Engine",
+            ));
+        }
+        if core.next_sequence == u64::MAX {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "request identity space is exhausted",
+            ));
+        }
+
+        let inflight_permit =
+            AdmissionPermit::try_acquire(&self.resolution_inflight, self.resolution_inflight_limit)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::QueueFull,
+                        "the Engine's accepted/inflight public-resolution capacity is full",
+                    )
+                })?;
+        let callback_permit = if has_callback {
+            Some(
+                AdmissionPermit::try_acquire(&self.callback_inflight, self.callback_inflight_limit)
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::QueueFull,
+                            "the Engine's callback request/event capacity is full",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        let id = RequestId {
+            engine: self.id,
+            sequence: core.next_sequence,
+        };
+        core.next_sequence += 1;
+        let state = ResolveState::new(
+            id,
+            callback,
+            inflight_permit,
+            callback_permit,
+            Arc::clone(&self.metrics),
+        );
+        core.resolutions.insert(id, Arc::clone(&state));
+
+        let effective_max_results = request.max_results().unwrap_or(max_resolve_results);
+        let submission = Submission::Resolve {
+            request,
+            state: Arc::clone(&state),
+            accepted_at: Instant::now(),
+            max_results: effective_max_results,
+        };
+        if !self.queue.try_push(submission) {
+            core.resolutions.remove(&id);
+            return Err(Error::new(
+                ErrorKind::QueueFull,
+                "the Engine's bounded command queue is full",
+            ));
+        }
+        self.metrics
+            .resolution_accepted(self.resolution_inflight.load(Ordering::Acquire));
+
+        let activation = if has_callback {
+            *lock_unpoisoned(&self.callback_activations) += 1;
+            Some(CallbackActivation { shared: self })
+        } else {
+            None
+        };
+        drop(core);
+
+        if has_callback {
+            #[cfg(test)]
+            self.run_callback_activation_hook();
+            if let Some(job) = state.activate_callback() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
+        }
+        drop(activation);
+        Ok(AcceptedResolve { state })
     }
 
     pub(crate) fn accept_stream(
@@ -710,24 +982,27 @@ impl Shared {
                 "request ID belongs to another Engine",
             ));
         }
-        let (state, stream_state) = {
+        let (state, stream_state, resolve_state) = {
             let core = lock_unpoisoned(&self.core);
             (
                 core.requests.get(&request_id).cloned(),
                 core.stream_requests.get(&request_id).cloned(),
+                core.resolutions.get(&request_id).cloned(),
             )
         };
         if let Some(state) = state {
             self.complete_state(&state, Completion::Cancelled);
         } else if let Some(state) = stream_state {
             self.cancel_stream_state(&state);
+        } else if let Some(state) = resolve_state {
+            self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
         self.queue.wake();
         Ok(())
     }
 
     pub(crate) fn cancel_all(&self) {
-        let (requests, stream_requests) = {
+        let (requests, stream_requests, resolutions) = {
             let core = lock_unpoisoned(&self.core);
             let barrier = core.next_sequence.saturating_sub(1);
             (
@@ -741,6 +1016,11 @@ impl Shared {
                     .filter(|(id, _state)| id.sequence <= barrier)
                     .map(|(_id, state)| Arc::clone(state))
                     .collect::<Vec<_>>(),
+                core.resolutions
+                    .iter()
+                    .filter(|(id, _state)| id.sequence <= barrier)
+                    .map(|(_id, state)| Arc::clone(state))
+                    .collect::<Vec<_>>(),
             )
         };
         for state in requests {
@@ -749,11 +1029,14 @@ impl Shared {
         for state in stream_requests {
             self.cancel_stream_state(&state);
         }
+        for state in resolutions {
+            self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
+        }
         self.queue.wake();
     }
 
     pub(crate) fn begin_shutdown(&self) {
-        let (requests, stream_requests) = {
+        let (requests, stream_requests, resolutions) = {
             let mut core = lock_unpoisoned(&self.core);
             if core.lifecycle == LifecycleState::Running {
                 core.lifecycle = LifecycleState::ShuttingDown;
@@ -762,6 +1045,7 @@ impl Shared {
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
+                core.resolutions.values().cloned().collect::<Vec<_>>(),
             )
         };
         for state in requests {
@@ -769,6 +1053,9 @@ impl Shared {
         }
         for state in stream_requests {
             self.cancel_stream_state(&state);
+        }
+        for state in resolutions {
+            self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
         self.queue.wake();
     }
@@ -798,6 +1085,22 @@ impl Shared {
             Some(state) => self.complete_state(&state, completion),
             None => false,
         }
+    }
+
+    pub(crate) fn complete_resolve_state(
+        &self,
+        state: &Arc<ResolveState>,
+        completion: ResolveCompletion,
+    ) -> bool {
+        let (won, job) = state.commit(completion);
+        if !won {
+            return false;
+        }
+        lock_unpoisoned(&self.core).resolutions.remove(&state.id());
+        if let Some(job) = job {
+            let _queued = self.callback_domain.enqueue_terminal(job);
+        }
+        true
     }
 
     pub(crate) fn complete_state(&self, state: &Arc<RequestState>, completion: Completion) -> bool {
@@ -830,11 +1133,12 @@ impl Shared {
     }
 
     pub(crate) fn fail_all(&self, error: Error) {
-        let (requests, stream_requests) = {
+        let (requests, stream_requests, resolutions) = {
             let core = lock_unpoisoned(&self.core);
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
+                core.resolutions.values().cloned().collect::<Vec<_>>(),
             )
         };
         for state in requests {
@@ -845,6 +1149,9 @@ impl Shared {
                 self.finish_stream_state(&state);
             }
         }
+        for state in resolutions {
+            self.complete_resolve_state(&state, ResolveCompletion::Failed(error.clone()));
+        }
         self.queue.wake();
     }
 
@@ -852,6 +1159,7 @@ impl Shared {
         self.metrics.snapshot(
             self.inflight.load(Ordering::Acquire),
             self.stream_queued_bytes.load(Ordering::Acquire),
+            self.resolution_inflight.load(Ordering::Acquire),
         )
     }
 
@@ -903,7 +1211,7 @@ impl Shared {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn active_count(&self) -> usize {
         let core = lock_unpoisoned(&self.core);
-        core.requests.len() + core.stream_requests.len()
+        core.requests.len() + core.stream_requests.len() + core.resolutions.len()
     }
 
     #[cfg(test)]

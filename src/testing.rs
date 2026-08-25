@@ -69,9 +69,38 @@ pub fn native_http_engine_with_nameserver(
     Engine::with_spawned_factory(config, factory)
 }
 
-/// Creates a private Rust-native HTTP proving Engine using the host's DNS configuration.
+/// Creates a private Rust-native HTTP proving Engine with an injected DNS nameserver and search
+/// suffixes.
 ///
-/// This remains a WP8 system-integration seam rather than public backend selection.
+/// Suffixes are normalized and bounded by the FQ-10 snapshot rules. This is a laboratory seam,
+/// not system resolver configuration.
+#[cfg(feature = "native")]
+pub fn native_http_engine_with_nameserver_and_search_suffixes(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+    suffixes: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<Engine, Error> {
+    let factory = crate::backend::native_http_factory_with_nameserver_and_search_suffixes(
+        &config, nameserver, suffixes,
+    );
+    Engine::with_spawned_factory(config, factory)
+}
+
+/// Creates a manual native HTTP proving Engine with an injected DNS nameserver.
+#[cfg(feature = "native")]
+pub fn native_http_engine_manual_with_nameserver(
+    config: EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Result<Engine, Error> {
+    let backend = crate::backend::native_http_backend_with_nameserver(&config, nameserver)?;
+    Engine::with_backend(config, backend)
+}
+
+/// Creates a private Rust-native HTTP proving Engine using host DNS.
+///
+/// Host DNS discovery is Windows and Linux only. Other targets fail
+/// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported). This remains a WP8 system-integration
+/// seam rather than public backend selection.
 #[cfg(feature = "native")]
 pub fn native_http_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {
     let factory = crate::backend::native_http_factory_with_system_dns(&config)?;
@@ -93,8 +122,8 @@ pub fn native_https_engine_with_nameserver(
 
 /// Creates a private Rust-native HTTPS proving Engine using host DNS and platform trust.
 ///
-/// Ordinary `Engine::new` selects native in the default build; this seam remains useful for
-/// injected nameservers and direct proving control.
+/// Host DNS discovery is Windows and Linux only. Other targets fail
+/// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported). This remains a WP8 proving seam.
 #[cfg(feature = "native")]
 pub fn native_https_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {
     let factory = crate::backend::native_https_factory_with_system_dns(&config)?;

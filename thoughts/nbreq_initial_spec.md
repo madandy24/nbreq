@@ -494,7 +494,7 @@ The implementation should use `httparse` for response-head recognition and its c
 
 ## 16. TLS
 
-The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store. System DNS configuration is read by pinned target-specific `ipconfig` 0.3.4 on Windows and `resolv-conf` 0.7.6 on Unix; neither owns query execution or introduces an async runtime.
+The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store. System DNS configuration is read by pinned target-specific `ipconfig` 0.3.4 and `windows-registry` 0.6.1 on Windows and `resolv-conf` 0.7.6 on Linux; none of them own query execution or introduce an async runtime. Ordinary macOS and other unverified Unix discovery fail `Unsupported` rather than inheriting Linux `/etc/resolv.conf` semantics.
 
 DNS UDP truncation falls back to an NBReq-owned nonblocking TCP connection on the resolver poll owner. The length prefix and response are incrementally bounded; cancellation and Engine shutdown close that connection and join the resolver exactly like the UDP path.
 
@@ -896,7 +896,7 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 11. **Native DNS milestone:** Is an owned blocking resolver service acceptable initially, provided request cancellation is prompt, or must Engine shutdown also cancel the underlying resolver immediately?\
     Recommendation: accept the worker for the first native slice, but do not declare DLL-safe production readiness until bounded resolver shutdown is proven.
 
-12. **Platform gates — accepted initial targets:** Windows 10 x64 or later; the Windows build under Ubuntu 20.04's distro-default Wine; and native Linux x64 on Ubuntu 20.04. Versions may be varied if a concrete toolchain/backend problem is demonstrated and the change is recorded.
+12. **Platform gates — accepted initial targets:** Windows 10 x64 or later; the Windows build under Ubuntu 20.04's distro-default Wine; and native Linux x64 on Ubuntu 20.04. macOS/Darwin is planned and unverified; it is not covered by “Unix” and is not an F1 gate. Versions may be varied if a concrete toolchain/backend problem is demonstrated and the change is recorded.
 
 13. **HTTP scope:** Does any known GDS path require proxies, response compression, multipart file upload, cookies, client certificates, or methods beyond GET/POST in the first release?
 
@@ -984,10 +984,11 @@ Decisions already accepted in principle:
 
 ## 28. Public DNS and TCP contract (F0 accepted)
 
-This section records the accepted, compile-checked post-`0.1.0` F0 surface. Operations
-currently fail `Unsupported` before ID allocation, admission permits, callback reservation, or
-command queuing. They are not connected to `native_dns` or the reactor. HTTP unknown-host remains
-`Failed(ErrorKind::Transport, TransportStage::Dns)`. `HttpBackend` remains HTTP-only.
+This section records the accepted, compile-checked post-`0.1.0` public DNS/TCP surface. F0 froze
+the consumer contract. F1 is accepted: `Resolver` is wired onto the existing
+Engine-owned native DNS service, including FQ-10 search-suffix expansion. `TcpConnector` remains unwired and still fails `Unsupported` before
+ID allocation, admission permits, callback reservation, or command queuing. HTTP unknown-host remains
+`Failed(ErrorKind::Transport, TransportStage::Dns)` with no `DnsFailure` payload. `HttpBackend` remains HTTP-only.
 
 Capability tickets:
 
@@ -1014,6 +1015,9 @@ downstream generic code can use exactly `T: WaiterTarget`. `PendingRequest` yiel
 Resolver family: `ResolveRequest` / `ResolveRequestBuilder`, `Resolver`, `PendingResolve`,
 `ResolveHandle`, `ResolveCompletion`, `ResolveWaitOutcome`, `ResolveResponse`, `ResolveStatus`,
 `ResolvedAddress`, `AddressFamily`, `AddressOrder`, `CacheMode`, `DnsFailure`.
+
+`ResolveResponse::candidate_name()` is `Option<&str>`: the expanded question that produced an
+`Answer`, or `None` for NXDOMAIN/NoData. It is not a CNAME canonical name.
 
 ```text
 ResolveRequest::hostname(impl Into<String>) -> ResolveRequestBuilder
@@ -1103,14 +1107,58 @@ The Engine-wide `max_queued_bytes` name is retained in the follow-up plan and is
 when HTTP streaming and standalone TCP queues can charge it atomically. HTTP streaming continues to
 use `max_stream_queued_bytes`.
 
-Payload-free metrics added and remain zero until F1/F2: `resolutions_*` for finite public DNS
-operations; `tcp_connects_*` for finite connect attempts; occupancy gauges
-`inflight_resolutions`, `standalone_tcp_connections`, and `reserved_tcp_queue_bytes`. Live TCP
-lifetime/capacity is `standalone_tcp_connections`, not the attempt counters.
+Payload-free metrics: `resolutions_*` count finite public DNS operations once F1 wiring is live;
+`tcp_connects_*` remain zero until F2. Occupancy gauges `inflight_resolutions`,
+`standalone_tcp_connections`, and `reserved_tcp_queue_bytes`. Live TCP lifetime/capacity is
+`standalone_tcp_connections`, not the attempt counters.
 
 `Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
-standalone TCP). F0 has no accepted DNS/TCP work, so behaviour remains HTTP-only in practice.
+standalone TCP). Public resolutions accepted on a native Engine with the DNS owner participate in
+that barrier. Standalone TCP remains unwired.
 
-F1 wires `Resolver` onto the existing Engine-owned DNS service. F2 wires `TcpConnector` onto the
-existing reactor. F0 acceptance freezes the consumer contract; it must not be treated as a fake
-transport.
+F1 is accepted: `Resolver` is wired onto
+the existing Engine-owned DNS service. Applied
+`use_search_suffixes(true)` expands a snapshotted OS suffix list with the accepted FQ-10
+candidate algorithm rather than cloning glibc `ndots` or Windows DNS devolution. Ordinary system
+suffix/nameserver discovery is Windows and Linux only. On Windows, a filtered computer
+`SearchList` is complete; otherwise adapter `Domain` falling back to `DhcpDomain` from
+`HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{adapter_name}` in
+nameserver rank, then computer `Domain`; there is no devolution. macOS and other unverified
+Unix fail closed until F6. Linux/Windows helper tests verify that fail-closed error contract;
+the target-selected macOS discovery test remains for F6/on-Mac execution. No macOS support
+claim is made. Trailing-dot names stay exact. Undotted relative names try suffixes only (exact identity only when the
+filtered suffix list is empty). Dotted relative names try exact first, then suffixes. NXDOMAIN
+and NoData continue; operational failures, cancel, and total-deadline expiry stop the whole
+search. Cache keys remain the queried candidate name so a search for `www` cannot populate
+HTTP's `www` entry. `from_cache` is true only when the entire search required no network traffic.
+An exhausted negative's `valid_until` is the earliest validity across every contributing
+candidate, or `None` if any contributing negative lacks cache validity.
+`ResolveResponse::candidate_name()` is `Option<&str>` and is populated only for `Answer`; it
+names the expanded question that supplied addresses, not a CNAME canonical target. Exact
+lookups return the same identity as `name()`. HTTP and hostname TCP never expand. An expired
+public total deadline wins over a late or
+cached result. IPv6-only public completions update the public AAAA family cache but never
+mutate HTTP’s coherent A-first name-level cache view. IPv4 and Both may publish that view.
+Public inflight and native DNS transaction IDs leave a reserved HTTP-internal band. FORMERR and
+unparseable replies are `DnsFailure::Malformed`; truncated-after-TCP is `Truncated`; CNAME hop
+overflow (total CNAME links across in-message chains and follow-up queries) and root CNAME
+targets are `Protocol`. HTTP still maps those cases to `Transport`/`Dns` without a
+`DnsFailure` payload.
+
+Exact-source Ubuntu F1-R3 pre-fix evidence (2026-08-25, not the final F1 gate): standard test
+host via PuTTY saved session `gds-client-01i linode`; rustc 1.85.0 and cargo 1.85.0; archive
+SHA-256 `6FF5BA9A91E5247B5CEC169941F470A472270A33E3A452B48DF139FE12186DF7`; 34 DNS-wiring
+tests and 8 configuration tests; complete `xtask verify --offline` 20/20 in 226.886s. One
+preceding locked fetch populated three Windows-only crates (`windows-registry` 0.6.1,
+`windows-result` 0.4.1, `windows-strings` 0.5.1) that were not compiled on Linux; the
+acceptance gate itself then ran offline. That archive predates the IPv6 HTTP-view freeze.
+
+Final exact-source F1 Ubuntu gate (2026-08-25, IPv6 HTTP-view freeze): same host and
+rustc/cargo 1.85.0; archive SHA-256
+`A7582DAFE8FBDC16764F2C6956B597D15E19126D87C798344B419D589B490B00`; 36 DNS-wiring tests
+and 8 configuration tests; complete `xtask verify --offline` 20/20 in 227.489s, fully
+offline with no extra fetch.
+
+F2 wires
+`TcpConnector` onto the existing reactor. F0 acceptance froze the consumer contract; F1 accepted
+the Resolver on that same owner and must not invent a second resolver owner.

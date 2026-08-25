@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use crate::metrics::Metrics;
 use crate::registry::Shared;
 use crate::stream::ResponseSink;
-use crate::{Completion, Error, Request, RequestId, ShutdownError, StreamRequest};
+use crate::{
+    Completion, Error, ErrorKind, Request, RequestId, ResolveCompletion, ResolveRequest,
+    ShutdownError, StreamRequest,
+};
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
@@ -29,6 +32,11 @@ mod scaffold;
 pub(crate) struct BackendCompletion {
     pub(crate) id: RequestId,
     pub(crate) completion: Completion,
+}
+
+pub(crate) struct BackendResolveCompletion {
+    pub(crate) id: RequestId,
+    pub(crate) completion: ResolveCompletion,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +78,23 @@ pub(crate) trait Backend {
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error>;
     fn shutdown(&mut self) -> Result<(), ShutdownError>;
 
+    fn submit_resolve(
+        &mut self,
+        _id: RequestId,
+        _request: ResolveRequest,
+        _accepted_at: Instant,
+        _max_results: usize,
+    ) -> Option<ResolveCompletion> {
+        Some(ResolveCompletion::Failed(Error::new(
+            ErrorKind::Unsupported,
+            "public hostname resolution is not available on this Engine",
+        )))
+    }
+
+    fn poll_resolves(&mut self) -> Result<Vec<BackendResolveCompletion>, Error> {
+        Ok(Vec::new())
+    }
+
     fn poll_mode(&self) -> PollMode {
         PollMode::CommandDriven
     }
@@ -79,6 +104,10 @@ pub(crate) trait Backend {
     }
 
     fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    fn supports_public_resolver(&self) -> bool {
         false
     }
 }
@@ -92,6 +121,10 @@ pub(crate) trait BackendFactory: Send {
     }
 
     fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    fn supports_public_resolver(&self) -> bool {
         false
     }
 }
@@ -119,6 +152,27 @@ pub(crate) fn native_http_factory_with_nameserver(
     Box::new(native_http::NativeHttpFactory::new_with_nameserver(
         config, nameserver,
     ))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_http_factory_with_nameserver_and_search_suffixes(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    suffixes: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Box<dyn BackendFactory> {
+    Box::new(
+        native_http::NativeHttpFactory::new_with_nameserver_and_search_suffixes(
+            config, nameserver, suffixes,
+        ),
+    )
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+pub(crate) fn native_http_backend_with_nameserver(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_nameserver(config, nameserver).into_backend()
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]

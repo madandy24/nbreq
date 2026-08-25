@@ -1,18 +1,18 @@
 //! Public hostname-to-address resolver contract.
 //!
-//! [`Resolver`] is an Engine-issued capability ticket. In this F0 skeleton, resolve operations
-//! fail [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before identity allocation,
-//! admission, callback reservation, or command queuing. They are not connected to the private DNS
-//! owner.
+//! [`Resolver`] is an Engine-issued capability ticket. Native Engines that own the private DNS
+//! service accept public resolutions on that existing owner. Engines without the service reject
+//! work with [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before identity allocation,
+//! admission, callback reservation, or command queuing. Per-request system-search suffix expansion
+//! follows the accepted FQ-10 candidate algorithm and never affects HTTP or hostname TCP.
 
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crate::registry::Shared;
-use crate::{Error, ErrorKind, ExecuteError, LimitKind, RequestId};
+use crate::registry::{ResolveCallback, ResolveState, Shared};
+use crate::{Error, ErrorKind, ExecuteError, RequestId};
 
 /// Maximum DNS presentation length without a terminal dot.
 const MAX_DNS_NAME_LEN: usize = 253;
@@ -86,7 +86,7 @@ pub struct ResolvedAddress {
 }
 
 impl ResolvedAddress {
-    #[allow(dead_code)] // Constructed when Resolver wiring begins.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(address: IpAddr) -> Self {
         Self { address }
     }
@@ -106,23 +106,30 @@ pub struct ResolveResponse {
     addresses: Vec<ResolvedAddress>,
     valid_until: Option<Instant>,
     from_cache: bool,
+    candidate_name: Option<String>,
 }
 
 impl ResolveResponse {
-    #[allow(dead_code)] // Constructed when Resolver wiring begins.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(
         name: String,
         status: ResolveStatus,
         addresses: Vec<ResolvedAddress>,
         valid_until: Option<Instant>,
         from_cache: bool,
+        candidate_name: Option<String>,
     ) -> Self {
+        let candidate_name = match status {
+            ResolveStatus::Answer => candidate_name,
+            ResolveStatus::NameNotFound | ResolveStatus::NoData => None,
+        };
         Self {
             name,
             status,
             addresses,
             valid_until,
             from_cache,
+            candidate_name,
         }
     }
 
@@ -130,6 +137,17 @@ impl ResolveResponse {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the expanded search candidate that supplied this [`ResolveStatus::Answer`].
+    ///
+    /// This is the DNS question name that produced addresses, not a CNAME canonical target.
+    /// Exact lookups return the same identity as [`Self::name`]. Search expansion returns the
+    /// suffix-expanded candidate (for example `www.corp.test` for a request identity of `www`).
+    /// Negative results return `None`.
+    #[must_use]
+    pub fn candidate_name(&self) -> Option<&str> {
+        self.candidate_name.as_deref()
     }
 
     /// Returns whether this completed exchange is an answer or a valid negative result.
@@ -148,13 +166,18 @@ impl ResolveResponse {
 
     /// Returns in-process cache validity, or `None` when the result is not cached.
     ///
-    /// This is an [`Instant`], not a wall-clock timestamp.
+    /// This is an [`Instant`], not a wall-clock timestamp. After a search exhausts every
+    /// candidate without an address, validity is the earliest `valid_until` across those
+    /// contributing negatives, or `None` if any contributing negative lacks cache validity.
     #[must_use]
     pub fn valid_until(&self) -> Option<Instant> {
         self.valid_until
     }
 
-    /// Returns whether this result was served from the Engine-owned cache.
+    /// Returns whether this completed result required no network traffic.
+    ///
+    /// For search expansion this is true only when every candidate used to reach the terminal
+    /// was served from cache. A cached negative followed by a network answer is not from cache.
     #[must_use]
     pub fn from_cache(&self) -> bool {
         self.from_cache
@@ -254,15 +277,14 @@ impl ResolveRequest {
 
     /// Returns whether system-search suffix expansion was requested.
     ///
-    /// Suffix expansion is per-request opt-in and is not implemented in this F0 skeleton. A
-    /// trailing-dot absolute spelling suppresses expansion even when this flag is true; see
-    /// [`Self::applies_search_suffixes`].
+    /// Suffix expansion is per-request opt-in. A trailing-dot absolute spelling still suppresses
+    /// expansion. See [`Self::applies_search_suffixes`].
     #[must_use]
     pub fn use_search_suffixes(&self) -> bool {
         self.use_search_suffixes
     }
 
-    /// Returns whether F1 may apply system-search suffix expansion for this request.
+    /// Returns whether this request applies system-search suffix expansion.
     ///
     /// True only when search was requested and the name is not an explicit absolute spelling.
     #[must_use]
@@ -326,8 +348,7 @@ impl ResolveRequestBuilder {
     /// Requests per-request system-search suffix expansion.
     ///
     /// This never becomes an Engine-wide switch and cannot affect HTTP lookups. A trailing-dot
-    /// absolute spelling still suppresses expansion. F0 stores the flag and does not expand
-    /// suffixes.
+    /// absolute spelling still suppresses expansion.
     #[must_use]
     pub fn use_search_suffixes(mut self, enabled: bool) -> Self {
         self.use_search_suffixes = enabled;
@@ -394,15 +415,22 @@ impl Resolver {
     where
         F: FnOnce(ResolveCompletion) + Send + 'static,
     {
-        self.reject_resolution(request)?;
-        drop(callback);
-        Err(self.unavailable())
+        let callback: ResolveCallback = Box::new(callback);
+        let accepted =
+            self.shared
+                .accept_resolve(request, Some(callback), self.max_resolve_results.get())?;
+        Ok(ResolveHandle::new(self.clone(), accepted.state.id()))
     }
 
     /// Submits a resolution and returns its direct terminal-state waiter.
     pub fn submit(&self, request: ResolveRequest) -> Result<PendingResolve, Error> {
-        self.reject_resolution(request)?;
-        Err(self.unavailable())
+        let accepted = self
+            .shared
+            .accept_resolve(request, None, self.max_resolve_results.get())?;
+        Ok(PendingResolve::new(
+            ResolveHandle::new(self.clone(), accepted.state.id()),
+            accepted.state,
+        ))
     }
 
     /// Submits a resolution and blocks on its direct terminal-state waiter.
@@ -419,42 +447,10 @@ impl Resolver {
 
     /// Cancels an Engine-scoped resolution ID.
     ///
-    /// Public resolution is not wired in F0, so this rejects before touching the HTTP registry.
-    pub fn cancel(&self, _request_id: RequestId) -> Result<(), Error> {
-        Err(self.stopped_or_unavailable())
-    }
-
-    fn reject_resolution(&self, request: ResolveRequest) -> Result<(), Error> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(stopped_error());
-        }
-        if let Some(max_results) = request.max_results {
-            if max_results > self.max_resolve_results.get() {
-                return Err(Error::limit(
-                    LimitKind::ResolveResults,
-                    format!(
-                        "resolution max_results exceeds the Engine ceiling of {}",
-                        self.max_resolve_results
-                    ),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn unavailable(&self) -> Error {
-        Error::new(
-            ErrorKind::Unsupported,
-            "public hostname resolution is not available yet",
-        )
-    }
-
-    fn stopped_or_unavailable(&self) -> Error {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            stopped_error()
-        } else {
-            self.unavailable()
-        }
+    /// Cancellation is idempotent for same-Engine terminal resolutions, including after Engine
+    /// stop. An ID issued by another Engine fails closed.
+    pub fn cancel(&self, request_id: RequestId) -> Result<(), Error> {
+        self.shared.cancel(request_id)
     }
 }
 
@@ -466,7 +462,6 @@ pub struct ResolveHandle {
 }
 
 impl ResolveHandle {
-    #[allow(dead_code)] // Constructed when Resolver wiring begins.
     pub(crate) fn new(resolver: Resolver, id: RequestId) -> Self {
         Self { resolver, id }
     }
@@ -487,12 +482,12 @@ impl ResolveHandle {
 #[derive(Debug)]
 pub struct PendingResolve {
     handle: ResolveHandle,
+    state: Arc<ResolveState>,
 }
 
 impl PendingResolve {
-    #[allow(dead_code)] // Constructed when Resolver wiring begins.
-    pub(crate) fn new(handle: ResolveHandle) -> Self {
-        Self { handle }
+    pub(crate) fn new(handle: ResolveHandle, state: Arc<ResolveState>) -> Self {
+        Self { handle, state }
     }
 
     /// Returns a clone of the independent cancellation handle.
@@ -504,11 +499,11 @@ impl PendingResolve {
     /// Returns whether canonical terminal state has been committed.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        false
+        self.state.is_terminal()
     }
 
     pub(crate) fn try_completion(&self) -> Option<ResolveCompletion> {
-        None
+        self.state.completion()
     }
 
     pub(crate) fn issued_engine_id(&self) -> u64 {
@@ -518,17 +513,16 @@ impl PendingResolve {
     /// Waits for and returns the canonical terminal outcome.
     #[must_use]
     pub fn wait(self) -> ResolveCompletion {
-        let _ = self;
-        ResolveCompletion::Failed(Error::new(
-            ErrorKind::Unsupported,
-            "public hostname resolution is not available yet",
-        ))
+        self.state.wait()
     }
 
     /// Waits locally without changing resolution state or cancelling on timeout.
     #[must_use]
-    pub fn wait_for(self, _duration: Duration) -> ResolveWaitOutcome {
-        ResolveWaitOutcome::TimedOut(self)
+    pub fn wait_for(self, duration: Duration) -> ResolveWaitOutcome {
+        match self.state.wait_for(duration) {
+            Some(completion) => ResolveWaitOutcome::Completed(completion),
+            None => ResolveWaitOutcome::TimedOut(self),
+        }
     }
 }
 
@@ -596,17 +590,11 @@ fn invalid_dns_name(message: &str) -> Error {
     Error::new(ErrorKind::InvalidRequest, message)
 }
 
-fn stopped_error() -> Error {
-    Error::new(
-        ErrorKind::EngineStopped,
-        "the owning Engine has stopped accepting work",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Engine, EngineConfig};
+    use crate::{Engine, EngineConfig, LimitKind};
+    use std::net::Ipv4Addr;
     use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
@@ -703,6 +691,30 @@ mod tests {
     }
 
     #[test]
+    fn answer_exposes_the_search_candidate_and_negatives_do_not() {
+        let answer = ResolveResponse::new(
+            "www".to_owned(),
+            ResolveStatus::Answer,
+            vec![ResolvedAddress::new(IpAddr::V4(Ipv4Addr::LOCALHOST))],
+            None,
+            false,
+            Some("www.corp.test".to_owned()),
+        );
+        assert_eq!(answer.name(), "www");
+        assert_eq!(answer.candidate_name(), Some("www.corp.test"));
+
+        let negative = ResolveResponse::new(
+            "www".to_owned(),
+            ResolveStatus::NameNotFound,
+            Vec::new(),
+            None,
+            true,
+            Some("www.corp.test".to_owned()),
+        );
+        assert_eq!(negative.candidate_name(), None);
+    }
+
+    #[test]
     fn unavailable_operations_reject_before_admission_and_do_not_run_callbacks() {
         let engine = Engine::with_backend(EngineConfig::spawned(), crate::backend::scaffold())
             .expect("scaffold Engine must construct");
@@ -717,18 +729,18 @@ mod tests {
             .start(request.clone(), move |_| {
                 flag.store(true, AtomicOrdering::SeqCst);
             })
-            .expect_err("F0 resolution must be unavailable");
+            .expect_err("scaffold resolution must be unavailable");
         assert_eq!(start_error.kind(), ErrorKind::Unsupported);
         assert!(!ran.load(AtomicOrdering::SeqCst));
 
         let submit_error = clone
             .submit(request.clone())
-            .expect_err("F0 submit must be unavailable");
+            .expect_err("scaffold submit must be unavailable");
         assert_eq!(submit_error.kind(), ErrorKind::Unsupported);
 
         let execute_error = resolver
             .execute(request)
-            .expect_err("F0 execute must be unavailable");
+            .expect_err("scaffold execute must be unavailable");
         match execute_error {
             ExecuteError::Submission(error) => assert_eq!(error.kind(), ErrorKind::Unsupported),
             other => panic!("execute must fail before acceptance: {other:?}"),

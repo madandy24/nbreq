@@ -21,7 +21,8 @@ use mio::{Interest, Token};
 
 use super::native::NATIVE_SAFETY_POLL;
 use super::native_poll::{NativePoll, NativeWaker, PollTarget};
-use crate::{Error, ErrorKind};
+use crate::types::{DNS_TRANSACTION_ID_SPACE, HTTP_DNS_TXID_RESERVE};
+use crate::{AddressFamily, AddressOrder, CacheMode, DnsFailure, Error, ErrorKind, ResolveStatus};
 
 const WAKE_TOKEN: Token = Token(0);
 const SOCKET_TOKEN: Token = Token(1);
@@ -40,6 +41,7 @@ pub(super) struct ResolveKey(pub(super) u64);
 #[derive(Clone, Debug)]
 pub(super) struct ResolverConfig {
     pub(super) nameservers: Vec<SocketAddr>,
+    pub(super) search_suffixes: Vec<String>,
     pub(super) attempt_timeout: Duration,
     pub(super) attempts: u8,
 }
@@ -48,15 +50,25 @@ impl ResolverConfig {
     pub(super) fn injected(nameserver: SocketAddr) -> Self {
         Self {
             nameservers: vec![nameserver],
+            search_suffixes: Vec::new(),
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
         }
+    }
+
+    pub(super) fn with_search_suffixes(
+        mut self,
+        suffixes: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Self {
+        self.search_suffixes = super::native_dns_config::normalize_search_suffixes(suffixes);
+        self
     }
 
     pub(super) fn system() -> Result<Self, Error> {
         let discovered = super::native_dns_config::discover()?;
         Ok(Self {
             nameservers: discovered.nameservers,
+            search_suffixes: discovered.search_suffixes,
             attempt_timeout: discovered.attempt_timeout,
             attempts: discovered.attempts,
         })
@@ -74,6 +86,7 @@ impl ResolverConfig {
     fn multiple_for_test(nameservers: Vec<SocketAddr>) -> Self {
         Self {
             nameservers,
+            search_suffixes: Vec::new(),
             // This fixture must prove rotation, not make OS scheduling part of DNS policy. Leave
             // enough room for a loaded CI host to schedule the answering server after failover.
             attempt_timeout: Duration::from_millis(250),
@@ -91,26 +104,118 @@ pub(super) struct ResolveAnswer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ResolveFailure {
     pub(super) message: String,
+    class: DnsFailure,
 }
 
 impl ResolveFailure {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            class: DnsFailure::Unknown,
         }
     }
+
+    fn classified(class: DnsFailure, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            class,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum PublicLookupOutcome {
+    Completed {
+        name: String,
+        status: ResolveStatus,
+        addresses: Vec<IpAddr>,
+        valid_until: Option<Instant>,
+        from_cache: bool,
+        candidate_name: Option<String>,
+    },
+    Failed(Error),
 }
 
 #[derive(Debug)]
 pub(super) struct ResolveResult {
     pub(super) key: ResolveKey,
     pub(super) result: Result<ResolveAnswer, ResolveFailure>,
+    pub(super) public: Option<PublicLookupOutcome>,
+}
+
+impl ResolveResult {
+    fn http(key: ResolveKey, result: Result<ResolveAnswer, ResolveFailure>) -> Self {
+        Self {
+            key,
+            result,
+            public: None,
+        }
+    }
+
+    fn public(key: ResolveKey, public: PublicLookupOutcome) -> Self {
+        Self {
+            key,
+            result: Err(ResolveFailure::new("public lookup")),
+            public: Some(public),
+        }
+    }
+}
+
+pub(super) struct PublicResolveSpec {
+    pub(super) host: String,
+    pub(super) family: AddressFamily,
+    pub(super) order: AddressOrder,
+    pub(super) cache_mode: CacheMode,
+    pub(super) max_results: usize,
+    pub(super) expand_search: bool,
 }
 
 enum Command {
-    Resolve { key: ResolveKey, host: String },
+    Resolve {
+        key: ResolveKey,
+        host: String,
+    },
+    PublicResolve {
+        key: ResolveKey,
+        spec: PublicResolveSpec,
+    },
     Cancel(ResolveKey),
     Shutdown,
+}
+
+#[derive(Clone)]
+enum QueryPolicy {
+    Http,
+    Public(Box<PublicSession>),
+}
+
+#[derive(Clone)]
+struct PublicSession {
+    identity: String,
+    /// Queried candidate for the current/winning lookup. Exact lookups keep this equal to
+    /// `identity`. Search expansion stores the suffix-expanded question name.
+    candidate: String,
+    candidates: Vec<String>,
+    candidate_index: usize,
+    family: AddressFamily,
+    order: AddressOrder,
+    cache_mode: CacheMode,
+    max_results: usize,
+    ipv4: Option<FamilyOutcome>,
+    ipv6: Option<FamilyOutcome>,
+    /// True only while every candidate so far required no network query.
+    from_cache: bool,
+    saw_nodata: bool,
+    /// `None` until a negative candidate is recorded; `Some(None)` if any contributing negative
+    /// lacks cache validity; otherwise the earliest contributing expiry.
+    negative_validity: Option<Option<Instant>>,
+}
+
+#[derive(Clone)]
+struct FamilyOutcome {
+    status: ResolveStatus,
+    addresses: Vec<IpAddr>,
+    valid_until: Option<Instant>,
 }
 
 struct PendingQuery {
@@ -123,6 +228,7 @@ struct PendingQuery {
     servers_tried: usize,
     next_attempt: Instant,
     transport: QueryTransport,
+    policy: QueryPolicy,
 }
 
 enum QueryTransport {
@@ -157,8 +263,23 @@ struct CacheEntry {
     last_used: u64,
 }
 
+#[derive(Clone)]
+struct FamilyCacheEntry {
+    record: CachedFamily,
+    expires: Instant,
+    last_used: u64,
+}
+
+#[derive(Clone)]
+enum CachedFamily {
+    Answer(Vec<IpAddr>),
+    NameNotFound,
+    NoData,
+}
+
 struct DnsCache {
     entries: HashMap<Name, CacheEntry>,
+    family_entries: HashMap<(Name, RecordType), FamilyCacheEntry>,
     next_use: u64,
 }
 
@@ -166,6 +287,7 @@ impl DnsCache {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            family_entries: HashMap::new(),
             next_use: 1,
         }
     }
@@ -220,9 +342,73 @@ impl DnsCache {
         );
     }
 
+    fn get_family(
+        &mut self,
+        name: &Name,
+        record_type: RecordType,
+        now: Instant,
+    ) -> Option<(CachedFamily, Instant)> {
+        let key = (name.clone(), record_type);
+        if self.family_entries.get(&key)?.expires <= now {
+            self.family_entries.remove(&key);
+            return None;
+        }
+        let last_used = self.next_use;
+        self.bump_use();
+        let entry = self.family_entries.get_mut(&key)?;
+        entry.last_used = last_used;
+        Some((entry.record.clone(), entry.expires))
+    }
+
+    fn insert_family(
+        &mut self,
+        name: Name,
+        record_type: RecordType,
+        record: CachedFamily,
+        ttl: Duration,
+        maximum_ttl: Duration,
+        now: Instant,
+    ) -> Option<Instant> {
+        if ttl.is_zero() || DNS_CACHE_CAPACITY == 0 {
+            return None;
+        }
+        self.family_entries.retain(|_, entry| entry.expires > now);
+        let key = (name, record_type);
+        if self.family_entries.len() >= DNS_CACHE_CAPACITY
+            && !self.family_entries.contains_key(&key)
+        {
+            if let Some(oldest) = self
+                .family_entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(name, _)| name.clone())
+            {
+                self.family_entries.remove(&oldest);
+            }
+        }
+        let ttl = ttl.min(maximum_ttl);
+        let expires = now.checked_add(ttl)?;
+        let last_used = self.next_use;
+        self.bump_use();
+        self.family_entries.insert(
+            key,
+            FamilyCacheEntry {
+                record,
+                expires,
+                last_used,
+            },
+        );
+        Some(expires)
+    }
+
+    fn remove_http(&mut self, name: &Name) {
+        self.entries.remove(name);
+    }
+
     fn bump_use(&mut self) {
         self.next_use = self.next_use.checked_add(1).unwrap_or_else(|| {
             self.entries.clear();
+            self.family_entries.clear();
             1
         });
     }
@@ -300,6 +486,14 @@ impl NativeResolver {
 
     pub(super) fn resolve(&self, key: ResolveKey, host: String) -> Result<(), Error> {
         self.send(Command::Resolve { key, host })
+    }
+
+    pub(super) fn public_resolve(
+        &self,
+        key: ResolveKey,
+        spec: PublicResolveSpec,
+    ) -> Result<(), Error> {
+        self.send(Command::PublicResolve { key, spec })
     }
 
     pub(super) fn cancel(&self, key: ResolveKey) -> Result<(), Error> {
@@ -399,16 +593,13 @@ fn resolver_main(
                             send_result(
                                 &results,
                                 &result_waker,
-                                ResolveResult {
-                                    key,
-                                    result: Err(failure),
-                                },
+                                ResolveResult::http(key, Err(failure)),
                             );
                             continue;
                         }
                     };
                     if let Some(result) = state.cache.get(&name, Instant::now()) {
-                        send_result(&results, &result_waker, ResolveResult { key, result });
+                        send_result(&results, &result_waker, ResolveResult::http(key, result));
                         continue;
                     }
                     match prepare_name_query(
@@ -418,6 +609,7 @@ fn resolver_main(
                         0,
                         &state.pending,
                         &mut state.next_id,
+                        QueryPolicy::Http,
                     ) {
                         Ok((id, query)) => {
                             state.by_key.insert(key, id);
@@ -426,12 +618,22 @@ fn resolver_main(
                         Err(failure) => send_result(
                             &results,
                             &result_waker,
-                            ResolveResult {
-                                key,
-                                result: Err(failure),
-                            },
+                            ResolveResult::http(key, Err(failure)),
                         ),
                     }
+                }
+                Ok(Command::PublicResolve { key, spec }) => {
+                    if let Some(previous) = state.by_key.remove(&key) {
+                        remove_query(previous, &mut state, poll);
+                    }
+                    begin_public_resolve(
+                        key,
+                        spec,
+                        &config.search_suffixes,
+                        &mut state,
+                        &results,
+                        &result_waker,
+                    );
                 }
                 Ok(Command::Cancel(key)) => {
                     if let Some(id) = state.by_key.remove(&key) {
@@ -513,10 +715,343 @@ fn resolver_main(
 }
 
 fn parse_dns_name(host: &str) -> Result<Name, ResolveFailure> {
-    let mut name =
-        Name::from_ascii(host).map_err(|_| ResolveFailure::new("the DNS hostname is invalid"))?;
+    let mut name = Name::from_ascii(host).map_err(|_| {
+        ResolveFailure::classified(DnsFailure::Protocol, "the DNS hostname is invalid")
+    })?;
     name.set_fqdn(true);
     Ok(name)
+}
+
+fn public_error(failure: ResolveFailure) -> Error {
+    Error::dns(failure.class, failure.message)
+}
+
+fn emit_failure(
+    query: PendingQuery,
+    failure: ResolveFailure,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    match query.policy {
+        QueryPolicy::Http => send_result(
+            results,
+            result_waker,
+            ResolveResult::http(query.key, Err(failure)),
+        ),
+        QueryPolicy::Public(_) => send_result(
+            results,
+            result_waker,
+            ResolveResult::public(
+                query.key,
+                PublicLookupOutcome::Failed(public_error(failure)),
+            ),
+        ),
+    }
+}
+
+fn cached_family_outcome(record: CachedFamily, expires: Instant) -> FamilyOutcome {
+    match record {
+        CachedFamily::Answer(addresses) => FamilyOutcome {
+            status: ResolveStatus::Answer,
+            addresses,
+            valid_until: Some(expires),
+        },
+        CachedFamily::NameNotFound => FamilyOutcome {
+            status: ResolveStatus::NameNotFound,
+            addresses: Vec::new(),
+            valid_until: Some(expires),
+        },
+        CachedFamily::NoData => FamilyOutcome {
+            status: ResolveStatus::NoData,
+            addresses: Vec::new(),
+            valid_until: Some(expires),
+        },
+    }
+}
+
+fn session_needs(session: &PublicSession) -> Option<RecordType> {
+    match session.family {
+        AddressFamily::Ipv4 if session.ipv4.is_none() => Some(RecordType::A),
+        AddressFamily::Ipv6 if session.ipv6.is_none() => Some(RecordType::AAAA),
+        AddressFamily::Both if session.ipv4.is_none() => Some(RecordType::A),
+        AddressFamily::Both if session.ipv6.is_none() => Some(RecordType::AAAA),
+        _ => None,
+    }
+}
+
+fn begin_public_resolve(
+    key: ResolveKey,
+    spec: PublicResolveSpec,
+    search_suffixes: &[String],
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    let mut session = PublicSession {
+        identity: spec.host.clone(),
+        candidate: String::new(),
+        candidates: public_search_candidates(&spec.host, spec.expand_search, search_suffixes),
+        candidate_index: 0,
+        family: spec.family,
+        order: spec.order,
+        cache_mode: spec.cache_mode,
+        max_results: spec.max_results,
+        ipv4: None,
+        ipv6: None,
+        from_cache: spec.cache_mode == CacheMode::Use,
+        saw_nodata: false,
+        negative_validity: None,
+    };
+    let Some(first) = session.candidates.first().cloned() else {
+        send_result(
+            results,
+            result_waker,
+            ResolveResult::public(
+                key,
+                PublicLookupOutcome::Failed(public_error(ResolveFailure::classified(
+                    DnsFailure::Protocol,
+                    "the public resolver produced no DNS search candidates",
+                ))),
+            ),
+        );
+        return;
+    };
+    session.candidate = first;
+    start_current_candidate(key, session, state, results, result_waker);
+}
+
+fn public_search_candidates(
+    identity: &str,
+    expand_search: bool,
+    suffixes: &[String],
+) -> Vec<String> {
+    if !expand_search {
+        return vec![identity.to_owned()];
+    }
+    let dotted = identity.contains('.');
+    let mut seen = HashSet::from([identity.to_owned()]);
+    let mut candidates = Vec::new();
+    if dotted {
+        candidates.push(identity.to_owned());
+    }
+    for suffix in suffixes {
+        let combined = format!("{identity}.{suffix}");
+        let Ok(parsed) = crate::dns::normalize_dns_name(&combined) else {
+            continue;
+        };
+        if !seen.insert(parsed.identity.clone()) {
+            continue;
+        }
+        candidates.push(parsed.identity);
+    }
+    if candidates.is_empty() {
+        candidates.push(identity.to_owned());
+    }
+    candidates
+}
+
+fn start_current_candidate(
+    key: ResolveKey,
+    mut session: PublicSession,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    session.ipv4 = None;
+    session.ipv6 = None;
+    let family = session.family;
+    let cache_mode = session.cache_mode;
+    let name = match parse_dns_name(&session.candidate) {
+        Ok(name) => name,
+        Err(failure) => {
+            send_result(
+                results,
+                result_waker,
+                ResolveResult::public(key, PublicLookupOutcome::Failed(public_error(failure))),
+            );
+            return;
+        }
+    };
+    if cache_mode == CacheMode::Use {
+        let now = Instant::now();
+        if matches!(family, AddressFamily::Ipv4 | AddressFamily::Both) {
+            if let Some((record, expires)) = state.cache.get_family(&name, RecordType::A, now) {
+                session.ipv4 = Some(cached_family_outcome(record, expires));
+            }
+        }
+        if matches!(family, AddressFamily::Ipv6 | AddressFamily::Both) {
+            if let Some((record, expires)) = state.cache.get_family(&name, RecordType::AAAA, now) {
+                session.ipv6 = Some(cached_family_outcome(record, expires));
+            }
+        }
+        if family == AddressFamily::Both {
+            if session
+                .ipv4
+                .as_ref()
+                .is_some_and(|outcome| outcome.status == ResolveStatus::NameNotFound)
+            {
+                session.ipv6 = session.ipv4.clone();
+            } else if session
+                .ipv6
+                .as_ref()
+                .is_some_and(|outcome| outcome.status == ResolveStatus::NameNotFound)
+            {
+                session.ipv4 = session.ipv6.clone();
+            }
+        }
+        if session_needs(&session).is_none() {
+            after_candidate_families_complete(
+                key,
+                None,
+                session,
+                &name,
+                state,
+                results,
+                result_waker,
+            );
+            return;
+        }
+        session.from_cache = false;
+    }
+    let Some(record_type) = session_needs(&session) else {
+        after_candidate_families_complete(key, None, session, &name, state, results, result_waker);
+        return;
+    };
+    match prepare_name_query(
+        key,
+        name,
+        record_type,
+        0,
+        &state.pending,
+        &mut state.next_id,
+        QueryPolicy::Public(Box::new(session)),
+    ) {
+        Ok((id, query)) => {
+            state.by_key.insert(key, id);
+            state.pending.insert(id, query);
+        }
+        Err(failure) => send_result(
+            results,
+            result_waker,
+            ResolveResult::public(key, PublicLookupOutcome::Failed(public_error(failure))),
+        ),
+    }
+}
+
+fn complete_public_session(session: &PublicSession) -> PublicLookupOutcome {
+    let (status, mut addresses, valid_until) = match session.family {
+        AddressFamily::Ipv4 => family_response(session.ipv4.as_ref()),
+        AddressFamily::Ipv6 => family_response(session.ipv6.as_ref()),
+        AddressFamily::Both => combine_both(session),
+    };
+    if addresses.len() > session.max_results {
+        addresses.truncate(session.max_results);
+    }
+    let (status, valid_until, candidate_name) = if status == ResolveStatus::Answer {
+        (status, valid_until, Some(session.candidate.clone()))
+    } else {
+        (
+            if session.saw_nodata {
+                ResolveStatus::NoData
+            } else {
+                ResolveStatus::NameNotFound
+            },
+            session.negative_validity.flatten(),
+            None,
+        )
+    };
+    PublicLookupOutcome::Completed {
+        name: session.identity.clone(),
+        status,
+        addresses,
+        valid_until,
+        from_cache: session.from_cache,
+        candidate_name,
+    }
+}
+
+fn family_response(
+    outcome: Option<&FamilyOutcome>,
+) -> (ResolveStatus, Vec<IpAddr>, Option<Instant>) {
+    match outcome {
+        Some(outcome) => (
+            outcome.status,
+            outcome.addresses.clone(),
+            outcome.valid_until,
+        ),
+        None => (ResolveStatus::NoData, Vec::new(), None),
+    }
+}
+
+fn combine_both(session: &PublicSession) -> (ResolveStatus, Vec<IpAddr>, Option<Instant>) {
+    let ipv4 = session.ipv4.as_ref();
+    let ipv6 = session.ipv6.as_ref();
+    if ipv4.is_some_and(|outcome| outcome.status == ResolveStatus::NameNotFound)
+        || ipv6.is_some_and(|outcome| outcome.status == ResolveStatus::NameNotFound)
+    {
+        return (
+            ResolveStatus::NameNotFound,
+            Vec::new(),
+            min_valid_until(ipv4, ipv6),
+        );
+    }
+    let mut ipv4_addresses = ipv4
+        .filter(|outcome| outcome.status == ResolveStatus::Answer)
+        .map(|outcome| outcome.addresses.clone())
+        .unwrap_or_default();
+    let mut ipv6_addresses = ipv6
+        .filter(|outcome| outcome.status == ResolveStatus::Answer)
+        .map(|outcome| outcome.addresses.clone())
+        .unwrap_or_default();
+    if ipv4_addresses.len() + ipv6_addresses.len() > session.max_results {
+        let remaining = session.max_results;
+        match session.order {
+            AddressOrder::Ipv4ThenIpv6 => {
+                ipv4_addresses.truncate(remaining);
+                ipv6_addresses.truncate(remaining.saturating_sub(ipv4_addresses.len()));
+            }
+            AddressOrder::Ipv6ThenIpv4 => {
+                ipv6_addresses.truncate(remaining);
+                ipv4_addresses.truncate(remaining.saturating_sub(ipv6_addresses.len()));
+            }
+        }
+    }
+    if ipv4_addresses.is_empty() && ipv6_addresses.is_empty() {
+        return (
+            ResolveStatus::NoData,
+            Vec::new(),
+            min_valid_until(ipv4, ipv6),
+        );
+    }
+    let addresses = match session.order {
+        AddressOrder::Ipv4ThenIpv6 => {
+            let mut addresses = ipv4_addresses;
+            addresses.extend(ipv6_addresses);
+            addresses
+        }
+        AddressOrder::Ipv6ThenIpv4 => {
+            let mut addresses = ipv6_addresses;
+            addresses.extend(ipv4_addresses);
+            addresses
+        }
+    };
+    (
+        ResolveStatus::Answer,
+        addresses,
+        min_valid_until(ipv4, ipv6),
+    )
+}
+
+fn min_valid_until(ipv4: Option<&FamilyOutcome>, ipv6: Option<&FamilyOutcome>) -> Option<Instant> {
+    match (
+        ipv4.and_then(|outcome| outcome.valid_until),
+        ipv6.and_then(|outcome| outcome.valid_until),
+    ) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) if ipv6.is_none() => Some(left),
+        (None, Some(right)) if ipv4.is_none() => Some(right),
+        _ => None,
+    }
 }
 
 fn prepare_name_query(
@@ -526,17 +1061,27 @@ fn prepare_name_query(
     cname_hops: u8,
     pending: &HashMap<u16, PendingQuery>,
     next_id: &mut u16,
+    policy: QueryPolicy,
 ) -> Result<(u16, PendingQuery), ResolveFailure> {
-    let id = allocate_id(pending, next_id)
-        .ok_or_else(|| ResolveFailure::new("the native resolver transaction space is exhausted"))?;
+    let public = matches!(policy, QueryPolicy::Public(_));
+    let id = allocate_id(pending, next_id, public).ok_or_else(|| {
+        ResolveFailure::classified(
+            DnsFailure::Protocol,
+            if public {
+                "the native resolver public transaction space is reserved from HTTP-internal DNS"
+            } else {
+                "the native resolver transaction space is exhausted"
+            },
+        )
+    })?;
     let mut message = Message::new();
     message
         .set_id(id)
         .set_recursion_desired(true)
         .add_query(Query::query(name.clone(), record_type));
-    let wire = message
-        .to_vec()
-        .map_err(|_| ResolveFailure::new("the DNS query could not be encoded"))?;
+    let wire = message.to_vec().map_err(|_| {
+        ResolveFailure::classified(DnsFailure::Protocol, "the DNS query could not be encoded")
+    })?;
     Ok((
         id,
         PendingQuery {
@@ -549,11 +1094,22 @@ fn prepare_name_query(
             servers_tried: 1,
             next_attempt: Instant::now(),
             transport: QueryTransport::Udp,
+            policy,
         },
     ))
 }
 
-fn allocate_id(pending: &HashMap<u16, PendingQuery>, next_id: &mut u16) -> Option<u16> {
+fn allocate_id(
+    pending: &HashMap<u16, PendingQuery>,
+    next_id: &mut u16,
+    public: bool,
+) -> Option<u16> {
+    if public && !public_txid_available(pending) {
+        return None;
+    }
+    if pending.len() >= DNS_TRANSACTION_ID_SPACE {
+        return None;
+    }
     for _ in 0..=u16::MAX {
         let candidate = *next_id;
         *next_id = next_id.wrapping_add(1);
@@ -562,6 +1118,22 @@ fn allocate_id(pending: &HashMap<u16, PendingQuery>, next_id: &mut u16) -> Optio
         }
     }
     None
+}
+
+fn public_txid_available(pending: &HashMap<u16, PendingQuery>) -> bool {
+    let http_count = pending
+        .values()
+        .filter(|query| matches!(query.policy, QueryPolicy::Http))
+        .count();
+    public_txid_available_counts(http_count, pending.len())
+}
+
+fn public_txid_available_counts(http_count: usize, total: usize) -> bool {
+    if total >= DNS_TRANSACTION_ID_SPACE {
+        return false;
+    }
+    let reserved_for_http = HTTP_DNS_TXID_RESERVE.saturating_sub(http_count);
+    DNS_TRANSACTION_ID_SPACE - total > reserved_for_http
 }
 
 fn transmit_due(
@@ -589,11 +1161,21 @@ fn transmit_due(
                 send_result(
                     results,
                     result_waker,
-                    ResolveResult {
-                        key: query.key,
-                        result: Err(ResolveFailure::new(
-                            "the DNS-over-TCP fallback did not complete before its deadline",
-                        )),
+                    match query.policy {
+                        QueryPolicy::Http => ResolveResult::http(
+                            query.key,
+                            Err(ResolveFailure::classified(
+                                DnsFailure::Io,
+                                "the DNS-over-TCP fallback did not complete before its deadline",
+                            )),
+                        ),
+                        QueryPolicy::Public(_) => ResolveResult::public(
+                            query.key,
+                            PublicLookupOutcome::Failed(Error::dns(
+                                DnsFailure::Io,
+                                "the DNS-over-TCP fallback did not complete before its deadline",
+                            )),
+                        ),
                     },
                 );
             }
@@ -623,11 +1205,21 @@ fn transmit_due(
                     send_result(
                         results,
                         result_waker,
-                        ResolveResult {
-                            key: query.key,
-                            result: Err(ResolveFailure::new(
-                                "the configured DNS servers did not answer within the retry budget",
-                            )),
+                        match query.policy {
+                            QueryPolicy::Http => ResolveResult::http(
+                                query.key,
+                                Err(ResolveFailure::classified(
+                                    DnsFailure::NoNameserver,
+                                    "the configured DNS servers did not answer within the retry budget",
+                                )),
+                            ),
+                            QueryPolicy::Public(_) => ResolveResult::public(
+                                query.key,
+                                PublicLookupOutcome::Failed(Error::dns(
+                                    DnsFailure::NoNameserver,
+                                    "the configured DNS servers did not answer within the retry budget",
+                                )),
+                            ),
                         },
                     );
                 }
@@ -707,7 +1299,14 @@ fn receive_packets(
         let Some(query) = state.pending.get(&id) else {
             continue;
         };
-        let result = parse_answer(&buffer[..length], id, &query.host, query.record_type);
+        let remaining = MAX_CNAME_HOPS.saturating_sub(query.cname_hops);
+        let result = parse_answer(
+            &buffer[..length],
+            id,
+            &query.host,
+            query.record_type,
+            remaining,
+        );
         let Some(result) = result else {
             continue;
         };
@@ -729,14 +1328,7 @@ fn receive_packets(
                 }
                 Err(failure) => {
                     state.by_key.remove(&query.key);
-                    send_result(
-                        results,
-                        result_waker,
-                        ResolveResult {
-                            key: query.key,
-                            result: Err(failure),
-                        },
-                    );
+                    emit_failure(query, failure, results, result_waker);
                 }
             }
             continue;
@@ -752,74 +1344,100 @@ fn finish_answer(
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
 ) {
+    if matches!(query.policy, QueryPolicy::Public(_)) {
+        finish_public_answer(query, result, state, results, result_waker);
+        return;
+    }
+    finish_http_answer(query, result, state, results, result_waker);
+}
+
+fn follow_canonical(
+    query: PendingQuery,
+    target: Name,
+    hops: u8,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    match prepare_name_query(
+        query.key,
+        target,
+        query.record_type,
+        query.cname_hops.saturating_add(hops),
+        &state.pending,
+        &mut state.next_id,
+        query.policy.clone(),
+    ) {
+        Ok((next, replacement)) => {
+            state.by_key.insert(query.key, next);
+            state.pending.insert(next, replacement);
+        }
+        Err(failure) => {
+            state.by_key.remove(&query.key);
+            emit_failure(query, failure, results, result_waker);
+        }
+    }
+}
+
+fn finish_http_answer(
+    query: PendingQuery,
+    result: Result<ParsedAnswer, ResolveFailure>,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
     match result {
         Ok(ParsedAnswer::Answer(answer)) => {
             state.by_key.remove(&query.key);
             if query.cname_hops == 0 {
+                let now = Instant::now();
                 state.cache.insert(
-                    query.host,
+                    query.host.clone(),
                     Ok(answer.clone()),
                     answer.ttl,
                     MAX_POSITIVE_CACHE_TTL,
-                    Instant::now(),
+                    now,
+                );
+                let record = CachedFamily::Answer(answer.addresses.clone());
+                let _expires = state.cache.insert_family(
+                    query.host.clone(),
+                    query.record_type,
+                    record,
+                    answer.ttl,
+                    MAX_POSITIVE_CACHE_TTL,
+                    now,
                 );
             }
             send_result(
                 results,
                 result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Ok(answer),
-                },
+                ResolveResult::http(query.key, Ok(answer)),
             );
         }
-        Ok(ParsedAnswer::Canonical(canonical)) if query.cname_hops < MAX_CNAME_HOPS => {
-            match prepare_name_query(
-                query.key,
-                canonical,
-                query.record_type,
-                query.cname_hops + 1,
-                &state.pending,
-                &mut state.next_id,
-            ) {
-                Ok((next, replacement)) => {
-                    state.by_key.insert(query.key, next);
-                    state.pending.insert(next, replacement);
-                }
-                Err(failure) => {
-                    state.by_key.remove(&query.key);
-                    send_result(
-                        results,
-                        result_waker,
-                        ResolveResult {
-                            key: query.key,
-                            result: Err(failure),
-                        },
+        Ok(ParsedAnswer::Canonical { target, hops }) => {
+            follow_canonical(query, target, hops, state, results, result_waker);
+        }
+        Ok(ParsedAnswer::NoRecords(negative_ttl)) if query.record_type == RecordType::A => {
+            if query.cname_hops == 0 {
+                if let Some(ttl) = negative_ttl {
+                    let _expires = state.cache.insert_family(
+                        query.host.clone(),
+                        RecordType::A,
+                        CachedFamily::NoData,
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        Instant::now(),
                     );
                 }
             }
-        }
-        Ok(ParsedAnswer::Canonical(_)) => {
-            state.by_key.remove(&query.key);
-            send_result(
-                results,
-                result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(ResolveFailure::new(
-                        "the DNS CNAME chain exceeds the private hop limit",
-                    )),
-                },
-            );
-        }
-        Ok(ParsedAnswer::NoRecords(_)) if query.record_type == RecordType::A => {
             match prepare_name_query(
                 query.key,
-                query.host,
+                query.host.clone(),
                 RecordType::AAAA,
                 query.cname_hops,
                 &state.pending,
                 &mut state.next_id,
+                query.policy.clone(),
             ) {
                 Ok((next, replacement)) => {
                     state.by_key.insert(query.key, next);
@@ -827,14 +1445,7 @@ fn finish_answer(
                 }
                 Err(failure) => {
                     state.by_key.remove(&query.key);
-                    send_result(
-                        results,
-                        result_waker,
-                        ResolveResult {
-                            key: query.key,
-                            result: Err(failure),
-                        },
-                    );
+                    emit_failure(query, failure, results, result_waker);
                 }
             }
         }
@@ -844,68 +1455,451 @@ fn finish_answer(
                 ResolveFailure::new("the DNS response contained no usable A or AAAA records");
             if query.cname_hops == 0 {
                 if let Some(ttl) = negative_ttl {
+                    let now = Instant::now();
                     state.cache.insert(
-                        query.host,
+                        query.host.clone(),
                         Err(failure.clone()),
                         ttl,
                         MAX_NEGATIVE_CACHE_TTL,
-                        Instant::now(),
+                        now,
+                    );
+                    let _expires = state.cache.insert_family(
+                        query.host.clone(),
+                        query.record_type,
+                        CachedFamily::NoData,
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        now,
                     );
                 }
             }
             send_result(
                 results,
                 result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(failure),
-                },
+                ResolveResult::http(query.key, Err(failure)),
             );
         }
         Ok(ParsedAnswer::Negative(failure, negative_ttl)) => {
             state.by_key.remove(&query.key);
             if query.cname_hops == 0 {
                 if let Some(ttl) = negative_ttl {
+                    let now = Instant::now();
                     state.cache.insert(
-                        query.host,
+                        query.host.clone(),
                         Err(failure.clone()),
                         ttl,
                         MAX_NEGATIVE_CACHE_TTL,
-                        Instant::now(),
+                        now,
                     );
+                    for record_type in [RecordType::A, RecordType::AAAA] {
+                        let _expires = state.cache.insert_family(
+                            query.host.clone(),
+                            record_type,
+                            CachedFamily::NameNotFound,
+                            ttl,
+                            MAX_NEGATIVE_CACHE_TTL,
+                            now,
+                        );
+                    }
                 }
             }
             send_result(
                 results,
                 result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(failure),
-                },
+                ResolveResult::http(query.key, Err(failure)),
             );
         }
         Err(failure) => {
             state.by_key.remove(&query.key);
-            send_result(
-                results,
-                result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(failure),
-                },
-            );
+            emit_failure(query, failure, results, result_waker);
         }
         Ok(ParsedAnswer::Truncated) => {
             state.by_key.remove(&query.key);
-            send_result(
+            emit_failure(
+                query,
+                ResolveFailure::classified(
+                    DnsFailure::Truncated,
+                    "the DNS-over-TCP response was unexpectedly truncated",
+                ),
                 results,
                 result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(ResolveFailure::new(
-                        "the DNS-over-TCP response was unexpectedly truncated",
-                    )),
+            );
+        }
+    }
+}
+
+fn finish_public_answer(
+    query: PendingQuery,
+    result: Result<ParsedAnswer, ResolveFailure>,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    let QueryPolicy::Public(session) = query.policy.clone() else {
+        finish_http_answer(query, result, state, results, result_waker);
+        return;
+    };
+    let mut session = *session;
+    match result {
+        Ok(ParsedAnswer::Canonical { target, hops }) => {
+            follow_canonical(query, target, hops, state, results, result_waker);
+        }
+        Ok(ParsedAnswer::Truncated) => {
+            state.by_key.remove(&query.key);
+            emit_failure(
+                query,
+                ResolveFailure::classified(
+                    DnsFailure::Truncated,
+                    "the DNS-over-TCP response was unexpectedly truncated",
+                ),
+                results,
+                result_waker,
+            );
+        }
+        Err(failure) => {
+            state.by_key.remove(&query.key);
+            emit_failure(query, failure, results, result_waker);
+        }
+        Ok(ParsedAnswer::Answer(answer)) => {
+            let mut addresses = answer.addresses;
+            addresses.truncate(session.max_results);
+            record_public_family(
+                &mut session,
+                PublicFamilyUpdate {
+                    record_type: query.record_type,
+                    status: ResolveStatus::Answer,
+                    addresses,
+                    ttl: Some(answer.ttl),
+                    cacheable: query.cname_hops == 0,
                 },
+                &query.host,
+                &mut state.cache,
+            );
+            continue_or_complete_public(query, session, state, results, result_waker);
+        }
+        Ok(ParsedAnswer::NoRecords(negative_ttl)) => {
+            record_public_family(
+                &mut session,
+                PublicFamilyUpdate {
+                    record_type: query.record_type,
+                    status: ResolveStatus::NoData,
+                    addresses: Vec::new(),
+                    ttl: negative_ttl,
+                    cacheable: query.cname_hops == 0,
+                },
+                &query.host,
+                &mut state.cache,
+            );
+            continue_or_complete_public(query, session, state, results, result_waker);
+        }
+        Ok(ParsedAnswer::Negative(_failure, negative_ttl)) => {
+            session.ipv4 = Some(FamilyOutcome {
+                status: ResolveStatus::NameNotFound,
+                addresses: Vec::new(),
+                valid_until: None,
+            });
+            session.ipv6 = session.ipv4.clone();
+            if query.cname_hops == 0 {
+                if let Some(ttl) = negative_ttl {
+                    let now = Instant::now();
+                    if session.cache_mode != CacheMode::Bypass {
+                        for record_type in [RecordType::A, RecordType::AAAA] {
+                            if let Some(expires) = state.cache.insert_family(
+                                query.host.clone(),
+                                record_type,
+                                CachedFamily::NameNotFound,
+                                ttl,
+                                MAX_NEGATIVE_CACHE_TTL,
+                                now,
+                            ) {
+                                if let Some(outcome) = session.ipv4.as_mut() {
+                                    outcome.valid_until = Some(expires);
+                                }
+                                if let Some(outcome) = session.ipv6.as_mut() {
+                                    outcome.valid_until = Some(expires);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let host = query.host.clone();
+            after_candidate_families_complete(
+                query.key,
+                Some(query),
+                session,
+                &host,
+                state,
+                results,
+                result_waker,
+            );
+        }
+    }
+}
+
+struct PublicFamilyUpdate {
+    record_type: RecordType,
+    status: ResolveStatus,
+    addresses: Vec<IpAddr>,
+    ttl: Option<Duration>,
+    cacheable: bool,
+}
+
+fn record_public_family(
+    session: &mut PublicSession,
+    update: PublicFamilyUpdate,
+    name: &Name,
+    cache: &mut DnsCache,
+) {
+    let cached = match update.status {
+        ResolveStatus::Answer => CachedFamily::Answer(update.addresses.clone()),
+        ResolveStatus::NameNotFound => CachedFamily::NameNotFound,
+        ResolveStatus::NoData => CachedFamily::NoData,
+    };
+    let valid_until = if update.cacheable && session.cache_mode != CacheMode::Bypass {
+        update.ttl.and_then(|ttl| {
+            let maximum = if update.status == ResolveStatus::Answer {
+                MAX_POSITIVE_CACHE_TTL
+            } else {
+                MAX_NEGATIVE_CACHE_TTL
+            };
+            cache.insert_family(
+                name.clone(),
+                update.record_type,
+                cached,
+                ttl,
+                maximum,
+                Instant::now(),
+            )
+        })
+    } else {
+        None
+    };
+    let outcome = FamilyOutcome {
+        status: update.status,
+        addresses: update.addresses,
+        valid_until,
+    };
+    match update.record_type {
+        RecordType::A => session.ipv4 = Some(outcome),
+        RecordType::AAAA => session.ipv6 = Some(outcome),
+        _ => {}
+    }
+}
+
+fn continue_or_complete_public(
+    query: PendingQuery,
+    session: PublicSession,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    if let Some(record_type) = session_needs(&session) {
+        match prepare_name_query(
+            query.key,
+            query.host.clone(),
+            record_type,
+            0,
+            &state.pending,
+            &mut state.next_id,
+            QueryPolicy::Public(Box::new(session)),
+        ) {
+            Ok((next, replacement)) => {
+                state.by_key.insert(query.key, next);
+                state.pending.insert(next, replacement);
+            }
+            Err(failure) => {
+                state.by_key.remove(&query.key);
+                emit_failure(query, failure, results, result_waker);
+            }
+        }
+        return;
+    }
+    let host = query.host.clone();
+    after_candidate_families_complete(
+        query.key,
+        Some(query),
+        session,
+        &host,
+        state,
+        results,
+        result_waker,
+    );
+}
+
+fn after_candidate_families_complete(
+    key: ResolveKey,
+    query: Option<PendingQuery>,
+    mut session: PublicSession,
+    name: &Name,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    let (status, _, valid_until) = match session.family {
+        AddressFamily::Ipv4 => family_response(session.ipv4.as_ref()),
+        AddressFamily::Ipv6 => family_response(session.ipv6.as_ref()),
+        AddressFamily::Both => combine_both(&session),
+    };
+    if session.cache_mode != CacheMode::Bypass {
+        publish_http_view(&mut state.cache, name, &session, Instant::now());
+    }
+    if status == ResolveStatus::Answer {
+        if let Some(query) = query {
+            state.by_key.remove(&query.key);
+        }
+        send_result(
+            results,
+            result_waker,
+            ResolveResult::public(key, complete_public_session(&session)),
+        );
+        return;
+    }
+    record_search_negative(&mut session, status, valid_until);
+    let next_index = session.candidate_index.saturating_add(1);
+    if let Some(next) = session.candidates.get(next_index).cloned() {
+        session.candidate_index = next_index;
+        session.candidate = next;
+        if let Some(query) = query {
+            state.by_key.remove(&query.key);
+        }
+        start_current_candidate(key, session, state, results, result_waker);
+        return;
+    }
+    if let Some(query) = query {
+        state.by_key.remove(&query.key);
+    }
+    send_result(
+        results,
+        result_waker,
+        ResolveResult::public(key, complete_public_session(&session)),
+    );
+}
+
+fn record_search_negative(
+    session: &mut PublicSession,
+    status: ResolveStatus,
+    valid_until: Option<Instant>,
+) {
+    if status == ResolveStatus::NoData {
+        session.saw_nodata = true;
+    }
+    session.negative_validity = Some(match (session.negative_validity, valid_until) {
+        (None, until) => until,
+        (Some(None), _) | (Some(_), None) => None,
+        (Some(Some(previous)), Some(expires)) => Some(previous.min(expires)),
+    });
+}
+
+fn publish_http_view(cache: &mut DnsCache, name: &Name, session: &PublicSession, now: Instant) {
+    match session.family {
+        AddressFamily::Ipv6 => {
+            // IPv6-only public completions update the public AAAA family cache but never
+            // mutate HTTP's coherent A-first name-level cache view.
+        }
+        AddressFamily::Ipv4 => match session.ipv4.as_ref() {
+            Some(outcome) => publish_http_family(cache, name, outcome, now),
+            None => cache.remove_http(name),
+        },
+        AddressFamily::Both => {
+            let (status, addresses, valid_until) = combine_both(session);
+            let ttl = valid_until.and_then(|expires| expires.checked_duration_since(now));
+            match status {
+                ResolveStatus::Answer => {
+                    let Some(ttl) = ttl.filter(|ttl| !ttl.is_zero()) else {
+                        cache.remove_http(name);
+                        return;
+                    };
+                    let http_addresses = match session.ipv4.as_ref() {
+                        Some(outcome) if outcome.status == ResolveStatus::Answer => {
+                            outcome.addresses.clone()
+                        }
+                        _ => addresses,
+                    };
+                    cache.insert(
+                        name.clone(),
+                        Ok(ResolveAnswer {
+                            addresses: http_addresses,
+                            ttl,
+                        }),
+                        ttl,
+                        MAX_POSITIVE_CACHE_TTL,
+                        now,
+                    );
+                }
+                ResolveStatus::NameNotFound => {
+                    let Some(ttl) = ttl.filter(|ttl| !ttl.is_zero()) else {
+                        cache.remove_http(name);
+                        return;
+                    };
+                    cache.insert(
+                        name.clone(),
+                        Err(ResolveFailure::new("the DNS server returned NXDomain")),
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        now,
+                    );
+                }
+                ResolveStatus::NoData => {
+                    let Some(ttl) = ttl.filter(|ttl| !ttl.is_zero()) else {
+                        cache.remove_http(name);
+                        return;
+                    };
+                    cache.insert(
+                        name.clone(),
+                        Err(ResolveFailure::new(
+                            "the DNS response contained no usable A or AAAA records",
+                        )),
+                        ttl,
+                        MAX_NEGATIVE_CACHE_TTL,
+                        now,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn publish_http_family(cache: &mut DnsCache, name: &Name, outcome: &FamilyOutcome, now: Instant) {
+    match outcome.status {
+        ResolveStatus::NoData => {
+            cache.remove_http(name);
+        }
+        ResolveStatus::Answer => {
+            let Some(ttl) = outcome
+                .valid_until
+                .and_then(|expires| expires.checked_duration_since(now))
+                .filter(|ttl| !ttl.is_zero())
+            else {
+                cache.remove_http(name);
+                return;
+            };
+            cache.insert(
+                name.clone(),
+                Ok(ResolveAnswer {
+                    addresses: outcome.addresses.clone(),
+                    ttl,
+                }),
+                ttl,
+                MAX_POSITIVE_CACHE_TTL,
+                now,
+            );
+        }
+        ResolveStatus::NameNotFound => {
+            let Some(ttl) = outcome
+                .valid_until
+                .and_then(|expires| expires.checked_duration_since(now))
+                .filter(|ttl| !ttl.is_zero())
+            else {
+                cache.remove_http(name);
+                return;
+            };
+            cache.insert(
+                name.clone(),
+                Err(ResolveFailure::new("the DNS server returned NXDomain")),
+                ttl,
+                MAX_NEGATIVE_CACHE_TTL,
+                now,
             );
         }
     }
@@ -920,20 +1914,36 @@ fn begin_tcp_fallback(
     tcp_by_token: &mut HashMap<Token, u16>,
     next_tcp_token: &mut usize,
 ) -> Result<(), ResolveFailure> {
-    let length = u16::try_from(query.wire.len())
-        .map_err(|_| ResolveFailure::new("the DNS query is too large for TCP framing"))?;
+    let length = u16::try_from(query.wire.len()).map_err(|_| {
+        ResolveFailure::classified(
+            DnsFailure::Protocol,
+            "the DNS query is too large for TCP framing",
+        )
+    })?;
     let token = Token(*next_tcp_token);
-    *next_tcp_token = next_tcp_token
-        .checked_add(1)
-        .ok_or_else(|| ResolveFailure::new("the native resolver TCP token space is exhausted"))?;
-    let mut stream = TcpStream::connect(nameserver)
-        .map_err(|error| ResolveFailure::new(format!("DNS-over-TCP connect failed: {error}")))?;
+    *next_tcp_token = next_tcp_token.checked_add(1).ok_or_else(|| {
+        ResolveFailure::classified(
+            DnsFailure::Protocol,
+            "the native resolver TCP token space is exhausted",
+        )
+    })?;
+    let mut stream = TcpStream::connect(nameserver).map_err(|error| {
+        ResolveFailure::classified(
+            DnsFailure::Io,
+            format!("DNS-over-TCP connect failed: {error}"),
+        )
+    })?;
     poll.register(
         &mut stream,
         token,
         Interest::READABLE.add(Interest::WRITABLE),
     )
-    .map_err(|error| ResolveFailure::new(format!("DNS-over-TCP registration failed: {error}")))?;
+    .map_err(|error| {
+        ResolveFailure::classified(
+            DnsFailure::Io,
+            format!("DNS-over-TCP registration failed: {error}"),
+        )
+    })?;
     let mut outbound = Vec::with_capacity(query.wire.len() + 2);
     outbound.extend_from_slice(&length.to_be_bytes());
     outbound.extend_from_slice(&query.wire);
@@ -998,9 +2008,11 @@ fn receive_tcp(
                 state.tcp_by_token.remove(&tcp.token);
                 let _deregister_result = poll.deregister(&mut tcp.stream);
             }
-            let parsed =
-                parse_answer(&message, id, &query.host, query.record_type).unwrap_or_else(|| {
-                    Err(ResolveFailure::new(
+            let remaining = MAX_CNAME_HOPS.saturating_sub(query.cname_hops);
+            let parsed = parse_answer(&message, id, &query.host, query.record_type, remaining)
+                .unwrap_or_else(|| {
+                    Err(ResolveFailure::classified(
+                        DnsFailure::Protocol,
                         "the DNS-over-TCP response did not match its query",
                     ))
                 });
@@ -1012,14 +2024,7 @@ fn receive_tcp(
                 let _deregister_result = poll.deregister(&mut tcp.stream);
             }
             state.by_key.remove(&query.key);
-            send_result(
-                results,
-                result_waker,
-                ResolveResult {
-                    key: query.key,
-                    result: Err(failure),
-                },
-            );
+            emit_failure(query, failure, results, result_waker);
         }
     }
 }
@@ -1032,32 +2037,41 @@ fn drive_tcp(
 ) -> Result<TcpDrive, ResolveFailure> {
     if writable && tcp.written < tcp.outbound.len() {
         if let Some(error) = tcp.stream.take_error().map_err(|error| {
-            ResolveFailure::new(format!("DNS-over-TCP connect status failed: {error}"))
+            ResolveFailure::classified(
+                DnsFailure::Io,
+                format!("DNS-over-TCP connect status failed: {error}"),
+            )
         })? {
-            return Err(ResolveFailure::new(format!(
-                "DNS-over-TCP connect failed: {error}"
-            )));
+            return Err(ResolveFailure::classified(
+                DnsFailure::Io,
+                format!("DNS-over-TCP connect failed: {error}"),
+            ));
         }
         while tcp.written < tcp.outbound.len() {
             match tcp.stream.write(&tcp.outbound[tcp.written..]) {
                 Ok(0) => {
-                    return Err(ResolveFailure::new(
+                    return Err(ResolveFailure::classified(
+                        DnsFailure::Io,
                         "DNS-over-TCP closed while sending the query",
                     ));
                 }
                 Ok(written) => tcp.written += written,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    return Err(ResolveFailure::new(format!(
-                        "DNS-over-TCP query send failed: {error}"
-                    )));
+                    return Err(ResolveFailure::classified(
+                        DnsFailure::Io,
+                        format!("DNS-over-TCP query send failed: {error}"),
+                    ));
                 }
             }
         }
         if tcp.written == tcp.outbound.len() {
             poll.reregister(&mut tcp.stream, tcp.token, Interest::READABLE)
                 .map_err(|error| {
-                    ResolveFailure::new(format!("DNS-over-TCP re-registration failed: {error}"))
+                    ResolveFailure::classified(
+                        DnsFailure::Io,
+                        format!("DNS-over-TCP re-registration failed: {error}"),
+                    )
                 })?;
         }
     }
@@ -1066,13 +2080,15 @@ fn drive_tcp(
         loop {
             match tcp.stream.read(&mut buffer) {
                 Ok(0) => {
-                    return Err(ResolveFailure::new(
+                    return Err(ResolveFailure::classified(
+                        DnsFailure::Io,
                         "DNS-over-TCP closed before a complete response",
                     ));
                 }
                 Ok(read) => {
                     if tcp.inbound.len().saturating_add(read) > DNS_PACKET_LIMIT + 2 {
-                        return Err(ResolveFailure::new(
+                        return Err(ResolveFailure::classified(
+                            DnsFailure::Truncated,
                             "DNS-over-TCP response exceeds the private packet limit",
                         ));
                     }
@@ -1081,7 +2097,8 @@ fn drive_tcp(
                         let expected =
                             usize::from(u16::from_be_bytes([tcp.inbound[0], tcp.inbound[1]]));
                         if expected == 0 || expected > DNS_PACKET_LIMIT {
-                            return Err(ResolveFailure::new(
+                            return Err(ResolveFailure::classified(
+                                DnsFailure::Malformed,
                                 "DNS-over-TCP response length is invalid",
                             ));
                         }
@@ -1095,9 +2112,10 @@ fn drive_tcp(
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    return Err(ResolveFailure::new(format!(
-                        "DNS-over-TCP response read failed: {error}"
-                    )));
+                    return Err(ResolveFailure::classified(
+                        DnsFailure::Io,
+                        format!("DNS-over-TCP response read failed: {error}"),
+                    ));
                 }
             }
         }
@@ -1108,7 +2126,7 @@ fn drive_tcp(
 #[derive(Debug, Eq, PartialEq)]
 enum ParsedAnswer {
     Answer(ResolveAnswer),
-    Canonical(Name),
+    Canonical { target: Name, hops: u8 },
     NoRecords(Option<Duration>),
     Negative(ResolveFailure, Option<Duration>),
     Truncated,
@@ -1119,11 +2137,13 @@ fn parse_answer(
     expected_id: u16,
     expected_name: &Name,
     expected_type: RecordType,
+    remaining_cname_hops: u8,
 ) -> Option<Result<ParsedAnswer, ResolveFailure>> {
     let message = match Message::from_vec(bytes) {
         Ok(message) => message,
         Err(_) => {
-            return Some(Err(ResolveFailure::new(
+            return Some(Err(ResolveFailure::classified(
+                DnsFailure::Malformed,
                 "the DNS server returned a malformed message",
             )));
         }
@@ -1155,35 +2175,55 @@ fn parse_answer(
         )));
     }
     if message.response_code() != ResponseCode::NoError {
-        return Some(Err(ResolveFailure::new(format!(
-            "the DNS server returned {:?}",
-            message.response_code()
-        ))));
+        let class = match message.response_code() {
+            ResponseCode::ServFail => DnsFailure::ServerFailure,
+            ResponseCode::Refused => DnsFailure::Refused,
+            ResponseCode::FormErr => DnsFailure::Malformed,
+            _ => DnsFailure::Unknown,
+        };
+        return Some(Err(ResolveFailure::classified(
+            class,
+            format!("the DNS server returned {:?}", message.response_code()),
+        )));
     }
     let mut accepted_names = HashSet::from([expected_name.clone()]);
     let mut canonical_target = None;
     let mut ttl = u32::MAX;
-    for _ in 0..MAX_CNAME_HOPS {
-        let mut added = false;
+    let mut hops = 0_u8;
+    loop {
+        let mut next_target = None;
         for answer in message.answers() {
-            if accepted_names.contains(answer.name()) {
-                if let RData::CNAME(canonical) = answer.data() {
-                    if canonical.0.is_root() {
-                        return Some(Err(ResolveFailure::new(
-                            "the DNS CNAME target is the root name",
-                        )));
-                    }
-                    if accepted_names.insert(canonical.0.clone()) {
-                        ttl = ttl.min(answer.ttl());
-                        canonical_target = Some(canonical.0.clone());
-                        added = true;
-                    }
-                }
+            if !accepted_names.contains(answer.name()) {
+                continue;
             }
-        }
-        if !added {
+            let RData::CNAME(canonical) = answer.data() else {
+                continue;
+            };
+            if canonical.0.is_root() {
+                return Some(Err(ResolveFailure::classified(
+                    DnsFailure::Protocol,
+                    "the DNS CNAME target is the root name",
+                )));
+            }
+            if accepted_names.contains(&canonical.0) {
+                continue;
+            }
+            next_target = Some((canonical.0.clone(), answer.ttl()));
             break;
         }
+        let Some((target, target_ttl)) = next_target else {
+            break;
+        };
+        if hops >= remaining_cname_hops {
+            return Some(Err(ResolveFailure::classified(
+                DnsFailure::Protocol,
+                "the DNS CNAME chain exceeds the private hop limit",
+            )));
+        }
+        hops = hops.saturating_add(1);
+        ttl = ttl.min(target_ttl);
+        accepted_names.insert(target.clone());
+        canonical_target = Some(target);
     }
     let mut addresses = Vec::new();
     for answer in message.answers() {
@@ -1199,7 +2239,10 @@ fn parse_answer(
     }
     if addresses.is_empty() {
         if let Some(canonical) = canonical_target {
-            return Some(Ok(ParsedAnswer::Canonical(canonical)));
+            return Some(Ok(ParsedAnswer::Canonical {
+                target: canonical,
+                hops,
+            }));
         }
         return Some(Ok(ParsedAnswer::NoRecords(negative_ttl)));
     }
@@ -1214,8 +2257,20 @@ pub(crate) fn fuzz_dns_response(data: &[u8]) {
     let Some((bytes, expected_id, expected_name, expected_type)) = fuzz_dns_input(data) else {
         return;
     };
-    let first = parse_answer(&bytes, expected_id, &expected_name, expected_type);
-    let second = parse_answer(&bytes, expected_id, &expected_name, expected_type);
+    let first = parse_answer(
+        &bytes,
+        expected_id,
+        &expected_name,
+        expected_type,
+        MAX_CNAME_HOPS,
+    );
+    let second = parse_answer(
+        &bytes,
+        expected_id,
+        &expected_name,
+        expected_type,
+        MAX_CNAME_HOPS,
+    );
     assert_eq!(first, second, "native DNS parsing retained hidden state");
 
     match &first {
@@ -1227,7 +2282,10 @@ pub(crate) fn fuzz_dns_response(data: &[u8]) {
             )));
             assert!(answer.ttl <= Duration::from_secs(u64::from(u32::MAX)));
         }
-        Some(Ok(ParsedAnswer::Canonical(name))) => assert!(!name.is_root()),
+        Some(Ok(ParsedAnswer::Canonical { target, hops })) => {
+            assert!(!target.is_root());
+            assert!(*hops >= 1);
+        }
         Some(Ok(ParsedAnswer::NoRecords(ttl))) => {
             assert!(ttl.is_none_or(|ttl| ttl <= Duration::from_secs(u64::from(u32::MAX))));
         }
@@ -1310,13 +2368,11 @@ fn fail_all(
     message: &str,
 ) {
     for (_, query) in pending.drain() {
-        send_result(
+        emit_failure(
+            query,
+            ResolveFailure::classified(DnsFailure::Io, message),
             results,
             result_waker,
-            ResolveResult {
-                key: query.key,
-                result: Err(ResolveFailure::new(message)),
-            },
         );
     }
     by_key.clear();
@@ -1347,6 +2403,62 @@ mod tests {
     use crate::backend::native_tls::TLS_FLIGHT_LIMIT;
 
     #[test]
+    fn public_transaction_ids_leave_an_http_reserve() {
+        assert!(public_txid_available_counts(0, 0));
+        assert!(public_txid_available_counts(
+            0,
+            DNS_TRANSACTION_ID_SPACE - HTTP_DNS_TXID_RESERVE - 1
+        ));
+        assert!(!public_txid_available_counts(
+            0,
+            DNS_TRANSACTION_ID_SPACE - HTTP_DNS_TXID_RESERVE
+        ));
+        assert!(public_txid_available_counts(
+            HTTP_DNS_TXID_RESERVE,
+            HTTP_DNS_TXID_RESERVE
+        ));
+        assert!(public_txid_available_counts(
+            HTTP_DNS_TXID_RESERVE,
+            DNS_TRANSACTION_ID_SPACE - 1
+        ));
+        assert!(!public_txid_available_counts(
+            HTTP_DNS_TXID_RESERVE,
+            DNS_TRANSACTION_ID_SPACE
+        ));
+        assert!(!public_txid_available_counts(0, DNS_TRANSACTION_ID_SPACE));
+    }
+
+    #[test]
+    fn public_search_candidates_follow_fq10_exact_and_suffix_placement() {
+        let suffixes = ["corp.test", "lab.test"];
+        assert_eq!(
+            public_search_candidates("www", false, &suffixes.map(str::to_owned)),
+            vec!["www".to_owned()]
+        );
+        assert_eq!(
+            public_search_candidates("www", true, &suffixes.map(str::to_owned)),
+            vec!["www.corp.test".to_owned(), "www.lab.test".to_owned()]
+        );
+        assert_eq!(
+            public_search_candidates("www.svc", true, &suffixes.map(str::to_owned)),
+            vec![
+                "www.svc".to_owned(),
+                "www.svc.corp.test".to_owned(),
+                "www.svc.lab.test".to_owned()
+            ]
+        );
+        assert_eq!(
+            public_search_candidates("www", true, &[] as &[String]),
+            vec!["www".to_owned()]
+        );
+        let long_suffix = "a".repeat(250);
+        assert_eq!(
+            public_search_candidates("www", true, &[long_suffix]),
+            vec!["www".to_owned()]
+        );
+    }
+
+    #[test]
     fn checked_in_dns_fuzz_seeds_reach_the_policy_parser() {
         for seed in [
             include_bytes!("../../fuzz/corpus/native_dns_response/a.seed").as_slice(),
@@ -1359,7 +2471,7 @@ mod tests {
             let (bytes, id, name, record_type) =
                 fuzz_dns_input(seed).expect("DNS fuzz seed must decode");
             assert!(
-                parse_answer(&bytes, id, &name, record_type).is_some(),
+                parse_answer(&bytes, id, &name, record_type, MAX_CNAME_HOPS).is_some(),
                 "DNS fuzz seed must reach an expected response result"
             );
             fuzz_dns_response(seed);
@@ -1506,6 +2618,7 @@ mod tests {
             0,
             &HashMap::new(),
             &mut next_id,
+            QueryPolicy::Http,
         )
         .expect("ordinary DNS query must encode");
         let message = Message::from_vec(&query.wire).expect("ordinary DNS query must decode");
@@ -1540,7 +2653,7 @@ mod tests {
             ));
         let cname_wire = cname_response.to_vec().expect("CNAME response must encode");
         let Some(Ok(ParsedAnswer::Answer(answer))) =
-            parse_answer(&cname_wire, 41, &alias, RecordType::A)
+            parse_answer(&cname_wire, 41, &alias, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("CNAME response must resolve");
         };
@@ -1564,7 +2677,7 @@ mod tests {
             ));
         let aaaa_wire = aaaa_response.to_vec().expect("AAAA response must encode");
         let Some(Ok(ParsedAnswer::Answer(answer))) =
-            parse_answer(&aaaa_wire, 42, &ipv6_name, RecordType::AAAA)
+            parse_answer(&aaaa_wire, 42, &ipv6_name, RecordType::AAAA, MAX_CNAME_HOPS)
         else {
             panic!("AAAA response must resolve");
         };
@@ -1586,10 +2699,80 @@ mod tests {
             ));
         let wire = response.to_vec().expect("root-CNAME response must encode");
 
-        let Some(Err(failure)) = parse_answer(&wire, 43, &alias, RecordType::A) else {
+        let Some(Err(failure)) = parse_answer(&wire, 43, &alias, RecordType::A, MAX_CNAME_HOPS)
+        else {
             panic!("a root CNAME target must fail before resolver follow-up");
         };
         assert_eq!(failure.message, "the DNS CNAME target is the root name");
+    }
+
+    fn cname_chain_wire(id: u16, start: &Name, hops: u8, address: Option<Ipv4Addr>) -> Vec<u8> {
+        let mut response = Message::new();
+        response
+            .set_id(id)
+            .set_message_type(MessageType::Response)
+            .add_query(Query::query(start.clone(), RecordType::A));
+        let mut current = start.clone();
+        for index in 1..=hops {
+            let next = fqdn(&format!("h{index}.limit.test"));
+            response.add_answer(Record::from_rdata(
+                current,
+                30,
+                RData::CNAME(CNAME(next.clone())),
+            ));
+            current = next;
+        }
+        if let Some(ip) = address {
+            response.add_answer(Record::from_rdata(current, 20, RData::A(A(ip))));
+        }
+        response.to_vec().expect("CNAME chain must encode")
+    }
+
+    #[test]
+    fn parser_counts_in_message_cname_links_against_the_remaining_budget() {
+        let start = fqdn("start.limit.test");
+        let over = cname_chain_wire(61, &start, MAX_CNAME_HOPS + 1, None);
+        let Some(Err(failure)) = parse_answer(&over, 61, &start, RecordType::A, MAX_CNAME_HOPS)
+        else {
+            panic!("nine in-message CNAME links must exceed the hop budget");
+        };
+        assert_eq!(
+            failure.message,
+            "the DNS CNAME chain exceeds the private hop limit"
+        );
+
+        let exact = cname_chain_wire(62, &start, MAX_CNAME_HOPS, None);
+        let Some(Ok(ParsedAnswer::Canonical { hops, .. })) =
+            parse_answer(&exact, 62, &start, RecordType::A, MAX_CNAME_HOPS)
+        else {
+            panic!("eight in-message CNAME links must leave a follow-up target");
+        };
+        assert_eq!(hops, MAX_CNAME_HOPS);
+
+        let answered = cname_chain_wire(
+            63,
+            &start,
+            MAX_CNAME_HOPS,
+            Some(Ipv4Addr::new(127, 0, 0, 63)),
+        );
+        let Some(Ok(ParsedAnswer::Answer(answer))) =
+            parse_answer(&answered, 63, &start, RecordType::A, MAX_CNAME_HOPS)
+        else {
+            panic!("eight in-message CNAME links plus an address must complete");
+        };
+        assert_eq!(
+            answer.addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 63))]
+        );
+
+        let leftover = cname_chain_wire(64, &start, 3, None);
+        let Some(Err(failure)) = parse_answer(&leftover, 64, &start, RecordType::A, 2) else {
+            panic!("three links must exceed a remaining budget of two");
+        };
+        assert_eq!(
+            failure.message,
+            "the DNS CNAME chain exceeds the private hop limit"
+        );
     }
 
     #[test]
@@ -1603,7 +2786,7 @@ mod tests {
             .add_query(Query::query(name.clone(), RecordType::A));
         let wire = truncated.to_vec().expect("truncated response must encode");
         assert!(matches!(
-            parse_answer(&wire, 51, &name, RecordType::A),
+            parse_answer(&wire, 51, &name, RecordType::A, MAX_CNAME_HOPS),
             Some(Ok(ParsedAnswer::Truncated))
         ));
 
@@ -1613,7 +2796,7 @@ mod tests {
             .set_message_type(MessageType::Response)
             .add_query(Query::query(fqdn("other.test"), RecordType::A));
         let wire = wrong.to_vec().expect("wrong response must encode");
-        assert!(parse_answer(&wire, 52, &name, RecordType::A).is_none());
+        assert!(parse_answer(&wire, 52, &name, RecordType::A, MAX_CNAME_HOPS).is_none());
     }
 
     fn accept_before(listener: &TcpListener, deadline: Instant) -> std::net::TcpStream {

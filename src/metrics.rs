@@ -239,6 +239,8 @@ pub(crate) struct Metrics {
     high_queued_commands: AtomicUsize,
     high_queued_callbacks: AtomicUsize,
     high_reserved_stream_queue_bytes: AtomicUsize,
+    #[allow(dead_code)]
+    // Gauge is sourced from Shared; the atomic is reserved for future snapshots.
     inflight_resolutions: AtomicUsize,
     standalone_tcp_connections: AtomicUsize,
     reserved_tcp_queue_bytes: AtomicUsize,
@@ -267,6 +269,23 @@ impl Metrics {
             Completion::Completed(_) => saturating_increment(&self.requests_completed),
             Completion::Failed(_) => saturating_increment(&self.requests_failed),
             Completion::Cancelled => saturating_increment(&self.requests_cancelled),
+        }
+    }
+
+    pub(crate) fn resolution_accepted(&self, inflight: usize) {
+        saturating_increment(&self.resolutions_accepted);
+        update_max(&self.high_inflight_resolutions, inflight);
+    }
+
+    pub(crate) fn resolution_terminal(&self, completion: &crate::ResolveCompletion) {
+        match completion {
+            crate::ResolveCompletion::Completed(_) => {
+                saturating_increment(&self.resolutions_completed)
+            }
+            crate::ResolveCompletion::Failed(_) => saturating_increment(&self.resolutions_failed),
+            crate::ResolveCompletion::Cancelled => {
+                saturating_increment(&self.resolutions_cancelled)
+            }
         }
     }
 
@@ -338,7 +357,12 @@ impl Metrics {
         update_max(&self.high_connection_waiters, value);
     }
 
-    pub(crate) fn snapshot(&self, inflight: usize, stream_bytes: usize) -> EngineMetrics {
+    pub(crate) fn snapshot(
+        &self,
+        inflight: usize,
+        stream_bytes: usize,
+        resolutions: usize,
+    ) -> EngineMetrics {
         EngineMetrics {
             connection_metrics_available: self.connection_metrics_available.load(Ordering::Acquire),
             requests_accepted: self.requests_accepted.load(Ordering::Acquire),
@@ -362,7 +386,7 @@ impl Metrics {
                 queued_commands: self.queued_commands.load(Ordering::Acquire),
                 queued_callbacks: self.queued_callbacks.load(Ordering::Acquire),
                 reserved_stream_queue_bytes: stream_bytes,
-                inflight_resolutions: self.inflight_resolutions.load(Ordering::Acquire),
+                inflight_resolutions: resolutions,
                 standalone_tcp_connections: self.standalone_tcp_connections.load(Ordering::Acquire),
                 reserved_tcp_queue_bytes: self.reserved_tcp_queue_bytes.load(Ordering::Acquire),
                 active_connections: self.active_connections.load(Ordering::Acquire),
@@ -431,7 +455,7 @@ mod tests {
         metrics.request_accepted(usize::MAX, usize::MAX);
         metrics.command_queued();
 
-        let snapshot = metrics.snapshot(usize::MAX, usize::MAX);
+        let snapshot = metrics.snapshot(usize::MAX, usize::MAX, 0);
         assert_eq!(snapshot.requests_accepted(), u64::MAX);
         assert_eq!(snapshot.current().queued_commands(), usize::MAX);
         assert_eq!(snapshot.high_water().queued_commands(), usize::MAX);

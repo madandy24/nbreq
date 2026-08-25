@@ -11,19 +11,22 @@ use std::time::{Duration, Instant};
 use super::native::{
     NATIVE_SAFETY_POLL, NativeEvent, NativeFailure, NativeFailureKind, NativeReactor, SlotId,
 };
-use super::native_dns::{NativeResolver, ResolveKey, ResolverConfig};
+use super::native_dns::{
+    NativeResolver, PublicLookupOutcome, PublicResolveSpec, ResolveKey, ResolverConfig,
+};
 use super::native_tls::{
     NativeTls, NativeTlsConfigs, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
     encrypted_receive_limit,
 };
-use super::{Backend, BackendCompletion, BackendFactory, PollMode};
+use super::{Backend, BackendCompletion, BackendFactory, BackendResolveCompletion, PollMode};
 use crate::metrics::Metrics;
 use crate::registry::Shared;
 use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, UploadPoll};
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
-    Response, ResponseHead, ShutdownError, StreamRequest, TimeoutKind, TlsFailure, TransportStage,
+    ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress, Response, ResponseHead,
+    ShutdownError, StreamRequest, TimeoutKind, TlsFailure, TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -1481,6 +1484,19 @@ impl NativeHttpFactory {
         }
     }
 
+    pub(super) fn new_with_nameserver_and_search_suffixes(
+        config: &EngineConfig,
+        nameserver: SocketAddr,
+        suffixes: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Self {
+        Self {
+            limits: HttpLimits::from_config(config),
+            connection_limits: ConnectionLimits::from_config(config),
+            resolver: Some(ResolverConfig::injected(nameserver).with_search_suffixes(suffixes)),
+            tls: None,
+        }
+    }
+
     pub(super) fn new_with_system_dns(config: &EngineConfig) -> Result<Self, Error> {
         Ok(Self {
             limits: HttpLimits::from_config(config),
@@ -1579,6 +1595,10 @@ impl BackendFactory for NativeHttpFactory {
 
     fn supports_streaming(&self) -> bool {
         true
+    }
+
+    fn supports_public_resolver(&self) -> bool {
+        self.resolver.is_some()
     }
 }
 
@@ -1772,6 +1792,10 @@ struct NativeHttpBackend {
     transfers: HashMap<SlotId, HttpTransfer>,
     request_to_resolve: HashMap<RequestId, ResolveKey>,
     resolves: HashMap<ResolveKey, PendingResolve>,
+    request_to_public: HashMap<RequestId, ResolveKey>,
+    public_lookups: HashMap<ResolveKey, PublicLookup>,
+    pending_public: Vec<BackendResolveCompletion>,
+    pending_http_from_dns: Vec<BackendCompletion>,
     next_resolve_key: u64,
     idle: HashMap<ConnectionKey, VecDeque<IdleConnection>>,
     idle_slots: HashMap<SlotId, ConnectionKey>,
@@ -1781,6 +1805,11 @@ struct NativeHttpBackend {
     waiting: VecDeque<PendingResolve>,
     connection_limits: ConnectionLimits,
     metrics: Option<Arc<Metrics>>,
+}
+
+struct PublicLookup {
+    request_id: RequestId,
+    total_deadline: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1946,6 +1975,10 @@ impl NativeHttpBackend {
             transfers: HashMap::new(),
             request_to_resolve: HashMap::new(),
             resolves: HashMap::new(),
+            request_to_public: HashMap::new(),
+            public_lookups: HashMap::new(),
+            pending_public: Vec::new(),
+            pending_http_from_dns: Vec::new(),
             next_resolve_key: 1,
             idle: HashMap::new(),
             idle_slots: HashMap::new(),
@@ -2541,6 +2574,47 @@ impl NativeHttpBackend {
         };
         let mut completions = Vec::new();
         for result in results {
+            if let Some(public) = result.public {
+                let Some(lookup) = self.public_lookups.remove(&result.key) else {
+                    continue;
+                };
+                self.request_to_public.remove(&lookup.request_id);
+                if lookup
+                    .total_deadline
+                    .is_some_and(|deadline| deadline <= Instant::now())
+                {
+                    if let Some(resolver) = &self.resolver {
+                        resolver.cancel(result.key)?;
+                    }
+                    self.pending_public.push(BackendResolveCompletion {
+                        id: lookup.request_id,
+                        completion: public_total_timeout(),
+                    });
+                    continue;
+                }
+                self.pending_public.push(BackendResolveCompletion {
+                    id: lookup.request_id,
+                    completion: match public {
+                        PublicLookupOutcome::Completed {
+                            name,
+                            status,
+                            addresses,
+                            valid_until,
+                            from_cache,
+                            candidate_name,
+                        } => ResolveCompletion::Completed(ResolveResponse::new(
+                            name,
+                            status,
+                            addresses.into_iter().map(ResolvedAddress::new).collect(),
+                            valid_until,
+                            from_cache,
+                            candidate_name,
+                        )),
+                        PublicLookupOutcome::Failed(error) => ResolveCompletion::Failed(error),
+                    },
+                });
+                continue;
+            }
             let Some(pending) = self.resolves.remove(&result.key) else {
                 continue;
             };
@@ -2577,6 +2651,41 @@ impl NativeHttpBackend {
             }
         }
         Ok(completions)
+    }
+
+    fn expire_public_lookups(&mut self) -> Result<(), Error> {
+        let now = Instant::now();
+        let expired = self
+            .public_lookups
+            .iter()
+            .filter_map(|(key, lookup)| {
+                lookup
+                    .total_deadline
+                    .is_some_and(|deadline| deadline <= now)
+                    .then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        for key in expired {
+            let Some(lookup) = self.public_lookups.remove(&key) else {
+                continue;
+            };
+            self.request_to_public.remove(&lookup.request_id);
+            if let Some(resolver) = &self.resolver {
+                resolver.cancel(key)?;
+            }
+            self.pending_public.push(BackendResolveCompletion {
+                id: lookup.request_id,
+                completion: public_total_timeout(),
+            });
+        }
+        Ok(())
+    }
+
+    fn drain_dns(&mut self) -> Result<(), Error> {
+        self.expire_public_lookups()?;
+        let http = self.process_resolver_results()?;
+        self.pending_http_from_dns.extend(http);
+        Ok(())
     }
 
     fn expire_resolves(&mut self) -> Result<Vec<BackendCompletion>, Error> {
@@ -3910,6 +4019,12 @@ impl Backend for NativeHttpBackend {
                 let _cancel_result = resolver.cancel(key);
             }
         }
+        if let Some(key) = self.request_to_public.remove(&id) {
+            self.public_lookups.remove(&key);
+            if let Some(resolver) = &self.resolver {
+                let _cancel_result = resolver.cancel(key);
+            }
+        }
         if let Some(slot) = self.request_to_slot.remove(&id) {
             if let Some(transfer) = self.transfers.remove(&slot) {
                 self.release_connection(&transfer.key);
@@ -3921,7 +4036,8 @@ impl Backend for NativeHttpBackend {
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
         self.expire_idle(Instant::now());
         let mut completions = self.dispatch_waiting();
-        completions.extend(self.process_resolver_results()?);
+        self.drain_dns()?;
+        completions.extend(std::mem::take(&mut self.pending_http_from_dns));
         completions.extend(self.expire_resolves()?);
         completions.extend(self.dispatch_waiting());
         self.resume_streams(&mut completions)?;
@@ -3935,7 +4051,8 @@ impl Backend for NativeHttpBackend {
             .poll(poll_deadline)
             .map_err(native_internal_error)?;
         completions.extend(self.process_events(events)?);
-        completions.extend(self.process_resolver_results()?);
+        self.drain_dns()?;
+        completions.extend(std::mem::take(&mut self.pending_http_from_dns));
         completions.extend(self.expire_resolves()?);
         completions.extend(self.dispatch_waiting());
         Ok(completions)
@@ -3947,6 +4064,10 @@ impl Backend for NativeHttpBackend {
         self.transfers.clear();
         self.request_to_resolve.clear();
         self.resolves.clear();
+        self.request_to_public.clear();
+        self.public_lookups.clear();
+        self.pending_public.clear();
+        self.pending_http_from_dns.clear();
         self.idle.clear();
         self.idle_slots.clear();
         self.idle_count = 0;
@@ -3974,12 +4095,83 @@ impl Backend for NativeHttpBackend {
     }
 
     fn wants_poll_without_requests(&self) -> bool {
-        self.idle_count != 0
+        self.idle_count != 0 || !self.public_lookups.is_empty()
     }
 
     fn supports_streaming(&self) -> bool {
         true
     }
+
+    fn supports_public_resolver(&self) -> bool {
+        self.resolver.is_some()
+    }
+
+    fn submit_resolve(
+        &mut self,
+        id: RequestId,
+        request: ResolveRequest,
+        accepted_at: Instant,
+        max_results: usize,
+    ) -> Option<ResolveCompletion> {
+        if self.resolver.is_none() {
+            return Some(ResolveCompletion::Failed(Error::new(
+                ErrorKind::Unsupported,
+                "public hostname resolution is not available on this Engine",
+            )));
+        }
+        if request
+            .total_timeout()
+            .and_then(|timeout| accepted_at.checked_add(timeout))
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            return Some(public_total_timeout());
+        }
+        let key = match self.next_resolve_key() {
+            Ok(key) => key,
+            Err(error) => return Some(ResolveCompletion::Failed(error)),
+        };
+        if let Err(error) = self
+            .resolver
+            .as_ref()
+            .expect("resolver presence checked")
+            .public_resolve(
+                key,
+                PublicResolveSpec {
+                    host: request.name().to_owned(),
+                    family: request.address_family(),
+                    order: request.address_order(),
+                    cache_mode: request.cache_mode(),
+                    max_results,
+                    expand_search: request.applies_search_suffixes(),
+                },
+            )
+        {
+            return Some(ResolveCompletion::Failed(error));
+        }
+        self.request_to_public.insert(id, key);
+        self.public_lookups.insert(
+            key,
+            PublicLookup {
+                request_id: id,
+                total_deadline: request
+                    .total_timeout()
+                    .and_then(|timeout| accepted_at.checked_add(timeout)),
+            },
+        );
+        None
+    }
+
+    fn poll_resolves(&mut self) -> Result<Vec<BackendResolveCompletion>, Error> {
+        self.drain_dns()?;
+        Ok(std::mem::take(&mut self.pending_public))
+    }
+}
+
+fn public_total_timeout() -> ResolveCompletion {
+    ResolveCompletion::Failed(Error::timeout(
+        TimeoutKind::Total,
+        "the public resolution total timeout expired",
+    ))
 }
 
 fn native_internal_error(failure: NativeFailure) -> Error {

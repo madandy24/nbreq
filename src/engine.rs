@@ -113,6 +113,7 @@ impl Engine {
         mut backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
         let streaming_supported = backend.supports_streaming();
+        let public_resolver_supported = backend.supports_public_resolver();
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
             return Err(Error::new(
@@ -138,6 +139,7 @@ impl Engine {
             streaming_supported,
             Arc::clone(&metrics),
         );
+        shared.set_public_resolver_supported(public_resolver_supported);
         backend.attach_metrics(metrics);
         let runtime = match config.run_mode() {
             RunMode::Spawned => {
@@ -206,6 +208,7 @@ impl Engine {
             Arc::clone(&metrics),
         )?;
         let streaming_supported = factory.supports_streaming();
+        let public_resolver_supported = factory.supports_public_resolver();
         let shared = Shared::new(
             id,
             &config,
@@ -213,6 +216,7 @@ impl Engine {
             streaming_supported,
             metrics,
         );
+        shared.set_public_resolver_supported(public_resolver_supported);
         let reactor_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
@@ -263,7 +267,8 @@ impl Engine {
 
     /// Issues a cheap cloneable hostname-resolution handle for this Engine.
     ///
-    /// The ticket is always issued. Public resolve operations currently fail
+    /// The ticket is always issued. Native Engines that own the private DNS service accept public
+    /// resolutions. Engines without that service reject new work with
     /// [`ErrorKind::Unsupported`] before identity allocation, admission, callback reservation, or
     /// command queuing.
     ///
@@ -320,9 +325,6 @@ impl Engine {
 
     /// Cancels HTTP requests, public resolutions, pending connects, and live standalone TCP
     /// accepted before the cancellation barrier while keeping the Engine alive.
-    ///
-    /// F0 has no accepted public DNS or standalone TCP work, so this remains an HTTP-domain cancel
-    /// in practice. The documented intent is engine-wide.
     pub fn cancel_all(&self) {
         self.shared.cancel_all();
     }

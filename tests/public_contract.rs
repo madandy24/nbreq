@@ -186,7 +186,7 @@ fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
 
 #[test]
 #[cfg(feature = "native")]
-fn resolver_and_tcp_tickets_are_engine_issued_and_unavailable_before_admission() {
+fn resolver_tickets_are_live_on_native_engines_and_tcp_stays_unwired() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let resolver = engine.resolver();
     let tcp = engine.tcp_connector();
@@ -198,20 +198,12 @@ fn resolver_and_tcp_tickets_are_engine_issued_and_unavailable_before_admission()
     assert_eq!(before.current().inflight_resolutions(), 0);
     assert_eq!(before.current().standalone_tcp_connections(), 0);
 
-    let resolve = nbreq::ResolveRequest::hostname("example.com")
-        .build()
-        .expect("resolve request must build");
-    let resolve_error = resolver
-        .submit(resolve)
-        .expect_err("F0 public DNS must reject before admission");
-    assert_eq!(resolve_error.kind(), ErrorKind::Unsupported);
-
     let connect = nbreq::TcpConnectRequest::hostname("example.com", 9)
         .build()
         .expect("connect request must build");
     let connect_error = tcp
         .submit(connect)
-        .expect_err("F0 standalone TCP must reject before admission");
+        .expect_err("standalone TCP must reject before admission");
     assert_eq!(connect_error.kind(), ErrorKind::Unsupported);
 
     let after = engine.metrics();
