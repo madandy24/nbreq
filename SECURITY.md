@@ -16,7 +16,7 @@ through a private channel rather than publishing the details.
 
 ## Supported versions
 
-NBReq 0.1.0 is the initial supported release. As later 0.x versions are published, only the latest
+NBReq 0.1.1 is the current supported release. As later 0.x versions are published, only the latest
 published 0.x release is supported; users of older 0.x releases may be asked to upgrade before
 receiving a fix. This policy will be revisited before 1.0.
 

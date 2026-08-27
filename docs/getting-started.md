@@ -216,7 +216,7 @@ The historical curl Multi pilot is not part of the public crate feature matrix. 
 locally patched binding and remains project-history/reference evidence rather than a supported
 transport choice.
 
-NBReq 0.1.0 supports Windows 10 x64 or later and native Linux x64 built against an Ubuntu 20.04 ABI
+NBReq 0.1.1 supports Windows 10 x64 or later and native Linux x64 built against an Ubuntu 20.04 ABI
 baseline. The Windows x86 GDS integration also passes its controlled compatibility workload under
 Ubuntu 20.04's stock Wine 5; that is compatibility evidence for the Windows build, not a claim that
 every Wine release and host combination is supported.
