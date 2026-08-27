@@ -8,9 +8,9 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(test)]
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -226,6 +226,7 @@ struct PendingQuery {
     wire: Vec<u8>,
     attempts_sent: u8,
     servers_tried: usize,
+    last_udp_generation: u64,
     next_attempt: Instant,
     transport: QueryTransport,
     policy: QueryPolicy,
@@ -252,6 +253,7 @@ struct ResolverState {
     next_id: u16,
     next_tcp_token: usize,
     current_nameserver: usize,
+    udp_generation: u64,
     cache: DnsCache,
     before_first_poll: Option<Sender<()>>,
 }
@@ -459,6 +461,7 @@ impl NativeResolver {
             next_id: u16::from_ne_bytes(initial_id),
             next_tcp_token: FIRST_TCP_TOKEN,
             current_nameserver,
+            udp_generation: 1,
             cache: DnsCache::new(),
             before_first_poll,
         };
@@ -692,8 +695,11 @@ fn resolver_main(
         let socket_ready = events
             .iter()
             .any(|event| event.token == SOCKET_TOKEN && event.readable);
-        if socket_ready {
-            receive_packets(socket, &mut state, &results, &result_waker, poll, &config);
+        if socket_ready
+            && receive_packets(socket, &mut state, &results, &result_waker, poll, &config)
+            && replace_current_nameserver(socket, poll, &config, state.current_nameserver)
+        {
+            advance_udp_generation(&mut state.udp_generation);
         }
         let tcp_events = events
             .iter()
@@ -1092,6 +1098,7 @@ fn prepare_name_query(
             wire,
             attempts_sent: 0,
             servers_tried: 1,
+            last_udp_generation: 0,
             next_attempt: Instant::now(),
             transport: QueryTransport::Udp,
             policy,
@@ -1185,6 +1192,10 @@ fn transmit_due(
             matches!(query.transport, QueryTransport::Udp) && query.attempts_sent >= config.attempts
         });
         if exhausted {
+            let exhausted_generation = state
+                .pending
+                .get(&id)
+                .map_or(0, |query| query.last_udp_generation);
             let may_try_another = state
                 .pending
                 .get(&id)
@@ -1192,6 +1203,7 @@ fn transmit_due(
             if may_try_another
                 && advance_nameserver(socket, poll, config, &mut state.current_nameserver)
             {
+                advance_udp_generation(&mut state.udp_generation);
                 for query in state.pending.values_mut() {
                     if matches!(query.transport, QueryTransport::Udp) {
                         query.attempts_sent = 0;
@@ -1200,6 +1212,11 @@ fn transmit_due(
                     }
                 }
             } else {
+                if exhausted_generation == state.udp_generation
+                    && replace_current_nameserver(socket, poll, config, state.current_nameserver)
+                {
+                    advance_udp_generation(&mut state.udp_generation);
+                }
                 if let Some(query) = state.pending.remove(&id) {
                     state.by_key.remove(&query.key);
                     send_result(
@@ -1235,10 +1252,12 @@ fn transmit_due(
         match socket.send(&query.wire) {
             Ok(written) if written == query.wire.len() => {
                 query.attempts_sent += 1;
+                query.last_udp_generation = state.udp_generation;
                 query.next_attempt = now.checked_add(config.attempt_timeout).unwrap_or(now);
             }
             Ok(_) => {
                 query.attempts_sent = config.attempts;
+                query.last_udp_generation = state.udp_generation;
                 query.next_attempt = now;
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -1246,10 +1265,41 @@ fn transmit_due(
             }
             Err(_) => {
                 query.attempts_sent = config.attempts;
+                query.last_udp_generation = state.udp_generation;
                 query.next_attempt = now;
             }
         }
     }
+}
+
+fn advance_udp_generation(generation: &mut u64) {
+    *generation = generation.wrapping_add(1);
+    if *generation == 0 {
+        *generation = 1;
+    }
+}
+
+fn replace_current_nameserver(
+    socket: &mut UdpSocket,
+    poll: &mut NativePoll,
+    config: &ResolverConfig,
+    current: usize,
+) -> bool {
+    let Some(nameserver) = config.nameservers.get(current).copied() else {
+        return false;
+    };
+    let Ok(mut replacement) = connect_one_nameserver(nameserver) else {
+        return false;
+    };
+    if poll
+        .register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
+        .is_err()
+    {
+        return false;
+    }
+    let _deregister_result = poll.deregister(socket);
+    *socket = replacement;
+    true
 }
 
 fn advance_nameserver(
@@ -1284,13 +1334,14 @@ fn receive_packets(
     result_waker: &NativeWaker,
     poll: &mut NativePoll,
     config: &ResolverConfig,
-) {
+) -> bool {
     let mut buffer = [0_u8; DNS_PACKET_LIMIT];
     loop {
         let length = match socket.recv(&mut buffer) {
             Ok(length) => length,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-            Err(_) => return,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return false,
+            Err(error) if !udp_receive_error_poisons_generation(error.kind()) => continue,
+            Err(_) => return true,
         };
         if length < 2 {
             continue;
@@ -1335,6 +1386,10 @@ fn receive_packets(
         }
         finish_answer(query, result, state, results, result_waker);
     }
+}
+
+fn udp_receive_error_poisons_generation(kind: io::ErrorKind) -> bool {
+    !matches!(kind, io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
 }
 
 fn finish_answer(
@@ -2493,6 +2548,13 @@ mod tests {
         joined: Option<JoinHandle<()>>,
     }
 
+    struct SourceGenerationDnsFixture {
+        address: SocketAddr,
+        stop: Sender<()>,
+        observed: Arc<Mutex<Vec<(Name, SocketAddr)>>>,
+        joined: Option<JoinHandle<()>>,
+    }
+
     impl ScriptedDnsFixture {
         fn new(
             request_count: usize,
@@ -2531,6 +2593,106 @@ mod tests {
         fn drop(&mut self) {
             if let Some(joined) = self.joined.take() {
                 joined.join().expect("scripted DNS fixture must join");
+            }
+        }
+    }
+
+    impl SourceGenerationDnsFixture {
+        fn answering_new_source_ports(address: Ipv4Addr) -> Self {
+            let socket =
+                StdUdpSocket::bind("127.0.0.1:0").expect("source-generation DNS fixture must bind");
+            socket
+                .set_read_timeout(Some(Duration::from_millis(25)))
+                .expect("source-generation DNS timeout must configure");
+            let fixture_address = socket
+                .local_addr()
+                .expect("source-generation DNS fixture address");
+            let (stop_tx, stop_rx) = test_channel::channel();
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let thread_observed = Arc::clone(&observed);
+            let joined = thread::spawn(move || {
+                let mut first_peer = None;
+                let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        return;
+                    }
+                    let (length, peer) = match socket.recv_from(&mut buffer) {
+                        Ok(received) => received,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => {
+                            panic!("source-generation DNS fixture receive failed: {error}")
+                        }
+                    };
+                    let request = Message::from_vec(&buffer[..length])
+                        .expect("source-generation DNS query must parse");
+                    let query = request
+                        .query()
+                        .expect("source-generation DNS query must exist")
+                        .clone();
+                    thread_observed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((query.name().clone(), peer));
+                    match first_peer {
+                        None => first_peer = Some(peer),
+                        Some(poisoned_peer) if peer == poisoned_peer => {
+                            // The first query proves this generation initially worked. All later
+                            // packets from that source port model a route/socket generation that
+                            // became silently unusable after an adapter transition.
+                            continue;
+                        }
+                        Some(_) => {}
+                    }
+                    let mut response = Message::new();
+                    response
+                        .set_id(request.id())
+                        .set_message_type(MessageType::Response)
+                        .set_recursion_available(true)
+                        .add_query(query.clone())
+                        .add_answer(Record::from_rdata(
+                            query.name().clone(),
+                            60,
+                            RData::A(A(address)),
+                        ));
+                    let wire = response
+                        .to_vec()
+                        .expect("source-generation DNS response must encode");
+                    socket
+                        .send_to(&wire, peer)
+                        .expect("source-generation DNS response must send");
+                }
+            });
+            Self {
+                address: fixture_address,
+                stop: stop_tx,
+                observed,
+                joined: Some(joined),
+            }
+        }
+
+        fn observations(&self) -> Vec<(Name, SocketAddr)> {
+            self.observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Drop for SourceGenerationDnsFixture {
+        fn drop(&mut self) {
+            let _send_result = self.stop.send(());
+            if let Some(joined) = self.joined.take() {
+                joined
+                    .join()
+                    .expect("source-generation DNS fixture must join");
             }
         }
     }
@@ -2630,6 +2792,22 @@ mod tests {
         assert!(message.answers().is_empty());
         assert!(message.name_servers().is_empty());
         assert!(message.additionals().is_empty());
+    }
+
+    #[test]
+    fn interrupted_udp_receive_does_not_poison_the_transport_generation() {
+        assert!(!udp_receive_error_poisons_generation(
+            io::ErrorKind::WouldBlock
+        ));
+        assert!(!udp_receive_error_poisons_generation(
+            io::ErrorKind::Interrupted
+        ));
+        assert!(udp_receive_error_poisons_generation(
+            io::ErrorKind::ConnectionReset
+        ));
+        assert!(udp_receive_error_poisons_generation(
+            io::ErrorKind::NetworkUnreachable
+        ));
     }
 
     #[test]
@@ -3003,6 +3181,27 @@ mod tests {
         }
     }
 
+    fn wait_for_resolutions(
+        owner: &mut NativeReactor,
+        resolver: &NativeResolver,
+        expected: usize,
+    ) -> Vec<ResolveResult> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut results = Vec::with_capacity(expected);
+        loop {
+            results.extend(resolver.drain().expect("resolver results must remain live"));
+            if results.len() == expected {
+                return results;
+            }
+            assert!(
+                results.len() < expected,
+                "resolver returned more terminals than accepted lookups"
+            );
+            assert!(Instant::now() < deadline, "scripted resolutions timed out");
+            owner.poll(deadline).expect("owner wake poll must succeed");
+        }
+    }
+
     #[test]
     fn resolver_follows_cname_and_falls_back_from_a_to_aaaa() {
         let alias = fqdn("alias-only.test");
@@ -3107,6 +3306,186 @@ mod tests {
         resolver
             .shutdown()
             .expect("multi-server resolver must join");
+    }
+
+    #[test]
+    fn exhausted_same_server_generation_is_replaced_before_the_next_lookup() {
+        let fixture =
+            SourceGenerationDnsFixture::answering_new_source_ports(Ipv4Addr::new(127, 0, 0, 44));
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver =
+            NativeResolver::new(ResolverConfig::for_test(fixture.address), owner.waker())
+                .expect("generation-recovery resolver must construct");
+
+        resolver
+            .resolve(ResolveKey(90), "generation-prime.test".to_owned())
+            .expect("prime resolution must submit");
+        assert_eq!(
+            wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect("prime resolution must prove the initial socket")
+                .addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 44))]
+        );
+
+        resolver
+            .resolve(ResolveKey(91), "generation-exhaust.test".to_owned())
+            .expect("silent-generation resolution must submit");
+        let failure = wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect_err("the silently poisoned generation must exhaust once");
+        assert!(
+            failure.message.contains("did not answer"),
+            "unexpected silent-generation failure: {}",
+            failure.message
+        );
+
+        resolver
+            .resolve(ResolveKey(92), "generation-recovery.test".to_owned())
+            .expect("post-exhaustion resolution must submit");
+        assert_eq!(
+            wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect("the next lookup must use a replacement socket generation")
+                .addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 44))]
+        );
+        let observations = fixture.observations();
+        let prime_peer = observations
+            .iter()
+            .find_map(|(name, peer)| (name == &fqdn("generation-prime.test")).then_some(*peer))
+            .expect("fixture must observe the prime generation");
+        let recovery_peer = observations
+            .iter()
+            .find_map(|(name, peer)| (name == &fqdn("generation-recovery.test")).then_some(*peer))
+            .expect("fixture must observe the replacement generation");
+        assert_ne!(
+            prime_peer, recovery_peer,
+            "recovery must use a new UDP source generation"
+        );
+        let exhausted = observations
+            .iter()
+            .filter(|(name, _)| name == &fqdn("generation-exhaust.test"))
+            .collect::<Vec<_>>();
+        assert!(
+            !exhausted.is_empty(),
+            "fixture must observe the exhausted lookup on the original generation"
+        );
+        assert!(
+            exhausted.iter().all(|(_, peer)| *peer == prime_peer),
+            "the already-failed lookup must not replay on the replacement generation"
+        );
+        resolver
+            .shutdown()
+            .expect("generation-recovery resolver must join");
+    }
+
+    #[test]
+    fn public_resolution_uses_the_replacement_generation() {
+        let fixture =
+            SourceGenerationDnsFixture::answering_new_source_ports(Ipv4Addr::new(127, 0, 0, 46));
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver =
+            NativeResolver::new(ResolverConfig::for_test(fixture.address), owner.waker())
+                .expect("public generation-recovery resolver must construct");
+        let public_spec = |host: &str| PublicResolveSpec {
+            host: host.to_owned(),
+            family: AddressFamily::Ipv4,
+            order: AddressOrder::Ipv4ThenIpv6,
+            cache_mode: CacheMode::Bypass,
+            max_results: 8,
+            expand_search: false,
+        };
+
+        resolver
+            .public_resolve(ResolveKey(93), public_spec("public-generation-prime.test"))
+            .expect("public prime resolution must submit");
+        assert!(matches!(
+            wait_for_resolution(&mut owner, &resolver).public,
+            Some(PublicLookupOutcome::Completed {
+                status: ResolveStatus::Answer,
+                ref addresses,
+                ..
+            }) if addresses == &[IpAddr::V4(Ipv4Addr::new(127, 0, 0, 46))]
+        ));
+
+        resolver
+            .public_resolve(
+                ResolveKey(94),
+                public_spec("public-generation-exhaust.test"),
+            )
+            .expect("public silent-generation resolution must submit");
+        assert!(matches!(
+            wait_for_resolution(&mut owner, &resolver).public,
+            Some(PublicLookupOutcome::Failed(ref error))
+                if error.dns_failure() == Some(DnsFailure::NoNameserver)
+        ));
+
+        resolver
+            .public_resolve(
+                ResolveKey(95),
+                public_spec("public-generation-recovery.test"),
+            )
+            .expect("public post-exhaustion resolution must submit");
+        assert!(matches!(
+            wait_for_resolution(&mut owner, &resolver).public,
+            Some(PublicLookupOutcome::Completed {
+                status: ResolveStatus::Answer,
+                ref addresses,
+                ..
+            }) if addresses == &[IpAddr::V4(Ipv4Addr::new(127, 0, 0, 46))]
+        ));
+        resolver
+            .shutdown()
+            .expect("public generation-recovery resolver must join");
+    }
+
+    #[test]
+    fn concurrent_exhaustion_has_one_terminal_per_lookup_and_later_work_recovers() {
+        const CONCURRENT: u64 = 16;
+        let fixture =
+            SourceGenerationDnsFixture::answering_new_source_ports(Ipv4Addr::new(127, 0, 0, 45));
+        let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+        let mut resolver =
+            NativeResolver::new(ResolverConfig::for_test(fixture.address), owner.waker())
+                .expect("concurrent recovery resolver must construct");
+
+        resolver
+            .resolve(ResolveKey(100), "concurrent-prime.test".to_owned())
+            .expect("concurrent prime must submit");
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("concurrent prime must prove the initial generation");
+
+        for index in 0..CONCURRENT {
+            resolver
+                .resolve(
+                    ResolveKey(101 + index),
+                    format!("concurrent-exhaust-{index}.test"),
+                )
+                .expect("concurrent silent lookup must submit");
+        }
+        let failed = wait_for_resolutions(&mut owner, &resolver, CONCURRENT as usize);
+        assert!(failed.iter().all(|result| result.result.is_err()));
+        let terminal_keys = failed
+            .iter()
+            .map(|result| result.key)
+            .collect::<HashSet<_>>();
+        assert_eq!(terminal_keys.len(), CONCURRENT as usize);
+
+        resolver
+            .resolve(ResolveKey(200), "concurrent-recovery.test".to_owned())
+            .expect("concurrent post-exhaustion lookup must submit");
+        assert_eq!(
+            wait_for_resolution(&mut owner, &resolver)
+                .result
+                .expect("later lookup must use the replacement generation")
+                .addresses,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 45))]
+        );
+        resolver
+            .shutdown()
+            .expect("concurrent recovery resolver must join");
     }
 
     #[test]
