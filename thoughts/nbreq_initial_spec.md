@@ -1088,6 +1088,18 @@ completed public resolver results but fail a hostname connect because no address
 future per-connect DNS policy is expressed through new builder options rather than silently copying
 HTTP's private A/AAAA fallback.
 
+The proposed F2.4 owner seam keeps hostname connect as one TCP operation rather than adapting a
+public `ResolveCompletion`. Admission borrows one `max_inflight_resolutions` permit before ID or
+command enqueue and stores it on the connect state. DNS terminal releases that permit before the
+first socket attempt. The shared `inflight_resolutions` occupancy gauge/high-water includes these
+hostname borrowers, but `resolutions_*` operation counters remain exclusive to calls made through
+`Resolver`; `tcp_connects_*` counts the enclosing connect exactly once. Literal connects do not
+borrow DNS capacity. One absolute `TimeoutKind::Connect` deadline covers queued DNS and every
+serial address attempt. Only connect-stage socket failure advances to the next address; internal
+reactor/registration failure and deadline expiry fail immediately. Semantic DNS negatives become a
+DNS-stage TCP failure without inventing `DnsFailure`; operational resolver failures retain their
+payload-free DNS classification. This is a reviewed checkpoint, not implemented hostname wiring.
+
 `TcpFinishError` distinguishes already-closed write half, reset, Engine stop, manual-mode
 rejection, transport failure, cancellation, and `Unsupported` on Engines without the native TCP
 owner. Blocking connected `read`, `send`, and `finish` reject manual mode rather than driving it.
@@ -1154,9 +1166,11 @@ resolution and the remaining platform gates remain.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
-literal F2.2 proving path once accepted by a native Engine. Occupancy gauges `inflight_resolutions`,
-`standalone_tcp_connections`, and `reserved_tcp_queue_bytes`. Live TCP lifetime/capacity is
-`standalone_tcp_connections`, not the attempt counters.
+accepted standalone connect once. The `inflight_resolutions` occupancy gauge covers public Resolver
+operations and, once F2.4 is wired, hostname-connect DNS borrowers because both consume the same
+bounded admission resource; this does not inflate the public operation counters. Other occupancy
+gauges are `standalone_tcp_connections` and `reserved_tcp_queue_bytes`. Live TCP lifetime/capacity
+is `standalone_tcp_connections`, not the attempt counters.
 
 `Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
 standalone TCP). Public resolutions accepted on a native Engine with the DNS owner participate in
