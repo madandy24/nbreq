@@ -1132,8 +1132,9 @@ lifecycle, reserves the callback-event permit, and increments callback activatio
 the registry core lock. A deterministic overlapping-shutdown regression proves shutdown waits for
 that activation and the accepted callback receives `EngineStopped`. The repair passed focused,
 repeated, and complete Windows verification, and F2.1 is accepted. F2.2 sockets remain unopened.
-Before native-DNS-touching F2.2 work, synchronize accepted resolver
-generation repair `cbafb84` separately into this F1 `b163266`-based lineage.
+Accepted resolver-generation repair `cbafb84` was synchronized separately after the F2.1 commit as
+main-line commit `b5811ae`. F2.2 therefore starts from the combined lineage rather than rediscovering
+or burying that network-generation rule in socket wiring.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations once F1 wiring is live;
