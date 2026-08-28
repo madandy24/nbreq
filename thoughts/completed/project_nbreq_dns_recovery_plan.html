@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NBReq DNS Transport Recovery Plan</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #172033;
+    --muted: #64748b;
+    --line: #d9e1ea;
+    --panel: #ffffff;
+    --page: #f6f7f9;
+    --blue: #2563eb;
+    --red: #b91c1c;
+    --red-bg: #fef2f2;
+    --amber: #a16207;
+    --amber-bg: #fffbeb;
+    --green: #15803d;
+    --green-bg: #f0fdf4;
+    --purple: #7e22ce;
+    --purple-bg: #faf5ff;
+    --slate: #475569;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; line-height: 1.5; color: var(--ink); background: var(--page); }
+  h1 { font-size: 1.9rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.25rem; margin-top: 2rem; margin-bottom: 0.55rem; border-bottom: 2px solid var(--line); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.25rem; margin-bottom: 0.35rem; color: #334155; }
+  p { margin: 0.45rem 0; }
+  ul, ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+  li { margin-bottom: 0.35rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0.75rem 0 1.25rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e4eaf1; font-size: 0.9rem; vertical-align: top; }
+  th { background: #eef3f8; font-weight: 650; }
+  tr:last-child td { border-bottom: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+  pre { background: #eef3f8; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.84rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 1rem; border-radius: 8px; margin: 1rem 0 1.35rem; }
+  .panel h3:first-child { margin-top: 0; }
+  .callout { border-left: 4px solid var(--blue); padding: 0.75rem 0.9rem; background: #eff6ff; border-radius: 0 6px 6px 0; margin: 0.85rem 0; }
+  .danger { border-left-color: var(--red); background: var(--red-bg); }
+  .warning { border-left-color: var(--amber); background: var(--amber-bg); }
+  .success { border-left-color: var(--green); background: var(--green-bg); }
+  .future { border-left-color: var(--purple); background: var(--purple-bg); }
+  .small { font-size: 0.86rem; color: var(--muted); }
+  .status { display: inline-block; white-space: nowrap; border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
+  .status-open { color: #9f1239; background: #ffe4e6; }
+  .status-progress { color: #a16207; background: #fef3c7; }
+  .status-done { color: #166534; background: #dcfce7; }
+  .status-deferred { color: var(--slate); background: #e2e8f0; }
+  .nowrap { white-space: nowrap; }
+  .toc { columns: 2; column-gap: 2rem; }
+  @media (max-width: 780px) {
+    body { margin: 1rem; }
+    .toc { columns: 1; }
+    table { display: block; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+
+<h1>NBReq DNS Transport Recovery Plan</h1>
+<div class="subtitle">
+  Incident: 2026-08-26/27 &nbsp;|&nbsp;
+  Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
+  Parent tracker: <span class="mono">thoughts/project_nbreq_followup_plan.html</span> &nbsp;|&nbsp;
+  Status: <span class="status status-done">D0–D7 accepted; nbreq 0.1.1 published, registry-verified, and live in the ordinary GDS consumer path</span>
+</div>
+
+<div class="callout danger">
+  <strong>Priority:</strong> a long-lived native Engine remained unable to resolve names for at least 16 hours after network loss while the configured nameserver, Windows resolver, and fresh NBReq Engines all worked. Treat this as a probable long-lived resolver transport-recovery defect and a candidate <span class="mono">0.1.x</span> repair. Pause F2 implementation and keep its dirty working tree isolated until this incident is reproduced, bounded, and repaired.
+</div>
+
+<div class="panel">
+  <h3>Purpose</h3>
+  <p>This tracker preserves the production evidence, separates facts from inference, defines a deterministic synthetic test plus real platform gates, and isolates a minimal release repair from the uncommitted F2 TCP work. It does not assume that the stale component is specifically Windows routing, Mio/AFD registration, the UDP source port, or NBReq state; replacement of the connected UDP socket and its poll registration deliberately covers all of those candidates.</p>
+</div>
+
+<h2 id="contents">Contents</h2>
+<ol class="toc">
+  <li><a href="#boundary">Boundary and safety</a></li>
+  <li><a href="#incident">Incident record</a></li>
+  <li><a href="#assessment">Assessment</a></li>
+  <li><a href="#audit">Current implementation audit</a></li>
+  <li><a href="#strategy">Worktree and release strategy</a></li>
+  <li><a href="#tests">Layered test programme</a></li>
+  <li><a href="#repair">Recovery policy</a></li>
+  <li><a href="#packages">Work packages</a></li>
+  <li><a href="#acceptance">Acceptance matrix</a></li>
+  <li><a href="#questions">Open decisions</a></li>
+  <li><a href="#evidence">Evidence log</a></li>
+</ol>
+
+<h2 id="boundary">1. Boundary and Safety</h2>
+<ul>
+  <li>The immediate subject is the Engine-owned native DNS UDP transport used by native HTTP and, on current <span class="mono">main</span>, the public Resolver.</li>
+  <li>DNS answer, NXDOMAIN, NoData, TTL, cache-mode, CNAME, UDP/TCP fallback, cancellation, and HTTP error contracts do not change.</li>
+  <li>Transport/no-answer failures are never promoted into positive or negative DNS cache entries.</li>
+  <li>The first repair is bounded socket/path recovery. Windows network-change notification, dynamic search-suffix changes, and proactive HTTP pool invalidation are later layers unless evidence makes them necessary.</li>
+  <li>Do not disturb the surviving incident process until the optional packet capture is complete or the owner decides its diagnostic value is exhausted.</li>
+  <li>Do not block DNS or alter routing for the whole Ubuntu host. Use a network namespace so the PuTTY/Plink bridge and other host services remain unaffected.</li>
+  <li>Do not mix the repair into the uncommitted F2.1 working tree.</li>
+</ul>
+
+<h2 id="incident">2. Incident Record</h2>
+<table>
+<tr><th>Observation</th><th>Recorded evidence</th></tr>
+<tr><td>Long-lived process</td><td><span class="mono">gds.exe</span> started at 19:42:35 and retained one process-wide NBReq Engine.</td></tr>
+<tr><td>Last known success</td><td>Both WebRPC hosts polled successfully through 23:10:39.</td></tr>
+<tr><td>Failure onset</td><td>Requests timed out at 23:11:01. From 23:11:04, both <span class="mono">gds.caverock.com</span> and <span class="mono">gds2.caverock.com</span> failed at <span class="mono">TransportStage::Dns</span>.</td></tr>
+<tr><td>Persistence</td><td>Failure continued for at least 16h39m and produced 23,973 DNS-failure log entries.</td></tr>
+<tr><td>Consumer recycle</td><td>A DPWebRPC component recycle at 23:13 did not recreate the process-wide Engine. Internet availability at that exact moment is not proven.</td></tr>
+<tr><td>Network reacquisition</td><td>The current Wi-Fi DHCP lease was obtained at 01:57:57, consistent with adapter/network reacquisition after the outage. This is correlation, not proof of the triggering transition.</td></tr>
+<tr><td>Old resolver transport</td><td>The stuck process still owns connected UDP socket <span class="mono">0.0.0.0:54449 -&gt; 192.168.0.1:53</span>.</td></tr>
+<tr><td>Current configuration</td><td>The active adapter still uses <span class="mono">192.168.0.1</span> as gateway and sole DNS server.</td></tr>
+<tr><td>System controls</td><td>Direct <span class="mono">nslookup</span> against <span class="mono">192.168.0.1</span> and Windows <span class="mono">GetHostAddresses</span> resolve both names.</td></tr>
+<tr><td>Fresh NBReq controls</td><td>Fresh processes using exact crates.io NBReq 0.1.0 resolved and reached both hosts, receiving HTTP 403 from <span class="mono">/</span>; DNS, TCP, and TLS therefore worked in those fresh processes.</td></tr>
+<tr><td>Divergence</td><td>The original Engine continued reporting DNS failure during the successful fresh-process probes.</td></tr>
+<tr><td>Packet capture</td><td>A 45-second all-component <span class="mono">pktmon</span> capture filtered to the surviving <span class="mono">54449 -&gt; 53</span> flow contained zero packets while GDS logged paired DNS failures every five seconds. A second port-53 control capture immediately observed fresh <span class="mono">nslookup</span> queries and replies on new source ports while the same GDS failures continued; port 54449 remained absent.</td></tr>
+<tr><td>Binary provenance</td><td>The live DLL was built locally on 25 August and is not an authenticated crates.io artifact. The incident report states the relevant native DNS socket lifecycle is unchanged from <span class="mono">v0.1.0</span>; D0 must verify the exact source delta before a published-version claim.</td></tr>
+</table>
+
+<h2 id="assessment">3. Assessment</h2>
+<div class="callout success">
+  <strong>Strong conclusion:</strong> the configured DNS server address was still valid, and resolver state associated with the old Engine differed from fresh working Engines in the same process environment and time window.
+</div>
+<p>The evidence makes stale negative caching and stale nameserver address unlikely. The capture further proves that sampled failed lookups from the old Engine did not enter Windows' monitored packet path, while fresh DNS traffic crossed that path in both directions. The defect therefore precedes wire transmission; it is not merely a lost router reply or unread response. The remaining candidates are concentrated above that boundary:</p>
+<ul>
+  <li>the old connected UDP socket may reject sends immediately after retaining unusable routing/interface state;</li>
+  <li>a persistent socket error may be ignored or converted into repeated DNS failures without socket replacement;</li>
+  <li>the resolver state machine may stop attempting UDP sends while continuing to terminalize queued lookups;</li>
+  <li>stale poll/registration state may contribute to the resolver's failure to return to a send-capable generation;</li>
+  <li>another internal resolver transport state may fail to return to a usable generation.</li>
+</ul>
+<p>Replacing both the socket and poll registration is the correct first recovery primitive regardless of which candidate is responsible. Exact <span class="mono">v0.1.0</span> adapter-cycle reproduction remains required before describing the published artifact as conclusively reproduced.</p>
+
+<h3>Completed live packet capture</h3>
+<p>The surviving process was captured with Windows <span class="mono">pktmon</span> across all components. The diagnostic filter was equivalent to:</p>
+<pre><code>udp.port == 54449 &amp;&amp; udp.port == 53 &amp;&amp; ip.addr == 192.168.0.1</code></pre>
+<table>
+<tr><th>Capture result</th><th>Interpretation</th></tr>
+<tr><td><strong>Observed:</strong> no query leaves</td><td>Old socket send, route selection, or internal transmit state is stale. The exact-flow PCAPNG contained zero frames despite DNS failures inside the capture window.</td></tr>
+<tr><td>Query leaves; no reply returns to port 54449</td><td>Network/router/source-port path state is stale even though new source ports work.</td></tr>
+<tr><td>Reply reaches port 54449; NBReq still times out</td><td>Poll registration, readiness delivery, receive path, or internal packet processing is stale.</td></tr>
+</table>
+<p>The positive control captured successful A/AAAA exchanges with <span class="mono">192.168.0.1:53</span> on fresh source ports while GDS continued failing. No packet using source or destination port 54449 appeared in that broader control capture. Local artifacts are retained under <span class="mono">target/dns-recovery/</span>; generated capture files are evidence, not product inputs.</p>
+
+<h2 id="audit">4. Current Implementation Audit</h2>
+<ul>
+  <li>System nameservers are discovered during Engine construction and stored in <span class="mono">ResolverConfig</span>.</li>
+  <li>The resolver creates one nonblocking Mio UDP socket, binds an unspecified local address, <span class="mono">connect()</span>s it to the selected nameserver, and registers it once with the resolver poll owner.</li>
+  <li>Queries retry on that socket according to the configured attempt count and timeout.</li>
+  <li>With multiple configured servers, exhaustion can call <span class="mono">advance_nameserver()</span>, which creates and registers a replacement socket before deregistering and dropping the old one.</li>
+  <li>With one configured server, there is no alternate index, so an exhausted no-answer cycle reports <span class="mono">DnsFailure::NoNameserver</span> without recreating the same-server socket.</li>
+  <li>Hard UDP send errors currently consume/exhaust retry state. UDP receive errors are ignored by returning from the receive loop. Neither path necessarily rebuilds the transport.</li>
+  <li>Transport/no-answer failure does not intentionally populate the DNS positive/negative cache.</li>
+  <li>Resolver shutdown owns and joins the thread; any replacement must remain on that owner and preserve deterministic teardown.</li>
+</ul>
+
+<h2 id="strategy">5. Worktree and Release Strategy</h2>
+<p>The current primary worktree contains uncommitted F2.1 TCP state and a known callback activation/shutdown review hold. Keep it intact.</p>
+<pre><code>git worktree add C:\User\projects\nbreq-dns-recovery `
+  -b codex/dns-recovery-0.1 v0.1.0</code></pre>
+<ul>
+  <li>Implement and verify the minimal published-line repair from the exact <span class="mono">v0.1.0</span> tag.</li>
+  <li>Do not import F1 public Resolver or F2 public TCP APIs into the hotfix merely to make testing easier.</li>
+  <li>After acceptance, forward-port the focused repair and retained tests to current <span class="mono">main</span> in a clean D5 worktree.</li>
+  <li>Do not cherry-pick into or otherwise disturb the dirty F2.1 worktree; it remains preserved and paused.</li>
+  <li>The <span class="mono">0.1.1</span> release lineage is the published <span class="mono">v0.1.0</span> source plus hotfix commit <span class="mono">07128d0</span>, version/lock/release metadata, and the improved README already committed as <span class="mono">789712b</span>. It must not acquire F1 public Resolver or F2 public TCP APIs.</li>
+  <li>The README is a deliberate documentation-only exception: copy and diff that exact improvement into the patch candidate, but do not use it as a route for any other current-main change.</li>
+  <li>A crates.io <span class="mono">0.1.1</span> release remains gated on D5 forward-port proof, exact-candidate package rehearsal, D6 GDS native canary/soak/shutdown/ureq rollback, and explicit owner authorization. This plan does not itself authorize publication.</li>
+  <li>After publication, GDS's ordinary NBReq dependency and lock move to the exact newest released patch, <span class="mono">0.1.1</span>. The unpublished-local build seam exists only to prove the candidate before crates.io can supply it; it is not GDS's steady-state dependency.</li>
+</ul>
+
+<h2 id="tests">6. Layered Test Programme</h2>
+
+<h3>Layer A — Deterministic Rust transport-generation test</h3>
+<p>Add a private test-only socket factory or equivalent narrow seam while continuing to use real Mio UDP sockets and the real resolver poll loop:</p>
+<ol>
+  <li>Generation 1 connects to a permanently silent fixture endpoint.</li>
+  <li>A query exhausts the ordinary retry budget and returns the existing no-answer failure.</li>
+  <li>The resolver must retire generation 1, deregister it, and construct/register generation 2 for the same logical nameserver.</li>
+  <li>Generation 2 connects to a responding fixture endpoint.</li>
+  <li>A subsequent query on the original resolver/Engine succeeds without reconstructing the Engine.</li>
+</ol>
+<p>The seam must not mock DNS parsing, retry state, command queues, polling, terminal delivery, cancellation, or shutdown. It exists only to make transport generations deterministic.</p>
+<p>Required variants:</p>
+<ul>
+  <li>one and multiple logical nameservers;</li>
+  <li>hard send/receive failure where it can be injected without replacing the whole resolver;</li>
+  <li>several simultaneous pending queries while a generation is retired;</li>
+  <li>positive and negative cache entries survive transport replacement unchanged;</li>
+  <li>transport failures are not cached;</li>
+  <li>repeated failure/replacement/recovery cycles do not grow sockets, poll registrations, transaction IDs, commands, or threads;</li>
+  <li>cancel and shutdown during replacement remain prompt and joined.</li>
+</ul>
+
+<h3>Layer B — Ubuntu network namespace</h3>
+<p>Run a prebuilt test executable inside an isolated network namespace with a veth pair and local DNS fixture. The host bridge remains untouched.</p>
+<ol>
+  <li>Prove an original Engine resolves while the path is online.</li>
+  <li>Drop UDP/53 inside the namespace and allow a bounded resolver failure.</li>
+  <li>Restore traffic and require the original Engine to recover; run a fresh Engine control simultaneously.</li>
+  <li>Separately remove/recreate the veth route or interface while the original process remains alive, then require recovery.</li>
+  <li>Repeat one/multiple server cases, outstanding-query and idle-transition cases, cancellation, and shutdown.</li>
+</ol>
+<p>Port blocking proves loss/recovery policy. Destroying and recreating the network path is the closer analogue of adapter/DHCP generation change.</p>
+
+<h3>Layer C — Windows live adapter gate</h3>
+<ol>
+  <li>Use an external consumer built against exact <span class="mono">nbreq 0.1.0</span> to attempt reproduction.</li>
+  <li>Start one Engine online and prove resolution.</li>
+  <li>Disable/disconnect the active adapter long enough for queries to fail.</li>
+  <li>Reconnect and reacquire DHCP without recreating the Engine.</li>
+  <li>Prove a fresh Engine works and require the original Engine to recover.</li>
+  <li>Repeat against the repaired build with one and multiple DNS servers.</li>
+</ol>
+<p>This privileged/disruptive gate is deliberate platform evidence, not an ordinary CI test. A dedicated test adapter is preferred; physical cable/Wi-Fi interruption is acceptable when supervised.</p>
+
+<h3>Layer D — GDS canary and soak</h3>
+<ul>
+  <li>Build an authenticated repaired GDS package without mixing F2.</li>
+  <li>Prove native selection, live polling, authenticated traffic, refresh join, process exit, and ureq rollback.</li>
+  <li>Run a supervised adapter interruption and recovery on the same process.</li>
+  <li>Run an overnight soak after recovery, checking DNS failures, request/POST mapping, callback drain, and normal process shutdown.</li>
+</ul>
+
+<h2 id="repair">7. Recovery Policy</h2>
+
+<h3>R0 — Minimal correctness repair</h3>
+<ul>
+  <li>After a UDP query exhausts the complete configured nameserver retry cycle, retire and recreate the current connected UDP socket and its poll registration, including when only one nameserver exists.</li>
+  <li>The failed query retains its existing terminal and retry budget. Socket recreation prepares subsequent and still-eligible concurrent work; it must not silently double the failed request’s attempts or deadline.</li>
+  <li>Hard UDP send/receive errors poison the current transport generation and trigger bounded replacement rather than leaving the same socket indefinitely. <span class="mono">WouldBlock</span> is ordinary drain/backpressure, and <span class="mono">Interrupted</span> retries the receive syscall without poisoning.</li>
+  <li>Construct/register the replacement before swapping ownership where practical. If replacement fails, retain a classified bounded failure and retry only under an explicit later trigger; do not leak either registration.</li>
+  <li>Pending transaction IDs and DNS cache data belong to resolver state, not the socket generation. Replacement must preserve their ownership while ensuring packets from a retired generation cannot corrupt later queries.</li>
+  <li>Cancellation, resolver panic fail-all, and shutdown remain authoritative and can interrupt replacement.</li>
+</ul>
+
+<h3>R1 — Repeated-generation recovery</h3>
+<ul>
+  <li>Only system-discovered resolver configurations are eligible for live rediscovery. Injected fixtures remain deterministic.</li>
+  <li>After a bounded number of failed socket generations, rediscover Windows/Linux nameservers with backoff/rate limiting.</li>
+  <li>Do not silently change the accepted Engine-time search-suffix snapshot in the initial repair. Nameserver rediscovery and suffix policy are separate decisions.</li>
+  <li>Atomically replace the active nameserver list on the resolver owner. Removed servers cannot retain sockets; new servers enter the existing bounded rotation.</li>
+  <li>Expose enough payload-free diagnostics or metrics to distinguish socket replacement, configuration rediscovery, and terminal no-answer without leaking queried hostnames.</li>
+</ul>
+
+<h3>R2 — Network-generation integration (later)</h3>
+<ul>
+  <li>Evaluate Windows network-change notification as an immediate recovery trigger after R0/R1 correctness is proven.</li>
+  <li>Evaluate a portable internal network-generation signal for proactive idle HTTP connection eviction.</li>
+  <li>Do not make correctness depend solely on notification delivery; bounded failure-triggered recovery remains the fallback.</li>
+  <li>Public API exposure is not required unless operational evidence shows metrics/configuration are insufficient.</li>
+</ul>
+
+<h2 id="packages">8. Work Packages</h2>
+<table>
+<tr><th>ID</th><th>Status</th><th>Scope</th><th>Exit</th></tr>
+<tr><td class="mono nowrap">D0</td><td><span class="status status-done">Complete</span></td><td>Preserve incident evidence, optional packet capture, verify relevant <span class="mono">v0.1.0</span> versus local-build source provenance, create isolated hotfix worktree.</td><td>Evidence is attributable and the repair branch contains no F1/F2 API work.</td></tr>
+<tr><td class="mono nowrap">D1</td><td><span class="status status-done">Red proven</span></td><td>Add deterministic real-socket transport-generation seam and red test on exact <span class="mono">v0.1.0</span>.</td><td>Test proves the original resolver cannot recover because the same-server socket is not recreated.</td></tr>
+<tr><td class="mono nowrap">D2</td><td><span class="status status-done">Accepted</span></td><td>Implement R0 socket/poll replacement and focused concurrency/cache/lifecycle tests.</td><td>D1 and focused stress pass with bounded generations and joined shutdown.</td></tr>
+<tr><td class="mono nowrap">D3</td><td><span class="status status-done">Accepted</span></td><td>Exact-source Windows gate plus external exact-artifact adapter-cycle reproduction/control.</td><td>Original repaired Engine recovers; fresh Engine control agrees; one/multiple servers pass.</td></tr>
+<tr><td class="mono nowrap">D4</td><td><span class="status status-done">Accepted</span></td><td>Ubuntu namespace loss and veth-generation gate, then complete offline verifier.</td><td>Original Engine recovers without affecting host networking; exact archive/toolchain evidence recorded.</td></tr>
+<tr><td class="mono nowrap">D5</td><td><span class="status status-done">Accepted</span></td><td>Forward-port to current <span class="mono">main</span>; prove native HTTP and public Resolver contracts unchanged.</td><td>Current main’s complete dual-platform gate passes; F2 dirty work remains isolated until ready.</td></tr>
+<tr><td class="mono nowrap">D6</td><td><span class="status status-done">Accepted</span></td><td>Prepare the exact <span class="mono">0.1.1</span> candidate from the frozen patch lineage; rehearse its package; then run GDS native recovery canary, soak, shutdown, and ureq rollback.</td><td>Hashed package contents prove no F1/F2 feature uptake; live same-process recovery, roughly 2.5 hours of ordinary traffic, prompt native shutdown, same-package ureq rollback, and final process exit are recorded against the exact candidate.</td></tr>
+<tr><td class="mono nowrap">D7</td><td><span class="status status-done">Accepted</span></td><td>The exact tagged <span class="mono">0.1.1</span> candidate is published, a clean external registry consumer has passed, and GDS's ordinary exact registry pin and lock select <span class="mono">0.1.1</span>.</td><td>crates.io artifact, tag, source hash, external consumer evidence, and the normal GDS registry build all identify the same release.</td></tr>
+<tr><td class="mono nowrap">D8</td><td><span class="status status-deferred">Later</span></td><td>R1 rediscovery, safe metrics, Windows notification, and network-generation pool policy.</td><td>Separate reviewed design and evidence; not required to land the minimal repair unless D2–D7 expose the need.</td></tr>
+</table>
+
+<h2 id="acceptance">9. Acceptance Matrix</h2>
+<table>
+<tr><th>Gate</th><th>Required evidence</th></tr>
+<tr><td>Reproduction honesty</td><td>Exact <span class="mono">0.1.0</span> result is recorded as reproduced or not reproduced. The local incident remains valid evidence but is not relabelled as an authenticated artifact.</td></tr>
+<tr><td>Deterministic recovery</td><td>Real Mio sockets and the real resolver loop prove silent generation → retirement → responsive generation on the original Engine.</td></tr>
+<tr><td>Bounds</td><td>One recovery action per defined exhaustion/error trigger; no unbounded immediate recreation loop, retry extension, queue growth, or transaction-ID leak.</td></tr>
+<tr><td>Cache separation</td><td>Positive/negative entries retain their accepted TTL semantics; transport failures are not cached; recovery does not flush valid cache gratuitously.</td></tr>
+<tr><td>Concurrency</td><td>Multiple pending HTTP/public queries remain exactly-once terminal across replacement, cancel, stop, and response races.</td></tr>
+<tr><td>Lifecycle</td><td>Replacement sockets remain resolver-owned. Repeated Engine construction/shutdown and failure-during-replacement leave no thread, socket, or poll registration.</td></tr>
+<tr><td>Windows</td><td>Exact-source and external-consumer adapter-cycle test; one and multiple DNS servers; old Engine and fresh Engine control.</td></tr>
+<tr><td>Ubuntu</td><td>Network-namespace packet loss plus network-generation test, exact-source archive hash, Rust 1.85, focused stress, and complete offline gate.</td></tr>
+<tr><td>Consumer</td><td>Hashed GDS package proves native recovery, ongoing WebRPC traffic, prompt refresh/shutdown, process exit, and same-package ureq rollback.</td></tr>
+<tr><td>Release</td><td>CI, notices, package contents, external consumer, security checks, docs, and publish dry-run pass. Publication remains a separate explicit authorization.</td></tr>
+</table>
+
+<h2 id="questions">10. Open Decisions</h2>
+<table>
+<tr><th>ID</th><th>Question</th><th>Current recommendation</th></tr>
+<tr><td class="mono nowrap">DQ-01</td><td>Does same-server recreation retry the failed query?</td><td>No for R0. Preserve the configured retry/deadline contract; prepare subsequent and still-eligible concurrent queries to recover. Revisit only if Windows evidence shows one bounded replay is necessary and timeout accounting remains honest.</td></tr>
+<tr><td class="mono nowrap">DQ-02</td><td>What constitutes a poisoned generation?</td><td>A complete all-server no-answer cycle or hard UDP send/receive error. <span class="mono">WouldBlock</span> is ordinary drain completion and <span class="mono">Interrupted</span> retries without poisoning. Malformed/negative DNS replies are protocol/semantic results, not socket poison.</td></tr>
+<tr><td class="mono nowrap">DQ-03</td><td>When is system configuration rediscovered?</td><td>Not in R0. For R1, after a bounded number of failed replacement generations with explicit backoff, system-discovered configurations only.</td></tr>
+<tr><td class="mono nowrap">DQ-04</td><td>Do search suffixes change after rediscovery?</td><td>No in the initial design. Preserve the accepted Engine-time suffix snapshot until a separate public-contract review.</td></tr>
+<tr><td class="mono nowrap">DQ-05</td><td>Are recovery counters public?</td><td>Start with internal/test observability and safe diagnostic text. Add payload-free Engine metrics only if they materially help operators and can be kept backend-honest.</td></tr>
+<tr><td class="mono nowrap">DQ-06</td><td>Does network change proactively clear HTTP idle connections?</td><td>Later R2. Ordinary socket errors already destroy used connections; proactive generation-based eviction is useful but not required for the first DNS repair.</td></tr>
+</table>
+
+<h2 id="evidence">11. Evidence Log</h2>
+<table>
+<tr><th>Date</th><th>Record</th><th>Next action</th></tr>
+<tr><td class="nowrap">2026-08-27</td><td>Production-like GDS soak incident recorded. Old Engine failed DNS for at least 16h39m while the same configured server, Windows resolver, and fresh NBReq 0.1.0 processes worked. Surviving socket is <span class="mono">0.0.0.0:54449 -&gt; 192.168.0.1:53</span>. DHCP reacquisition timestamp is consistent with, but does not prove, the trigger.</td><td>Capture the surviving socket if practical; create isolated <span class="mono">v0.1.0</span> worktree; verify source provenance; build deterministic generation test.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>Live <span class="mono">pktmon</span> evidence completed. Exact-flow capture from 17:28:08.995 to 17:28:54.128 produced zero frames while GDS logged paired DNS failures at five-second intervals. Control capture from 17:30:29.543 to 17:30:50.090 observed successful fresh DNS queries/replies, including source ports 56980 and 56981, while GDS failures continued at 17:30:32, :37, :42, and :47. Port 54449 was absent.</td><td>Preserve the process until provenance and any final non-mutating observations are complete; then reproduce the no-transmit generation deterministically and implement same-server socket/poll replacement.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D1 red phase completed in isolated branch <span class="mono">codex/dns-recovery-tdd</span> at exact release commit <span class="mono">f08ee60</span>. A real loopback DNS fixture answers the initial UDP source generation, then silently blackholes that source port while answering any replacement port. The prime lookup succeeds and one lookup exhausts; the next lookup fails because <span class="mono">v0.1.0</span> reuses the poisoned generation. The intended assertion failed identically in 5/5 Windows runs. Clippy passed, and the other 190 Windows native library tests passed with only the intentionally red test skipped. The exact source archive SHA-256 <span class="mono">7A8676F1F4542CD7F8E7989C5929BB25FE383B71C34B020FD585ACAC25437ECA</span> reproduced the same intended failure 5/5 on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0; its other 187 Ubuntu native library tests passed.</td><td>Review and retain the red test, then implement the minimal bounded same-server socket/poll replacement in D2 without replaying the already-failed lookup.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D2 green phase completed in the same isolated exact-<span class="mono">v0.1.0</span> worktree. Each UDP send records its transport generation. Exhaustion rotates to another configured server when available or creates and registers a fresh same-server UDP socket before dropping the old generation; a hard UDP receive error also retires the generation immediately. The exhausted lookup keeps its original terminal and is not replayed. Concurrent lookups from the retired generation receive one terminal each and cannot each churn another socket. The first exhaustion-path candidate passed 50/50 Windows stress pairs and the complete Windows gate, then exact archive <span class="mono">AD0DD6F9D27621E94A984487480C9CE8006DD5E291854715041750FA80797EF4</span> passed 25/25 Ubuntu pairs and its complete gate. Review then tightened hard-receive handling to match DQ-02. That receive-error candidate passed 25/25 Windows pairs, clippy/fmt/diff checks, and all 20 Windows stages in 48.251s. Exact candidate archive SHA-256 <span class="mono">2AA7D3CFF7FA60E4D09CE750DF4F5E67CF0685A882F72863F6C41DBD1E296555</span> passed 25/25 focused pairs on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0, followed by all 20 Ubuntu stages in 215.215s. The first attached remote command completed but Plink aborted at its one-hour connection lifetime; later gates used detached execution plus retained timestamped logs.</td><td>Review the uncommitted repair. Then run D3 exact-artifact Windows adapter recovery and D4 isolated Ubuntu namespace/veth recovery before building a consumer package.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>Buddy review narrowed DQ-02: <span class="mono">Interrupted</span> retries the receive syscall and does not poison a healthy generation; <span class="mono">WouldBlock</span> remains ordinary drain completion, while reset/unreachable and other hard errors retire the generation. A focused unit test compiles that classification. Windows passed the classification test, 25/25 recovery/concurrency pairs, and 50/50 isolated multi-server rotation runs. One preceding full gate saw a single rotation-fixture timing miss; after the 50-run isolation, all 20 stages passed in 47.861s. Exact final archive SHA-256 <span class="mono">A44136D32FE60BD0C3DA91B730B5CF0B4E1601B7F02E2A1DB6DE9F04687CC277</span> passed the classification test and 25/25 Ubuntu triples (same-server recovery, concurrent exhaustion, and multi-server rotation) on rustc/cargo 1.85.0, followed by all 20 offline stages in 213.607s and a logged <span class="mono">COMPLETE</span>.</td><td>D2 is ready for final review. Do not forward-port or touch GDS until D3 proves original-Engine recovery across a real Windows adapter bounce.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D2 accepted and committed on isolated branch <span class="mono">codex/dns-recovery-tdd</span> as <span class="mono">07128d0</span> (<span class="mono">Fix native DNS recovery after network changes</span>). The hotfix commit contains only <span class="mono">src/backend/native_dns.rs</span>; F1/F2 and GDS remain outside the branch.</td><td>Prepare a standalone persistent-Engine D3 probe from this exact commit, then run the supervised Windows adapter-loss/reacquisition gate before any forward-port.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D3 standalone probe prepared outside the product tree under <span class="mono">target/dns-recovery/d3-probe</span>. It constructs one native Engine before any request, waits while the operator disables the active adapter, then repeatedly requests both production hostnames until the same Engine recovers; a second Enter performs normal shutdown. <span class="mono">--once</span> supplies a fresh-Engine control. Release probe SHA-256 is <span class="mono">04D727BA636FDD68EE3BC38B3FA46FF99C855AE08B887B6A32080E6307047355</span>, built against hotfix commit <span class="mono">07128d0</span>. Online control returned HTTP 403 from both hosts in 361ms/323ms and logged <span class="mono">SHUTDOWN_OK</span>.</td><td>Run the supervised no-request-before-loss adapter bounce. Preserve the persistent probe log, take a fresh <span class="mono">--once</span> control after reacquisition, and confirm normal shutdown. Do not stop the old incident GDS until its remaining evidential value is explicitly released.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D3 accepted on Windows after a supervised real adapter disable/reacquisition. The persistent probe used the release executable SHA-256 <span class="mono">04D727BA636FDD68EE3BC38B3FA46FF99C855AE08B887B6A32080E6307047355</span> built from hotfix <span class="mono">07128d0</span>. Its console recorded <span class="mono">ENGINE_READY_NO_REQUESTS pid=65388</span> at <span class="mono">1787816870905</span>, followed by the no-request adapter-loss barrier; the request loop began at <span class="mono">1787816890732</span>, about 19.8 seconds later. With the adapter unavailable, cycle 4 recorded DNS-stage transport failures for both <span class="mono">gds.caverock.com</span> and <span class="mono">gds2.caverock.com</span>. Without recreating the process or Engine, cycle 5 returned HTTP 403 from both hosts in 177ms/418ms after adapter recovery; cycles 6–11 then returned 403 from both in 40–44ms. The same process logged <span class="mono">STOP_REQUESTED cycles=11 elapsed_ms=36079</span> and <span class="mono">SHUTDOWN_OK</span>. A post-recovery fresh-Engine <span class="mono">--once</span> control (PID 65316) returned 403 from both hosts in 183ms/243ms and logged <span class="mono">SHUTDOWN_OK</span>. PowerShell 5 <span class="mono">Start-Transcript</span> omitted the probe's early native stdout lines and cycles 1–3, but the separately preserved console output supplies the startup and barrier markers; the retained transcript supplies the failure-to-recovery transition and shutdown. The physical gate used the machine's single configured nameserver; the accepted D2 multi-server rotation fixture supplied the corresponding bounded multi-server evidence.</td><td>D3 is complete. The old incident GDS may now be released when convenient. Proceed to D4 isolated Ubuntu namespace/veth recovery before forward-porting or changing GDS.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>The old incident GDS was closed by its owner after D3 preserved the remaining evidence. D4 then ran on <span class="mono">gds-srv-test2</span> with rustc/cargo 1.85.0 using exact hotfix source archive SHA-256 <span class="mono">45FCCB4AD27A0BC63ADC8E899DCF53257EA6F386BAEC46F718F51D6F07CD5336</span> from commit <span class="mono">07128d0</span>. Two private network namespaces were joined only by a disposable <span class="mono">198.18.0.0/30</span> veth pair; the client namespace used a private DNS configuration and the server namespace hosted local DNS and HTTP fixtures. Persistent Engine PID <span class="mono">402673</span> primed successfully, then survived five complete veth deletion/recreation generations. Every cycle first produced a DNS-stage transport failure and then recovered HTTP 200 on the same Engine; the fifth cycle included multiple post-recreation failures before succeeding, proving the gate did not mistake link creation for resolver recovery. The probe logged <span class="mono">SHUTDOWN_OK cycles=5</span>. Its retained run log SHA-256 is <span class="mono">77494AF93E8AC39248472107E6F418464809A693C3CF29F95566526265BAE48B</span>.</td><td>Run the complete exact-source offline gate after restoring the temporary probe registration, then verify no namespace, process, or resolver override remains.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D4 accepted. Before the verifier, the extracted source manifest and lock matched SHA-256 <span class="mono">2F93C6045D850AA0E04EBB095BC840A1DDE2A6C330213F157527BE2FEB8135C7</span> and <span class="mono">5EF57885A7A6E2AD6ECE3DED43A5B00849EE39080F87B86E2AA9CFEDE22F2889</span>, and the temporary probe source was absent. All 20 offline verification stages passed in 282.668s; verifier log SHA-256 is <span class="mono">331B0DED726B26152CAF70B7F07C71F45451C5627FC8656040C7BED91C46822E</span>. Final inspection found no D4 process, network namespace, or <span class="mono">/etc/netns</span> resolver file. The first laboratory wrappers stopped before exercising NBReq because their standalone lock selected unavailable/newer dependencies, <span class="mono">autoexamples = false</span> hid the temporary probe, and a 15-second fixture-ready allowance was shorter than the observed 21-second startup. The accepted run used NBReq's committed lock and an explicit temporary example registration, restored the manifest before verification, allowed 60 seconds for fixture readiness, and terminated namespace children before wrapper waits. The retained corrected harness SHA-256 is <span class="mono">912CF301AB57395B2474EBA82B9FF154CF1E9A8E5520DEDA3314B721C6B91620</span>; it was uploaded after acceptance but not substituted for the already-hashed run evidence.</td><td>Proceed to D5: forward-port the isolated one-file repair onto current <span class="mono">main</span>, preserve the dirty F2 work, and prove native HTTP plus public Resolver contracts on Windows and exact-source Ubuntu before changing GDS.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>Patch-release boundary frozen. <span class="mono">0.1.1</span> will be cut from published <span class="mono">v0.1.0</span> plus DNS hotfix <span class="mono">07128d0</span>, ordinary version/lock/release metadata, and the human-facing README improvement from <span class="mono">789712b</span>. The README is the only intentional post-release documentation addition; F1 Resolver and F2 TCP remain excluded.</td><td>Complete D5 on a clean worktree, then build and hash the exact D6 package and run its GDS recovery/soak/rollback gates. Tag or publish only in D7 after explicit authorization.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D5 forward-port opened in isolated worktree <span class="mono">target/worktrees/dns-recovery-main</span> on branch <span class="mono">codex/dns-recovery-main</span> from main commit <span class="mono">b163266</span>. Hotfix <span class="mono">07128d0</span> applied cleanly to F1's extended resolver owner. A D5 regression additionally proves the public Resolver across prime, old-generation exhaustion, and successful replacement. Windows focused recovery tests, all 36 F1 DNS-wiring tests, warning-denied all-feature clippy, and the complete 20-stage gate passed; the full gate completed in 70.614s with 250 library tests. The forward-port remains a one-file staged, uncommitted diff. Exact-source archive SHA-256 <span class="mono">43D607FE0B44F463136AF039D6F976029E4BE852FB4C065E985E7CE1D0FCFE03</span> (587,841 bytes, 140 tracked files) was uploaded to <span class="mono">gds-client-01i linode</span>.</td><td>Complete the detached Ubuntu 25-pair HTTP/public recovery stress, F1 DNS-wiring gate, and full offline verifier. Review before committing D5 or preparing the separate <span class="mono">0.1.1</span> package lineage.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D5 exact-source Ubuntu gate passed on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The archive hash matched <span class="mono">43D607FE0B44F463136AF039D6F976029E4BE852FB4C065E985E7CE1D0FCFE03</span>. Twenty-five consecutive triples passed for HTTP same-server recovery, concurrent exhaustion/one-terminal behavior, and public Resolver recovery. All 36 F1 DNS-wiring tests then passed, followed by all 20 offline verification stages in 232.705s. The final log SHA-256 is <span class="mono">CBC1EE8B741D4E65DAC80E52BE5802C65392C8010532F2B677CEA034A6A1B7B3</span>; no verifier, Cargo, or rustc process remained. The first attempt stopped during dependency compilation because the host filesystem had only 15 MiB free. After confirming all build children had exited, five exact reproducible old <span class="mono">/tmp</span> NBReq build trees plus the failed D5 target were removed, recovering 4.9 GiB; archives, logs, home-directory sources, and GDS were untouched.</td><td>D5 is an acceptance candidate with a one-file staged, uncommitted diff. Review and commit the forward-port before D6 creates the separate exact <span class="mono">0.1.1</span> package candidate.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D5 accepted. The one-file forward-port was committed on isolated branch <span class="mono">codex/dns-recovery-main</span> as <span class="mono">cbafb84</span> (<span class="mono">Fix native DNS recovery after network changes</span>). The commit contains only <span class="mono">src/backend/native_dns.rs</span>: R0 same-server generation replacement, Interrupted-not-poison classification, HTTP recovery/concurrency tests, and public Resolver generation-recovery coverage. F2.1 remains dirty and paused on the primary worktree. The <span class="mono">0.1.1</span> crate is a separate lineage and does not include this F1-owner commit.</td><td>Open the isolated <span class="mono">0.1.1</span> package worktree from hotfix <span class="mono">07128d0</span>, copy README <span class="mono">789712b</span>, apply version/lock/release metadata, hash the package contents, then run the GDS native recovery canary. Do not tag or publish until D7 authorization.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>D6 isolated package lineage opened at <span class="mono">target/worktrees/nbreq-0.1.1</span> on branch <span class="mono">codex/nbreq-0.1.1</span>. Base is hotfix <span class="mono">07128d0</span>; README highlights cherry-picked cleanly as <span class="mono">670e296</span>. Uncommitted release metadata bumps root <span class="mono">nbreq</span> to <span class="mono">0.1.1</span> in the manifest, lock, packaged security policy, getting-started platform sentence, and license report; <span class="mono">nbreq-winpoll</span> stays <span class="mono">0.1.0</span>. <span class="mono">cargo package --list --allow-dirty</span> reports the same 39 packaged files as <span class="mono">0.1.0</span>, with no F1 Resolver or F2 TCP sources. Nothing from this lineage is pushed, tagged, or published.</td><td>Review and commit the <span class="mono">0.1.1</span> metadata, hash the clean package, then run the GDS native recovery/soak/shutdown/ureq-rollback canary. Do not tag or publish until D7 authorization.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 exact crate candidate committed and verified. Metadata commit <span class="mono">a0599c8</span> follows hotfix <span class="mono">07128d0</span> and README commit <span class="mono">670e296</span>; the README is byte-identical to <span class="mono">789712b</span>. <span class="mono">nbreq-winpoll</span> remains 0.1.0. The clean Windows verifier passed 20/20 in 94.397s. <span class="mono">cargo package --offline --locked</span> built and verified the same 39 members with no F1 Resolver/TCP sources. The 189,430-byte <span class="mono">nbreq-0.1.1.crate</span> has SHA-256 <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span> and embeds exact VCS commit <span class="mono">a0599c87500ce6bb7499546b914faa771dd49438</span>. The release worktree is clean.</td><td>Build the hashed GDS canary package from this exact candidate, then run native recovery/soak/shutdown and same-package ureq rollback. Do not tag or publish before D7 authorization.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 exact GDS canary package built from isolated clean GDS commit <span class="mono">22ca310</span> and clean NBReq candidate <span class="mono">a0599c8</span>. The explicit unpublished-local seam rewrites only a disposable GDS manifest, requires the frozen crate SHA-256, and verifies its embedded VCS commit against the source; GDS's committed exact <span class="mono">0.1.0</span> registry pin remains the rollback baseline until publication. Fresh Delphi, Rust, and Wine-shim builds completed with zero errors. The package verifier accepted 12 hashed files, x86 binaries/runtime directories and selector exports, with no libcurl. GDS DLL SHA-256 is <span class="mono">F861B03EA6A8C96980AE1658255AE6463619FC714BE690D08D3CDA273473988C</span>; Delphi host SHA-256 is <span class="mono">B49F36EF7AAC0446CF9D7A80B0D2A2F762D243D3FB0BF273EF3A14DD2EEC246D</span>; ZIP SHA-256 is <span class="mono">C1672FE893120D05D8B2B72ABE8492685966CA9A7A1460B37FBE3603020F9DFF</span>.</td><td>Run the Windows GDS native recovery/ordinary-traffic/soak/shutdown gate from the exact package, then restart the same package in ureq mode. Publication remains forbidden until D7 authorization. After publication, replace the temporary seam with GDS's ordinary exact registry <span class="mono">0.1.1</span> pin.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 native GDS consumer recovery passed on the exact package. Process PID <span class="mono">72028</span> started at 11:01:23 from the hashed Windows folder and selected NBReq native from that folder's DLL. Before the fault it accumulated about 2.5 hours of live service: both long-poll channels remained active, the website was responsive, 876 fetch records included 12 accepted response frames and 12 successful <span class="mono">OK</span> posts, and one isolated total-timeout at 12:00 recovered normally. During the supervised adapter outage, both pollers progressed from total/connect failures into repeated typed DNS-stage failures through 13:35:59. Without process, Engine, or WebRPC restart, the same PID fetched requests again at 13:36:04, successfully posted <span class="mono">OK</span>, resumed paired long polls, and recorded fresh incoming data at 13:36:40. The board did not visually change during the outage; that is retained as a separate GDS health-freshness follow-up because transport failure and same-Engine recovery are explicit in the logs.</td><td>Close the native process normally and prove prompt joined shutdown/no residual process. Then restart the same files with explicit <span class="mono">/httpbackend ureq</span>, prove website traffic, close normally, and record no residual process.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 native shutdown and ureq rollback activation passed. Native PID <span class="mono">72028</span> closed at 13:37:47: both poller threads joined, DPWebRPC shutdown completed in 0ms for each channel, and cancellable-worker Drop completed in 1ms/0ms before the process disappeared. The same package then started PID <span class="mono">9868</span> at 13:38:19 with explicit <span class="mono">/httpbackend ureq</span>. Logs selected the ureq fallback, started both poll URLs, recorded fresh long-poll data, and completed an authenticated website burst with response frames and successful <span class="mono">OK</span> posts; the owner observed a green board and responsive website.</td><td>Close the ureq process normally and prove no residual GDS process. If clean, D6 is ready for acceptance; D7 publication still requires explicit authorization.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 accepted. The ureq rollback process closed normally at 13:40:00: both poller threads joined, both DPWebRPC shutdowns completed in 0ms, both Drops completed in 0ms, and no GDS process remained. The exact <span class="mono">0.1.1</span> candidate therefore passed package identity, ordinary native traffic/mini-soak, real adapter-loss same-Engine recovery, native shutdown, same-package ureq activation/traffic, ureq shutdown, and final process-exit gates.</td><td>D7 remains pending. Do not tag or publish until the owner explicitly authorizes the exact candidate. After publication, prove a clean registry consumer and update GDS's ordinary exact pin/lock to <span class="mono">0.1.1</span>.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 non-publishing preflight passed. Release branch <span class="mono">codex/nbreq-0.1.1</span> is clean at exact commit <span class="mono">a0599c87500ce6bb7499546b914faa771dd49438</span>; no tag points at it. Online <span class="mono">cargo publish --dry-run --locked</span> packaged 39 files, verified the crate from its packaged source, reached the upload stage, and aborted as required for a dry run. The regenerated archive retained SHA-256 <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span>; the worktree remained clean.</td><td>Await explicit owner authorization. Then push the exact release commit/tag, publish that exact <span class="mono">0.1.1</span> artifact, prove an external registry consumer, and move GDS's ordinary exact registry pin/lock to <span class="mono">0.1.1</span>.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 release refs and hosted pre-publication gates passed. Branch <span class="mono">codex/nbreq-0.1.1</span> and annotated tag <span class="mono">v0.1.1</span> were pushed; the tag peels to exact commit <span class="mono">a0599c87500ce6bb7499546b914faa771dd49438</span>. Manually dispatched GitHub Actions CI run <span class="mono">33133914449</span> ran against that exact SHA and completed successfully: Ubuntu stable, Ubuntu MSRV 1.85, Windows stable, RustSec advisory scan, and component/dependency licenses all passed. Final local inspection found the release worktree clean and the crate unchanged at SHA-256 <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span>.</td><td>The exact candidate is ready for permanent crates.io publication. Await the owner's explicit publication instruction; then publish, verify the registry artifact with a clean external consumer, and update GDS's ordinary exact registry pin/lock.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>The owner explicitly authorized permanent publication and crates.io accepted <span class="mono">nbreq 0.1.1</span>. Cargo packaged and verified the same 39-file source before upload. A fresh standalone consumer then resolved exact dependency <span class="mono">nbreq = "=0.1.1"</span> from <span class="mono">registry+https://github.com/rust-lang/crates.io-index</span>; its lockfile checksum is <span class="mono">dcce8e27aead7ca63e8d3d4f93d2cab59290e746cac2dfd92eec31b8517f9c90</span>, byte-for-byte the frozen crate SHA-256. The consumer downloaded and compiled the registry package with ordinary default features, constructed <span class="mono">Engine::new</span>, completed a real loopback HTTP 200 exchange through the native backend, and shut down normally.</td><td>The release itself is complete and externally reproducible. Finish D7 by moving GDS's ordinary dependency and lock from the pre-release/local or <span class="mono">0.1.0</span> seam to exact registry <span class="mono">0.1.1</span>, then prove the normal GDS registry build identifies and runs this release.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 accepted on the ordinary GDS consumer path. Isolated GDS commit <span class="mono">b540784491c4d2f6ae6d35a240b0b97aabdbb2ff</span> changes the exact manifest pin and lock to registry <span class="mono">nbreq 0.1.1</span> with checksum <span class="mono">dcce8e27aead7ca63e8d3d4f93d2cab59290e746cac2dfd92eec31b8517f9c90</span>, updates the build guide, and makes the build banner derive the locked version rather than retaining a stale hard-coded <span class="mono">0.1.0</span> label. The ordinary locked x86 build and packager used no local NBReq override or unpublished-candidate switch. The clean 12-file package verified selector exports, runtime files, no libcurl, and exact registry provenance; ZIP SHA-256 is <span class="mono">673482F4F111172EEC651D7E759EAD427A68738CEE87089A37FF23C952652155</span>, GDS DLL SHA-256 <span class="mono">EC53EE170839AD7FA58FC2617F036187AF228177E07520466C845C1E854FB369</span>, and Delphi host SHA-256 <span class="mono">B49F36EF7AAC0446CF9D7A80B0D2A2F762D243D3FB0BF273EF3A14DD2EEC246D</span>. A focused Rust-test attempt was stopped before adapter execution by three absent untracked GDS golden <span class="mono">include_str!</span> fixtures in the isolated worktree; no NBReq/GDS code test failed, and the live package gate supplied the stronger runtime proof. GDS PID <span class="mono">72436</span> selected NBReq native from the exact package, initialized Rust, ran both long-poll channels, accepted 19 response frames, completed 19 matching <span class="mono">OK</span> posts, and received owner-confirmed green-board and authenticated-website checks. Normal close joined both pollers; both WebRPC shutdowns were 0ms, Drops were 1ms/0ms, and no client <span class="mono">gds.exe</span> remained. The separate database-serving copy was untouched.</td><td>D7 is complete. Resume the separately paused F2.1 review/fix when ready; keep D8 recovery enhancements and macOS work on their recorded later tracks.</td></tr>
+</table>
+
+<div class="callout warning">
+  <strong>Resume rule:</strong> F2.1 remains preserved and paused. Do not resume F2 socket work until D5–D7 are complete, or the owner explicitly defers the patch release after reviewing the same evidence. DNS recovery may reveal network-generation rules that standalone TCP should inherit rather than rediscover later.
+</div>
+
+</body>
+</html>

@@ -128,4 +128,4 @@ Wine-compatible controlled preload/pin path rather than assuming the Windows pro
 - Parser property tests and fuzz targets begin with the native parser in WP7.
 - The native backend must run this corpus unchanged on Windows and Linux and add its raw parser,
   resolver, connect, pooling-pressure, and ambiguous-close cases.
-- GDS integration is separately review-gated in `thoughts/gds_curl_pilot_integration_plan.md`.
+- GDS integration is separately review-gated in `thoughts/completed/gds_curl_pilot_integration_plan.md`.
