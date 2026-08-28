@@ -986,8 +986,10 @@ Decisions already accepted in principle:
 
 This section records the accepted, compile-checked post-`0.1.0` public DNS/TCP surface. F0 froze
 the consumer contract. F1 is accepted: `Resolver` is wired onto the existing
-Engine-owned native DNS service, including FQ-10 search-suffix expansion. `TcpConnector` remains unwired and still fails `Unsupported` before
-ID allocation, admission permits, callback reservation, or command queuing. HTTP unknown-host remains
+Engine-owned native DNS service, including FQ-10 search-suffix expansion. F2.2 has an uncommitted
+Windows checkpoint: native literal-address `TcpConnector` operations use the existing reactor;
+hostname operations and Engines without that owner still fail `Unsupported` before ID allocation,
+admission permits, callback reservation, or command queuing. HTTP unknown-host remains
 `Failed(ErrorKind::Transport, TransportStage::Dns)` with no `DnsFailure` payload. `HttpBackend` remains HTTP-only.
 
 Capability tickets:
@@ -1122,30 +1124,38 @@ HTTP pool limits and standalone TCP limits are independent. `max_connections` an
 live standalone TCP. OS/process limits may cap their combined resource use, but standalone TCP does
 not consume or shrink the configured HTTP pool.
 
-The Engine-wide `max_queued_bytes` name is retained in the follow-up plan and is introduced in F2
-when HTTP streaming and standalone TCP queues can charge it atomically. HTTP streaming continues to
-use `max_stream_queued_bytes`. F2.0 accepted reserved-window parent-ceiling accounting (default
+The Engine-wide `max_queued_bytes` name is compiled in the F2.2 checkpoint and is charged atomically
+by HTTP streaming and standalone TCP admission. HTTP streaming continues to use its
+`max_stream_queued_bytes` sub-limit as well. F2.0 accepted reserved-window parent-ceiling accounting (default
 16 MiB; may be lower than the HTTP sub-limit; zero disables queued streaming/TCP only).
-`TcpConnector` operations remain unwired. F2.1 wires isolated live queue/drop/finish state without
-sockets. Its `finish_with` shutdown race is repaired by one registry operation that checks
+F2.1 wired isolated live queue/drop/finish state without sockets. Its `finish_with` shutdown race is repaired by one registry operation that checks
 lifecycle, reserves the callback-event permit, and increments callback activation atomically under
 the registry core lock. A deterministic overlapping-shutdown regression proves shutdown waits for
 that activation and the accepted callback receives `EngineStopped`. The repair passed focused,
-repeated, and complete Windows verification, and F2.1 is accepted. F2.2 sockets remain unopened.
+repeated, and complete Windows verification, and F2.1 is accepted. F2.2 has now opened literal
+native sockets on the existing reactor; hostname connects remain unwired.
 Accepted resolver-generation repair `cbafb84` was synchronized separately after the F2.1 commit as
-main-line commit `b5811ae`. F2.2 therefore starts from the combined lineage rather than rediscovering
-or burying that network-generation rule in socket wiring.
+main-line commit `b5811ae`. F2.2 therefore started from the combined lineage rather than rediscovering
+or burying that network-generation rule in socket wiring. The Windows checkpoint proves literal
+spawned/manual duplex, callback delivery, cancel/release, shared parent admission, and real
+drain-then-write-shutdown. Release callbacks run only after dropping the TCP I/O state lock, so the
+atomic registry-then-connect-state success transition cannot invert against abort/release. Pending
+connect cancel, cancel-all, shutdown, and fail-all now commit their terminal under that same registry
+lock before success can move the ID into the live map; individual cancellation rechecks live state in
+the same critical section. A deterministic overlap test failed before this repair, passes afterwards,
+and passed 50/50 repetitions. Hostname resolution, inactivity, pressure/reset, and platform gates
+remain.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
-Payload-free metrics: `resolutions_*` count finite public DNS operations once F1 wiring is live;
-`tcp_connects_*` remain zero until F2. Occupancy gauges `inflight_resolutions`,
+Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
+literal F2.2 proving path once accepted by a native Engine. Occupancy gauges `inflight_resolutions`,
 `standalone_tcp_connections`, and `reserved_tcp_queue_bytes`. Live TCP lifetime/capacity is
 `standalone_tcp_connections`, not the attempt counters.
 
 `Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
 standalone TCP). Public resolutions accepted on a native Engine with the DNS owner participate in
-that barrier. `TcpConnector` operations remain unwired; F2.1 isolated live I/O state is not yet
-reachable from connect admission.
+that barrier. Literal native TCP connects and their live state now participate too; hostname TCP
+remains pre-admission `Unsupported`.
 
 F1 is accepted: `Resolver` is wired onto
 the existing Engine-owned DNS service. Applied

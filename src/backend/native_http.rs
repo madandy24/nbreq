@@ -20,13 +20,15 @@ use super::native_tls::{
 };
 use super::{Backend, BackendCompletion, BackendFactory, BackendResolveCompletion, PollMode};
 use crate::metrics::Metrics;
-use crate::registry::Shared;
+use crate::registry::{Shared, TcpConnectSink};
 use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, UploadPoll};
+use crate::tcp::io::TcpIoOwner;
 use crate::types::{http_origin, redirected_request};
 use crate::{
     Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
     ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress, Response, ResponseHead,
-    ShutdownError, StreamRequest, TimeoutKind, TlsFailure, TransportStage,
+    ShutdownError, StreamRequest, TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure,
+    TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -1600,6 +1602,10 @@ impl BackendFactory for NativeHttpFactory {
     fn supports_public_resolver(&self) -> bool {
         self.resolver.is_some()
     }
+
+    fn supports_standalone_tcp(&self) -> bool {
+        true
+    }
 }
 
 struct HttpTransfer {
@@ -1805,6 +1811,14 @@ struct NativeHttpBackend {
     waiting: VecDeque<PendingResolve>,
     connection_limits: ConnectionLimits,
     metrics: Option<Arc<Metrics>>,
+    standalone_request_to_slot: HashMap<RequestId, SlotId>,
+    standalone_pending: HashMap<SlotId, TcpConnectSink>,
+    standalone_live: HashMap<SlotId, StandaloneTcp>,
+}
+
+struct StandaloneTcp {
+    request_id: RequestId,
+    owner: TcpIoOwner,
 }
 
 struct PublicLookup {
@@ -1988,6 +2002,9 @@ impl NativeHttpBackend {
             waiting: VecDeque::new(),
             connection_limits,
             metrics: None,
+            standalone_request_to_slot: HashMap::new(),
+            standalone_pending: HashMap::new(),
+            standalone_live: HashMap::new(),
         })
     }
 
@@ -3724,6 +3741,170 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn resume_standalone_tcp(&mut self) -> Result<(), Error> {
+        let cancelled = self
+            .standalone_pending
+            .iter()
+            .filter_map(|(slot, sink)| sink.is_terminal().then_some(*slot))
+            .collect::<Vec<_>>();
+        for slot in cancelled {
+            if let Some(sink) = self.standalone_pending.remove(&slot) {
+                self.standalone_request_to_slot.remove(&sink.id());
+            }
+            self.reactor.cancel(slot);
+        }
+
+        let slots = self.standalone_live.keys().copied().collect::<Vec<_>>();
+        for slot in slots {
+            let Some(mut live) = self.standalone_live.remove(&slot) else {
+                continue;
+            };
+            if live.owner.session_released() {
+                self.standalone_request_to_slot.remove(&live.request_id);
+                self.reactor.cancel(slot);
+                continue;
+            }
+            let result = (|| {
+                self.reactor
+                    .set_read_allowance(slot, Some(live.owner.read_allowance()))
+                    .map_err(native_internal_error)?;
+                loop {
+                    let capacity = self
+                        .reactor
+                        .outbound_capacity(slot)
+                        .map_err(native_internal_error)?;
+                    let Some(bytes) = live.owner.take_outbound_up_to(capacity) else {
+                        break;
+                    };
+                    self.reactor
+                        .queue_write(slot, &bytes)
+                        .map_err(native_internal_error)?;
+                }
+                if live.owner.finish_requested()
+                    && !live.owner.write_finished()
+                    && live.owner.send_occupancy() == 0
+                    && self
+                        .reactor
+                        .outbound_is_empty(slot)
+                        .map_err(native_internal_error)?
+                {
+                    self.reactor
+                        .shutdown_write(slot)
+                        .map_err(native_transport_error)?;
+                    live.owner.complete_write_shutdown()?;
+                }
+                Ok::<(), Error>(())
+            })();
+            if let Err(error) = result {
+                live.owner.fail(error);
+                self.standalone_request_to_slot.remove(&live.request_id);
+                self.reactor.cancel(slot);
+            } else {
+                self.standalone_live.insert(slot, live);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_standalone_event(&mut self, event: &NativeEvent) -> Result<bool, Error> {
+        let slot = match event {
+            NativeEvent::Connected(slot)
+            | NativeEvent::WriteProgress(slot, _)
+            | NativeEvent::WriteDrained(slot)
+            | NativeEvent::Data(slot, _)
+            | NativeEvent::PeerClosed(slot)
+            | NativeEvent::Failed(slot, _)
+            | NativeEvent::DeadlineExpired(slot) => *slot,
+        };
+        if !self.standalone_pending.contains_key(&slot) && !self.standalone_live.contains_key(&slot)
+        {
+            return Ok(false);
+        }
+
+        match event {
+            NativeEvent::Connected(slot) => {
+                let Some(sink) = self.standalone_pending.remove(slot) else {
+                    return Ok(true);
+                };
+                if sink.is_terminal() {
+                    self.standalone_request_to_slot.remove(&sink.id());
+                    self.reactor.cancel(*slot);
+                    return Ok(true);
+                }
+                let local = self
+                    .reactor
+                    .local_addr(*slot)
+                    .map_err(native_internal_error)?;
+                let peer = self
+                    .reactor
+                    .peer_addr(*slot)
+                    .map_err(native_internal_error)?;
+                let Some(owner) = sink.connected(local, peer) else {
+                    self.standalone_request_to_slot.remove(&sink.id());
+                    self.reactor.cancel(*slot);
+                    return Ok(true);
+                };
+                self.reactor
+                    .set_deadline(*slot, None)
+                    .map_err(native_internal_error)?;
+                self.reactor
+                    .set_read_allowance(*slot, Some(owner.read_allowance()))
+                    .map_err(native_internal_error)?;
+                self.standalone_live.insert(
+                    *slot,
+                    StandaloneTcp {
+                        request_id: sink.id(),
+                        owner,
+                    },
+                );
+            }
+            NativeEvent::WriteProgress(slot, written) => {
+                if let Some(live) = self.standalone_live.get_mut(slot) {
+                    live.owner.write_progress(*written);
+                }
+            }
+            NativeEvent::WriteDrained(slot) => {
+                if let Some(live) = self.standalone_live.get_mut(slot) {
+                    let progressed = live.owner.pump_bytes();
+                    live.owner.write_progress(progressed);
+                }
+            }
+            NativeEvent::Data(slot, bytes) => {
+                if let Some(live) = self.standalone_live.get_mut(slot) {
+                    if let Err(error) = live.owner.push_inbound(bytes.clone()) {
+                        live.owner.fail(error);
+                    }
+                }
+            }
+            NativeEvent::PeerClosed(slot) => {
+                if let Some(live) = self.standalone_live.get_mut(slot) {
+                    live.owner.peer_closed();
+                }
+            }
+            NativeEvent::Failed(slot, failure) => {
+                if let Some(sink) = self.standalone_pending.remove(slot) {
+                    self.standalone_request_to_slot.remove(&sink.id());
+                    sink.fail(native_transport_error(failure.clone()));
+                }
+                if let Some(mut live) = self.standalone_live.remove(slot) {
+                    self.standalone_request_to_slot.remove(&live.request_id);
+                    live.owner.fail(native_transport_error(failure.clone()));
+                }
+            }
+            NativeEvent::DeadlineExpired(slot) => {
+                if let Some(sink) = self.standalone_pending.remove(slot) {
+                    self.standalone_request_to_slot.remove(&sink.id());
+                    sink.fail(Error::timeout(
+                        TimeoutKind::Connect,
+                        "the standalone TCP connection-establishment timeout expired",
+                    ));
+                    self.reactor.cancel(*slot);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn process_events(
         &mut self,
         events: Vec<NativeEvent>,
@@ -3740,9 +3921,12 @@ impl NativeHttpBackend {
             .collect::<HashSet<_>>();
         let mut completions = Vec::new();
         for event in events {
+            if self.handle_standalone_event(&event)? {
+                continue;
+            }
             let event_slot = match &event {
                 NativeEvent::Connected(slot)
-                | NativeEvent::WriteProgress(slot)
+                | NativeEvent::WriteProgress(slot, _)
                 | NativeEvent::WriteDrained(slot)
                 | NativeEvent::Data(slot, _)
                 | NativeEvent::PeerClosed(slot)
@@ -3751,7 +3935,7 @@ impl NativeHttpBackend {
             };
             if self.idle_slots.contains_key(&event_slot) {
                 match event {
-                    NativeEvent::WriteProgress(_) | NativeEvent::WriteDrained(_) => {}
+                    NativeEvent::WriteProgress(_, _) | NativeEvent::WriteDrained(_) => {}
                     NativeEvent::Connected(_)
                     | NativeEvent::Data(_, _)
                     | NativeEvent::PeerClosed(_)
@@ -3767,7 +3951,7 @@ impl NativeHttpBackend {
                         self.pump_request_output(slot, &mut completions)?;
                     }
                 }
-                NativeEvent::WriteProgress(slot) => {
+                NativeEvent::WriteProgress(slot, _) => {
                     self.note_progress(slot, false, !failed_slots.contains(&slot))?;
                     if !failed_slots.contains(&slot) {
                         self.pump_request_output(slot, &mut completions)?;
@@ -4001,6 +4185,14 @@ impl Backend for NativeHttpBackend {
     }
 
     fn cancel(&mut self, id: RequestId) {
+        if let Some(slot) = self.standalone_request_to_slot.remove(&id) {
+            self.standalone_pending.remove(&slot);
+            if let Some(mut live) = self.standalone_live.remove(&slot) {
+                live.owner.cancel();
+            }
+            self.reactor.cancel(slot);
+            return;
+        }
         if let Some(index) = self
             .waiting
             .iter()
@@ -4034,6 +4226,7 @@ impl Backend for NativeHttpBackend {
     }
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+        self.resume_standalone_tcp()?;
         self.expire_idle(Instant::now());
         let mut completions = self.dispatch_waiting();
         self.drain_dns()?;
@@ -4051,6 +4244,7 @@ impl Backend for NativeHttpBackend {
             .poll(poll_deadline)
             .map_err(native_internal_error)?;
         completions.extend(self.process_events(events)?);
+        self.resume_standalone_tcp()?;
         self.drain_dns()?;
         completions.extend(std::mem::take(&mut self.pending_http_from_dns));
         completions.extend(self.expire_resolves()?);
@@ -4074,6 +4268,9 @@ impl Backend for NativeHttpBackend {
         self.connection_count = 0;
         self.connections_per_key.clear();
         self.waiting.clear();
+        self.standalone_request_to_slot.clear();
+        self.standalone_pending.clear();
+        self.standalone_live.clear();
         if let Some(metrics) = &self.metrics {
             for _ in 0..closing {
                 metrics.connection_closed(0);
@@ -4095,7 +4292,10 @@ impl Backend for NativeHttpBackend {
     }
 
     fn wants_poll_without_requests(&self) -> bool {
-        self.idle_count != 0 || !self.public_lookups.is_empty()
+        self.idle_count != 0
+            || !self.public_lookups.is_empty()
+            || !self.standalone_pending.is_empty()
+            || !self.standalone_live.is_empty()
     }
 
     fn supports_streaming(&self) -> bool {
@@ -4104,6 +4304,48 @@ impl Backend for NativeHttpBackend {
 
     fn supports_public_resolver(&self) -> bool {
         self.resolver.is_some()
+    }
+
+    fn supports_standalone_tcp(&self) -> bool {
+        true
+    }
+
+    fn submit_tcp_connect(
+        &mut self,
+        request: TcpConnectRequest,
+        sink: TcpConnectSink,
+        accepted_at: Instant,
+    ) {
+        let TcpConnectTarget::Literal(address) = *request.target() else {
+            sink.fail(Error::new(
+                ErrorKind::Unsupported,
+                "hostname TCP connections are not wired yet; use a literal SocketAddr",
+            ));
+            return;
+        };
+        let deadline = request
+            .connect_timeout()
+            .and_then(|timeout| accepted_at.checked_add(timeout));
+        let slot = match self
+            .reactor
+            .connect(address, deadline, sink.send_window(), usize::MAX)
+        {
+            Ok(slot) => slot,
+            Err(failure) => {
+                sink.fail(native_transport_error(failure));
+                return;
+            }
+        };
+        if let Err(failure) = self
+            .reactor
+            .set_read_allowance(slot, Some(sink.receive_window()))
+        {
+            self.reactor.cancel(slot);
+            sink.fail(native_internal_error(failure));
+            return;
+        }
+        self.standalone_request_to_slot.insert(sink.id(), slot);
+        self.standalone_pending.insert(slot, sink);
     }
 
     fn submit_resolve(
@@ -4970,7 +5212,7 @@ mod tests {
         assert!(backend.reactor.cancel(slot));
         let completions = backend
             .process_events(vec![
-                NativeEvent::WriteProgress(slot),
+                NativeEvent::WriteProgress(slot, 1),
                 NativeEvent::Failed(
                     slot,
                     NativeFailure {

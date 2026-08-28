@@ -9,7 +9,8 @@
 //! [`Engine::resolver`] and [`Engine::tcp_connector`] issue cloneable capability tickets into the
 //! same Engine lifecycle. Public hostname resolution is served by the Engine-owned native DNS
 //! service when that owner is present. Standalone TCP live queue/drop/finish state is internally
-//! wired; `TcpConnector` operations remain unwired until a later F2 slice.
+//! wired; native literal-address `TcpConnector` operations are in their F2 proving phase while
+//! hostname connects remain gated.
 #![doc = include_str!("../docs/getting-started.md")]
 
 mod atomic;

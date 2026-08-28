@@ -187,7 +187,7 @@ fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
 
 #[test]
 #[cfg(feature = "native")]
-fn resolver_tickets_are_live_on_native_engines_and_tcp_stays_unwired() {
+fn resolver_is_native_while_hostname_tcp_stays_unwired() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let resolver = engine.resolver();
     let tcp = engine.tcp_connector();
@@ -204,10 +204,52 @@ fn resolver_tickets_are_live_on_native_engines_and_tcp_stays_unwired() {
         .expect("connect request must build");
     let connect_error = tcp
         .submit(connect)
-        .expect_err("standalone TCP must reject before admission");
+        .expect_err("hostname TCP must reject before admission");
     assert_eq!(connect_error.kind(), ErrorKind::Unsupported);
 
     let after = engine.metrics();
     assert_eq!(before, after);
     engine.shutdown().expect("empty Engine must stop");
+}
+
+#[test]
+#[cfg(feature = "native")]
+fn literal_tcp_connects_through_the_ordinary_native_engine() {
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::thread;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind public TCP fixture");
+    let address = listener.local_addr().expect("public TCP fixture address");
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept public TCP connection");
+        let mut request = [0_u8; 4];
+        socket.read_exact(&mut request).expect("read public bytes");
+        assert_eq!(&request, b"ping");
+        socket.write_all(b"pong").expect("write public bytes");
+    });
+
+    let engine =
+        Engine::new(EngineConfig::spawned()).expect("ordinary native Engine must construct");
+    let request = nbreq::TcpConnectRequest::literal(address)
+        .connect_timeout(Duration::from_secs(2))
+        .build()
+        .expect("literal public request must build");
+    let mut connection = engine
+        .tcp_connector()
+        .execute(request)
+        .expect("ordinary native Engine must connect literal TCP");
+    connection
+        .send(b"ping".to_vec())
+        .expect("send public bytes");
+    let mut response = [0_u8; 4];
+    assert_eq!(
+        connection.read(&mut response).expect("read public bytes"),
+        Some(4)
+    );
+    assert_eq!(&response, b"pong");
+    drop(connection);
+    server.join().expect("public TCP fixture must join");
+    engine.shutdown().expect("ordinary native Engine must stop");
 }

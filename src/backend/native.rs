@@ -9,6 +9,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -64,7 +65,7 @@ impl NativeFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NativeEvent {
     Connected(SlotId),
-    WriteProgress(SlotId),
+    WriteProgress(SlotId, usize),
     WriteDrained(SlotId),
     Data(SlotId, Vec<u8>),
     PeerClosed(SlotId),
@@ -278,6 +279,39 @@ impl NativeReactor {
             NativeFailure::internal("native outbound state targeted a stale or closed slot")
         })?;
         Ok(connection.outbound.is_empty())
+    }
+
+    pub(crate) fn local_addr(&mut self, id: SlotId) -> Result<SocketAddr, NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native local-address query targeted a stale or closed slot")
+        })?;
+        connection.stream.local_addr().map_err(|error| {
+            NativeFailure::io(NativeFailureKind::Internal, "local-address query", &error)
+        })
+    }
+
+    pub(crate) fn peer_addr(&mut self, id: SlotId) -> Result<SocketAddr, NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native peer-address query targeted a stale or closed slot")
+        })?;
+        connection.stream.peer_addr().map_err(|error| {
+            NativeFailure::io(NativeFailureKind::Internal, "peer-address query", &error)
+        })
+    }
+
+    pub(crate) fn shutdown_write(&mut self, id: SlotId) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native write shutdown targeted a stale or closed slot")
+        })?;
+        if !connection.outbound.is_empty() {
+            return Err(NativeFailure::internal(
+                "native write shutdown requires a drained outbound queue",
+            ));
+        }
+        connection
+            .stream
+            .shutdown(Shutdown::Write)
+            .map_err(|error| NativeFailure::io(NativeFailureKind::Write, "write shutdown", &error))
     }
 
     pub(crate) fn set_read_allowance(
@@ -530,7 +564,7 @@ impl NativeReactor {
             return true;
         }
         let had_data = !connection.outbound.is_empty();
-        let mut wrote_data = false;
+        let mut wrote_bytes = 0_usize;
         loop {
             let (front, _) = connection.outbound.as_slices();
             if front.is_empty() {
@@ -547,7 +581,7 @@ impl NativeReactor {
                     return false;
                 }
                 Ok(written) => {
-                    wrote_data = true;
+                    wrote_bytes = wrote_bytes.saturating_add(written);
                     connection.outbound.drain(..written);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -561,8 +595,8 @@ impl NativeReactor {
         }
         if had_data && connection.outbound.is_empty() {
             output.push(NativeEvent::WriteDrained(id));
-        } else if wrote_data {
-            output.push(NativeEvent::WriteProgress(id));
+        } else if wrote_bytes != 0 {
+            output.push(NativeEvent::WriteProgress(id, wrote_bytes));
         }
         true
     }
@@ -995,7 +1029,7 @@ mod tests {
             for event in events {
                 match event {
                     NativeEvent::Connected(_)
-                    | NativeEvent::WriteProgress(_)
+                    | NativeEvent::WriteProgress(_, _)
                     | NativeEvent::WriteDrained(_) => {}
                     NativeEvent::Data(slot, bytes) => {
                         if let Some(request_id) = self.slot_to_request.get(&slot) {

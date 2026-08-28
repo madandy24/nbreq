@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use crate::metrics::Metrics;
 use crate::registry::Shared;
+use crate::registry::TcpConnectSink;
 use crate::stream::ResponseSink;
 use crate::{
     Completion, Error, ErrorKind, Request, RequestId, ResolveCompletion, ResolveRequest,
-    ShutdownError, StreamRequest,
+    ShutdownError, StreamRequest, TcpConnectRequest,
 };
 use std::sync::Arc;
 
@@ -95,6 +96,18 @@ pub(crate) trait Backend {
         Ok(Vec::new())
     }
 
+    fn submit_tcp_connect(
+        &mut self,
+        _request: TcpConnectRequest,
+        sink: TcpConnectSink,
+        _accepted_at: Instant,
+    ) {
+        sink.fail(Error::new(
+            ErrorKind::Unsupported,
+            "standalone TCP connections are not available on this Engine",
+        ));
+    }
+
     fn poll_mode(&self) -> PollMode {
         PollMode::CommandDriven
     }
@@ -108,6 +121,10 @@ pub(crate) trait Backend {
     }
 
     fn supports_public_resolver(&self) -> bool {
+        false
+    }
+
+    fn supports_standalone_tcp(&self) -> bool {
         false
     }
 }
@@ -127,6 +144,10 @@ pub(crate) trait BackendFactory: Send {
     fn supports_public_resolver(&self) -> bool {
         false
     }
+
+    fn supports_standalone_tcp(&self) -> bool {
+        false
+    }
 }
 
 #[allow(dead_code)] // Internal lifecycle-test backend; never an ordinary public runtime.
@@ -142,6 +163,14 @@ pub(crate) fn held() -> Box<dyn Backend + Send> {
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_http_factory(config: &crate::EngineConfig) -> Box<dyn BackendFactory> {
     Box::new(native_http::NativeHttpFactory::new(config))
+}
+
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+#[allow(dead_code)]
+pub(crate) fn native_http_backend(
+    config: &crate::EngineConfig,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new(config).into_backend()
 }
 
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]

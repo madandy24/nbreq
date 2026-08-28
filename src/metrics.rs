@@ -289,6 +289,37 @@ impl Metrics {
         }
     }
 
+    pub(crate) fn tcp_connect_accepted(&self, connections: usize, reserved_bytes: usize) {
+        saturating_increment(&self.tcp_connects_accepted);
+        self.standalone_tcp_connections
+            .store(connections, Ordering::Release);
+        self.reserved_tcp_queue_bytes
+            .store(reserved_bytes, Ordering::Release);
+        update_max(&self.high_standalone_tcp_connections, connections);
+        update_max(&self.high_reserved_tcp_queue_bytes, reserved_bytes);
+    }
+
+    pub(crate) fn tcp_connect_terminal(&self, completion: &crate::TcpConnectCompletion) {
+        match completion {
+            crate::TcpConnectCompletion::Completed(_) => {
+                saturating_increment(&self.tcp_connects_completed)
+            }
+            crate::TcpConnectCompletion::Failed(_) => {
+                saturating_increment(&self.tcp_connects_failed)
+            }
+            crate::TcpConnectCompletion::Cancelled => {
+                saturating_increment(&self.tcp_connects_cancelled)
+            }
+        }
+    }
+
+    pub(crate) fn set_tcp_resources(&self, connections: usize, reserved_bytes: usize) {
+        self.standalone_tcp_connections
+            .store(connections, Ordering::Release);
+        self.reserved_tcp_queue_bytes
+            .store(reserved_bytes, Ordering::Release);
+    }
+
     pub(crate) fn stream_terminal(&self, outcome: crate::stream::StreamOutcome) {
         match outcome {
             crate::stream::StreamOutcome::Completed => {

@@ -7,7 +7,9 @@ use crate::backend::BackendFactory;
 use crate::backend::{
     Backend, BackendCompletion, BackendResolveCompletion, PollMode, interruptible_poll_deadline,
 };
-use crate::registry::{RequestState, ResolveState, Shared, StreamRequestState, Submission};
+use crate::registry::{
+    RequestState, ResolveState, Shared, StreamRequestState, Submission, TcpConnectSink,
+};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
 pub(crate) struct ReactorCore<B: Backend + ?Sized> {
@@ -94,6 +96,17 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                         }
                     }
                 }
+                Submission::Connect {
+                    request,
+                    state,
+                    accepted_at,
+                } => {
+                    if state.is_terminal() {
+                        continue;
+                    }
+                    let sink = TcpConnectSink::new(shared, state);
+                    self.backend.submit_tcp_connect(request, sink, accepted_at);
+                }
             }
         }
 
@@ -142,6 +155,17 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                 Submission::Resolve { state, .. } => {
                     if !state.is_terminal() {
                         shared.complete_resolve_state(&state, crate::ResolveCompletion::Cancelled);
+                    }
+                }
+                Submission::Connect { state, .. } => {
+                    if !state.is_terminal() {
+                        shared.complete_tcp_state(
+                            &state,
+                            crate::TcpConnectCompletion::Failed(Error::new(
+                                ErrorKind::EngineStopped,
+                                "the owning Engine stopped during TCP connection establishment",
+                            )),
+                        );
                     }
                 }
             }

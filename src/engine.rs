@@ -114,6 +114,7 @@ impl Engine {
     ) -> Result<Self, Error> {
         let streaming_supported = backend.supports_streaming();
         let public_resolver_supported = backend.supports_public_resolver();
+        let standalone_tcp_supported = backend.supports_standalone_tcp();
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
             return Err(Error::new(
@@ -140,6 +141,7 @@ impl Engine {
             Arc::clone(&metrics),
         );
         shared.set_public_resolver_supported(public_resolver_supported);
+        shared.set_standalone_tcp_supported(standalone_tcp_supported);
         backend.attach_metrics(metrics);
         let runtime = match config.run_mode() {
             RunMode::Spawned => {
@@ -209,6 +211,7 @@ impl Engine {
         )?;
         let streaming_supported = factory.supports_streaming();
         let public_resolver_supported = factory.supports_public_resolver();
+        let standalone_tcp_supported = factory.supports_standalone_tcp();
         let shared = Shared::new(
             id,
             &config,
@@ -217,6 +220,7 @@ impl Engine {
             metrics,
         );
         shared.set_public_resolver_supported(public_resolver_supported);
+        shared.set_standalone_tcp_supported(standalone_tcp_supported);
         let reactor_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()
             .name(format!("nbreq-reactor-{id}"))
@@ -291,9 +295,9 @@ impl Engine {
 
     /// Issues a cheap cloneable cleartext TCP handle for this Engine.
     ///
-    /// The ticket is always issued. Standalone connect operations currently fail
-    /// [`ErrorKind::Unsupported`] before identity allocation, admission, callback reservation, or
-    /// command queuing.
+    /// The ticket is always issued. Native Engines accept literal-address connects on their
+    /// existing reactor owner. Hostname connects and Engines without that owner currently fail
+    /// [`ErrorKind::Unsupported`] before identity allocation or admission.
     ///
     /// ```no_run
     /// use nbreq::{Engine, EngineConfig, TcpConnectRequest};
@@ -309,10 +313,7 @@ impl Engine {
     /// ```
     #[must_use]
     pub fn tcp_connector(&self) -> TcpConnector {
-        TcpConnector::new(
-            Arc::clone(&self.shared),
-            self.config.max_tcp_queue_bytes_per_connection(),
-        )
+        TcpConnector::new(Arc::clone(&self.shared))
     }
 
     /// Returns a nonblocking, payload-free snapshot of this Engine's lifetime activity.
@@ -664,6 +665,13 @@ impl EngineBuilder {
     #[must_use]
     pub fn max_stream_queued_bytes(mut self, bytes: usize) -> Self {
         self.config = self.config.with_max_stream_queued_bytes(bytes);
+        self
+    }
+
+    /// Selects the Engine-wide queue budget shared by HTTP streams and standalone TCP.
+    #[must_use]
+    pub fn max_queued_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_queued_bytes(bytes);
         self
     }
 
@@ -1053,6 +1061,7 @@ mod tests {
             .max_standalone_tcp_connections(origin_capacity)
             .max_resolve_results(origin_capacity)
             .max_tcp_queue_bytes_per_connection(6)
+            .max_queued_bytes(12)
             .build()
             .expect("Engine must construct");
         assert_eq!(
@@ -1074,5 +1083,6 @@ mod tests {
         );
         assert_eq!(engine.config.max_resolve_results(), origin_capacity);
         assert_eq!(engine.config.max_tcp_queue_bytes_per_connection(), 6);
+        assert_eq!(engine.config.max_queued_bytes(), 12);
     }
 }

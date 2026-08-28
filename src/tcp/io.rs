@@ -18,31 +18,31 @@ use crate::dispatch::CallbackJob;
 use crate::registry::{AdmissionPermit, Shared};
 use crate::{Error, ErrorKind, RequestId, RunMode};
 
-type EngineWaker = Arc<dyn Fn() + Send + Sync + 'static>;
+pub(crate) type EngineWaker = Arc<dyn Fn() + Send + Sync + 'static>;
 type TcpFinishCallback = Box<dyn FnOnce(Result<(), TcpFinishError>) + Send>;
 
 #[derive(Clone, Debug)]
-pub(super) enum TcpAbort {
+pub(crate) enum TcpAbort {
     Reset,
     Cancelled,
     Failed(Error),
     EngineStopped,
 }
 
-pub(super) struct TcpIoConfig {
-    pub(super) engine_id: u64,
-    pub(super) request_id: RequestId,
-    pub(super) shared: Arc<Shared>,
-    pub(super) run_mode: RunMode,
-    pub(super) send_window: usize,
-    pub(super) receive_window: usize,
-    pub(super) local: SocketAddr,
-    pub(super) peer: SocketAddr,
-    pub(super) engine_waker: Option<EngineWaker>,
-    pub(super) on_release: Box<dyn FnOnce() + Send>,
+pub(crate) struct TcpIoConfig {
+    pub(crate) engine_id: u64,
+    pub(crate) request_id: RequestId,
+    pub(crate) shared: Arc<Shared>,
+    pub(crate) run_mode: RunMode,
+    pub(crate) send_window: usize,
+    pub(crate) receive_window: usize,
+    pub(crate) local: SocketAddr,
+    pub(crate) peer: SocketAddr,
+    pub(crate) engine_waker: Option<EngineWaker>,
+    pub(crate) on_release: Box<dyn FnOnce() + Send>,
 }
 
-pub(super) struct TcpIoShared {
+pub(crate) struct TcpIoShared {
     engine_id: u64,
     request_id: RequestId,
     shared: Arc<Shared>,
@@ -77,12 +77,12 @@ struct TcpIoState {
     finish_callback_active: bool,
 }
 
-pub(super) struct TcpIoOwner {
+pub(crate) struct TcpIoOwner {
     io: Arc<TcpIoShared>,
 }
 
 impl TcpIoShared {
-    pub(super) fn pair(config: TcpIoConfig) -> (Arc<Self>, TcpIoOwner) {
+    pub(crate) fn pair(config: TcpIoConfig) -> (Arc<Self>, TcpIoOwner) {
         assert!(
             config.send_window > 0 && config.receive_window > 0,
             "TCP queue windows must be greater than zero"
@@ -217,8 +217,9 @@ impl TcpIoShared {
         if destination.is_empty() {
             if state.inbound_bytes == 0 && state.peer_fin {
                 state.read_eof_observed = true;
-                self.maybe_release_locked(&mut state);
+                let release = self.maybe_take_release_locked(&mut state);
                 drop(state);
+                Self::run_release(release);
                 self.notify();
                 return Ok(TcpRead::Eof);
             }
@@ -230,8 +231,9 @@ impl TcpIoShared {
         if state.inbound_bytes == 0 {
             if state.peer_fin {
                 state.read_eof_observed = true;
-                self.maybe_release_locked(&mut state);
+                let release = self.maybe_take_release_locked(&mut state);
                 drop(state);
+                Self::run_release(release);
                 self.notify();
                 return Ok(TcpRead::Eof);
             }
@@ -370,15 +372,16 @@ impl TcpIoShared {
         Ok(())
     }
 
-    pub(super) fn abort(&self, kind: TcpAbort) {
+    pub(crate) fn abort(&self, kind: TcpAbort) {
         let mut state = lock_unpoisoned(&self.state);
         if state.abort.is_some() {
             return;
         }
         state.abort = Some(kind);
-        self.release_locked();
+        let release = self.take_release_locked();
         let job = self.take_finish_job_locked(&mut state);
         drop(state);
+        Self::run_release(release);
         self.notify();
         self.dispatch_job(job);
     }
@@ -462,21 +465,30 @@ impl TcpIoShared {
         );
     }
 
-    fn maybe_release_locked(&self, state: &mut TcpIoState) {
+    fn maybe_take_release_locked(
+        &self,
+        state: &mut TcpIoState,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
         if state.abort.is_none() && state.write_finished && state.read_eof_observed {
-            self.release_locked();
+            self.take_release_locked()
+        } else {
+            None
         }
     }
 
-    fn release_locked(&self) {
+    fn take_release_locked(&self) -> Option<Box<dyn FnOnce() + Send>> {
         if self
             .released
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return;
+            return None;
         }
-        if let Some(on_release) = lock_unpoisoned(&self.on_release).take() {
+        lock_unpoisoned(&self.on_release).take()
+    }
+
+    fn run_release(release: Option<Box<dyn FnOnce() + Send>>) {
+        if let Some(on_release) = release {
             on_release();
         }
     }
@@ -489,8 +501,13 @@ impl TcpIoShared {
     }
 }
 
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 impl TcpIoOwner {
-    pub(super) fn take_outbound(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn cancel(&mut self) {
+        self.io.abort(TcpAbort::Cancelled);
+    }
+
+    pub(crate) fn take_outbound(&mut self) -> Option<Vec<u8>> {
         let mut state = lock_unpoisoned(&self.io.state);
         let chunk = state.outbound.pop_front()?;
         state.outbound_bytes -= chunk.len();
@@ -501,7 +518,27 @@ impl TcpIoOwner {
         Some(chunk)
     }
 
-    pub(super) fn write_progress(&mut self, mut nbytes: usize) {
+    pub(crate) fn take_outbound_up_to(&mut self, capacity: usize) -> Option<Vec<u8>> {
+        if capacity == 0 {
+            return None;
+        }
+        let mut state = lock_unpoisoned(&self.io.state);
+        let front = state.outbound.front_mut()?;
+        let take = front.len().min(capacity);
+        let chunk = if take == front.len() {
+            state.outbound.pop_front().expect("front exists")
+        } else {
+            front.drain(..take).collect()
+        };
+        state.outbound_bytes -= chunk.len();
+        state.pump_bytes += chunk.len();
+        state.pump.push_back(chunk.clone());
+        drop(state);
+        self.io.notify();
+        Some(chunk)
+    }
+
+    pub(crate) fn write_progress(&mut self, mut nbytes: usize) {
         let mut state = lock_unpoisoned(&self.io.state);
         while nbytes > 0 {
             let (offset, chunk_len) = {
@@ -524,7 +561,7 @@ impl TcpIoOwner {
         self.io.notify();
     }
 
-    pub(super) fn complete_write_shutdown(&mut self) -> Result<(), Error> {
+    pub(crate) fn complete_write_shutdown(&mut self) -> Result<(), Error> {
         let mut state = lock_unpoisoned(&self.io.state);
         if let Some(error) = abort_error(state.abort.as_ref()) {
             return Err(error);
@@ -542,15 +579,16 @@ impl TcpIoOwner {
             ));
         }
         state.write_finished = true;
-        self.io.maybe_release_locked(&mut state);
+        let release = self.io.maybe_take_release_locked(&mut state);
         let job = self.io.take_finish_job_locked(&mut state);
         drop(state);
+        TcpIoShared::run_release(release);
         self.io.notify();
         self.io.dispatch_job(job);
         Ok(())
     }
 
-    pub(super) fn push_inbound(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+    pub(crate) fn push_inbound(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -578,7 +616,7 @@ impl TcpIoOwner {
         Ok(())
     }
 
-    pub(super) fn peer_closed(&mut self) {
+    pub(crate) fn peer_closed(&mut self) {
         let mut state = lock_unpoisoned(&self.io.state);
         if state.abort.is_some() {
             return;
@@ -588,37 +626,41 @@ impl TcpIoOwner {
         self.io.notify();
     }
 
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.io.abort(TcpAbort::Reset);
     }
 
-    pub(super) fn fail(&mut self, error: Error) {
+    pub(crate) fn fail(&mut self, error: Error) {
         self.io.abort(TcpAbort::Failed(error));
     }
 
-    pub(super) fn finish_requested(&self) -> bool {
+    pub(crate) fn finish_requested(&self) -> bool {
         lock_unpoisoned(&self.io.state).write_finish_requested
     }
 
-    pub(super) fn pump_bytes(&self) -> usize {
+    pub(crate) fn write_finished(&self) -> bool {
+        lock_unpoisoned(&self.io.state).write_finished
+    }
+
+    pub(crate) fn pump_bytes(&self) -> usize {
         lock_unpoisoned(&self.io.state).pump_bytes
     }
 
-    pub(super) fn outbound_bytes(&self) -> usize {
+    pub(crate) fn outbound_bytes(&self) -> usize {
         lock_unpoisoned(&self.io.state).outbound_bytes
     }
 
-    pub(super) fn send_occupancy(&self) -> usize {
+    pub(crate) fn send_occupancy(&self) -> usize {
         let state = lock_unpoisoned(&self.io.state);
         state.outbound_bytes + state.pump_bytes
     }
 
-    pub(super) fn read_allowance(&self) -> usize {
+    pub(crate) fn read_allowance(&self) -> usize {
         let state = lock_unpoisoned(&self.io.state);
         self.io.receive_window.saturating_sub(state.inbound_bytes)
     }
 
-    pub(super) fn session_released(&self) -> bool {
+    pub(crate) fn session_released(&self) -> bool {
         self.io.session_released()
     }
 }

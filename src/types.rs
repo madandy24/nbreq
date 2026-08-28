@@ -52,6 +52,7 @@ pub struct EngineConfig {
     max_response_body_bytes: usize,
     max_stream_queue_bytes_per_request: usize,
     max_stream_queued_bytes: usize,
+    max_queued_bytes: usize,
     max_header_bytes: usize,
     max_header_count: usize,
     max_connections: NonZeroUsize,
@@ -101,6 +102,7 @@ impl EngineConfig {
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
             max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
+            max_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
             max_connections: nonzero(DEFAULT_MAX_CONNECTIONS),
@@ -128,6 +130,7 @@ impl EngineConfig {
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
             max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
+            max_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_header_bytes: DEFAULT_HEADER_BYTES_LIMIT,
             max_header_count: DEFAULT_HEADER_COUNT_LIMIT,
             max_connections: nonzero(DEFAULT_MAX_CONNECTIONS),
@@ -201,6 +204,16 @@ impl EngineConfig {
         self
     }
 
+    /// Selects the Engine-wide reserved queue budget shared by HTTP streams and standalone TCP.
+    ///
+    /// Zero disables admission that requires streaming or TCP queue capacity. Buffered HTTP and
+    /// public DNS do not consume this budget.
+    #[must_use]
+    pub fn with_max_queued_bytes(mut self, bytes: usize) -> Self {
+        self.max_queued_bytes = bytes;
+        self
+    }
+
     /// Selects the maximum cumulative bytes in one request or response head.
     #[must_use]
     pub fn with_max_header_bytes(mut self, bytes: usize) -> Self {
@@ -270,8 +283,8 @@ impl EngineConfig {
 
     /// Selects the standalone TCP connect/live-connection budget.
     ///
-    /// This is independent of the HTTP idle pool. The absolute Engine socket ceiling remains
-    /// authoritative when it is smaller.
+    /// This is independent of the HTTP connection and idle-pool budgets. Operating-system and
+    /// process resource limits may still cap the combined sockets.
     #[must_use]
     pub fn with_max_standalone_tcp_connections(mut self, connections: NonZeroUsize) -> Self {
         self.max_standalone_tcp_connections = connections;
@@ -349,6 +362,12 @@ impl EngineConfig {
     #[must_use]
     pub fn max_stream_queued_bytes(&self) -> usize {
         self.max_stream_queued_bytes
+    }
+
+    /// Returns the Engine-wide reserved queue budget shared by HTTP streams and standalone TCP.
+    #[must_use]
+    pub fn max_queued_bytes(&self) -> usize {
+        self.max_queued_bytes
     }
 
     /// Returns the maximum cumulative request/response header bytes.

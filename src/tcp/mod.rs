@@ -1,11 +1,11 @@
 //! Public cleartext TCP connector contract.
 //!
-//! [`TcpConnector`] is an Engine-issued capability ticket. Connect operations still fail
-//! [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before identity allocation,
-//! admission, callback reservation, or command queuing. F2.1 wires live queue/drop/finish state
-//! internally without connecting sockets or flipping public TcpConnector capability.
+//! [`TcpConnector`] is an Engine-issued capability ticket. Native Engines accept literal-address
+//! connections on their existing reactor owner. Hostname connections remain unavailable until
+//! their exact resolver-to-connect policy is wired. Engines without the native owner fail
+//! [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before admission.
 
-mod io;
+pub(crate) mod io;
 
 use std::cell::Cell;
 use std::error::Error as StdError;
@@ -13,12 +13,11 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::dns::normalize_dns_name;
-use crate::registry::Shared;
-use crate::{Error, ErrorKind, ExecuteError, LimitKind, RequestId};
+use crate::registry::{Shared, TcpConnectCallback, TcpConnectState};
+use crate::{Error, ErrorKind, ExecuteError, RequestId};
 
 use io::TcpIoShared;
 
@@ -257,15 +256,11 @@ fn is_unspecified_destination(ip: IpAddr) -> bool {
 #[derive(Clone, Debug)]
 pub struct TcpConnector {
     shared: Arc<Shared>,
-    max_tcp_queue_bytes_per_connection: usize,
 }
 
 impl TcpConnector {
-    pub(crate) fn new(shared: Arc<Shared>, max_tcp_queue_bytes_per_connection: usize) -> Self {
-        Self {
-            shared,
-            max_tcp_queue_bytes_per_connection,
-        }
+    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+        Self { shared }
     }
 
     /// Starts a callback-oriented connect.
@@ -279,15 +274,20 @@ impl TcpConnector {
     where
         F: FnOnce(TcpConnectCompletion) + Send + 'static,
     {
-        self.reject_connect(request)?;
-        drop(callback);
-        Err(self.unavailable())
+        let callback: TcpConnectCallback = Box::new(callback);
+        let accepted = self
+            .shared
+            .accept_tcp_connect(self.clone(), request, Some(callback))?;
+        Ok(TcpConnectHandle::new(self.clone(), accepted.state.id()))
     }
 
     /// Submits a connect and returns its direct terminal-state waiter.
     pub fn submit(&self, request: TcpConnectRequest) -> Result<PendingTcpConnect, Error> {
-        self.reject_connect(request)?;
-        Err(self.unavailable())
+        let accepted = self
+            .shared
+            .accept_tcp_connect(self.clone(), request, None)?;
+        let handle = TcpConnectHandle::new(self.clone(), accepted.state.id());
+        Ok(PendingTcpConnect::new(handle, accepted.state))
     }
 
     /// Submits a connect and blocks on its direct terminal-state waiter.
@@ -304,46 +304,9 @@ impl TcpConnector {
 
     /// Cancels an Engine-scoped connect ID.
     ///
-    /// Standalone TCP is not wired to a transport owner yet, so this rejects before touching the
-    /// HTTP registry.
-    pub fn cancel(&self, _request_id: RequestId) -> Result<(), Error> {
-        Err(self.stopped_or_unavailable())
-    }
-
-    fn reject_connect(&self, request: TcpConnectRequest) -> Result<(), Error> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(stopped_error());
-        }
-        for window in [request.send_queue_bytes, request.receive_queue_bytes]
-            .into_iter()
-            .flatten()
-        {
-            if window > self.max_tcp_queue_bytes_per_connection {
-                return Err(Error::limit(
-                    LimitKind::TcpQueueBytes,
-                    format!(
-                        "TCP queue window exceeds the Engine ceiling of {} bytes",
-                        self.max_tcp_queue_bytes_per_connection
-                    ),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn unavailable(&self) -> Error {
-        Error::new(
-            ErrorKind::Unsupported,
-            "standalone TCP connections are not available yet",
-        )
-    }
-
-    fn stopped_or_unavailable(&self) -> Error {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            stopped_error()
-        } else {
-            self.unavailable()
-        }
+    /// Cancellation is idempotent for same-Engine terminal connects and live connections.
+    pub fn cancel(&self, request_id: RequestId) -> Result<(), Error> {
+        self.shared.cancel(request_id)
     }
 }
 
@@ -355,7 +318,6 @@ pub struct TcpConnectHandle {
 }
 
 impl TcpConnectHandle {
-    #[allow(dead_code)] // Constructed when TcpConnector wiring begins.
     pub(crate) fn new(connector: TcpConnector, id: RequestId) -> Self {
         Self { connector, id }
     }
@@ -400,12 +362,12 @@ pub enum TcpConnectWaitOutcome {
 #[derive(Debug)]
 pub struct PendingTcpConnect {
     handle: TcpConnectHandle,
+    state: Arc<TcpConnectState>,
 }
 
 impl PendingTcpConnect {
-    #[allow(dead_code)] // Constructed when TcpConnector wiring begins.
-    pub(crate) fn new(handle: TcpConnectHandle) -> Self {
-        Self { handle }
+    pub(crate) fn new(handle: TcpConnectHandle, state: Arc<TcpConnectState>) -> Self {
+        Self { handle, state }
     }
 
     /// Returns a clone of the independent cancellation handle.
@@ -417,11 +379,11 @@ impl PendingTcpConnect {
     /// Returns whether canonical terminal state has been committed.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        false
+        self.state.is_terminal()
     }
 
     pub(crate) fn try_completion(&self) -> Option<TcpConnectCompletion> {
-        None
+        self.state.try_completion()
     }
 
     pub(crate) fn issued_engine_id(&self) -> u64 {
@@ -431,17 +393,16 @@ impl PendingTcpConnect {
     /// Waits for and returns the canonical terminal outcome.
     #[must_use]
     pub fn wait(self) -> TcpConnectCompletion {
-        let _ = self;
-        TcpConnectCompletion::Failed(Error::new(
-            ErrorKind::Unsupported,
-            "standalone TCP connections are not available yet",
-        ))
+        self.state.wait()
     }
 
     /// Waits locally without changing connect state or cancelling on timeout.
     #[must_use]
-    pub fn wait_for(self, _duration: Duration) -> TcpConnectWaitOutcome {
-        TcpConnectWaitOutcome::TimedOut(self)
+    pub fn wait_for(self, duration: Duration) -> TcpConnectWaitOutcome {
+        match self.state.wait_for(duration) {
+            Some(completion) => TcpConnectWaitOutcome::Completed(completion),
+            None => TcpConnectWaitOutcome::TimedOut(self),
+        }
     }
 }
 
@@ -453,7 +414,6 @@ pub struct TcpConnectionHandle {
 }
 
 impl TcpConnectionHandle {
-    #[allow(dead_code)] // Constructed when TcpConnector wiring begins.
     pub(crate) fn new(connector: TcpConnector, id: RequestId) -> Self {
         Self { connector, id }
     }
@@ -506,7 +466,7 @@ impl fmt::Debug for TcpConnection {
 
 impl TcpConnection {
     #[cfg_attr(not(test), allow(dead_code))]
-    fn from_shared(io: Arc<TcpIoShared>, handle: TcpConnectionHandle) -> Self {
+    pub(crate) fn from_shared(io: Arc<TcpIoShared>, handle: TcpConnectionHandle) -> Self {
         Self {
             io,
             handle,
@@ -870,7 +830,9 @@ impl fmt::Display for TcpSendError {
             TcpSendErrorKind::Cancelled => "TCP connection was cancelled",
             TcpSendErrorKind::EngineStopped => "the owning Engine has stopped",
             TcpSendErrorKind::WrongMode => "blocking TCP send requires a spawned Engine",
-            TcpSendErrorKind::Unsupported => "standalone TCP connections are not available yet",
+            TcpSendErrorKind::Unsupported => {
+                "standalone TCP connections are not available on this Engine"
+            }
         })
     }
 }
@@ -928,16 +890,11 @@ impl StdError for TcpFinishError {
     }
 }
 
-fn stopped_error() -> Error {
-    Error::new(
-        ErrorKind::EngineStopped,
-        "the owning Engine has stopped accepting work",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native")]
+    use crate::LimitKind;
     use crate::dispatch::CallbackJob;
     use crate::{Engine, EngineConfig};
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
@@ -1052,9 +1009,442 @@ mod tests {
             .tcp_connector()
             .submit(request)
             .expect_err("over-ceiling send window must fail before admission");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        engine.shutdown().expect("bounded Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_literal_connect_is_duplex_on_the_existing_owner() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept standalone TCP");
+            let mut bytes = [0_u8; 4];
+            socket.read_exact(&mut bytes).expect("read request bytes");
+            assert_eq!(&bytes, b"ping");
+            socket.write_all(b"pong").expect("write response bytes");
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let request = TcpConnectRequest::literal(address)
+            .connect_timeout(Duration::from_secs(2))
+            .send_queue_bytes(16)
+            .receive_queue_bytes(16)
+            .build()
+            .expect("literal request must build");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(request)
+            .expect("literal connect must complete");
+        assert_eq!(connection.peer_addr().expect("peer address"), address);
+        connection.send(b"ping".to_vec()).expect("queue request");
+        let mut response = [0_u8; 4];
+        assert_eq!(
+            connection.read(&mut response).expect("read response"),
+            Some(4)
+        );
+        assert_eq!(&response, b"pong");
+        drop(connection);
+        server.join().expect("fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_tcp_limits_apply_after_capability_and_before_admission() {
+        let config = EngineConfig::spawned().with_max_tcp_queue_bytes_per_connection(8);
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let request = TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+            .send_queue_bytes(16)
+            .build()
+            .expect("over-ceiling request must build");
+        let error = engine
+            .tcp_connector()
+            .submit(request)
+            .expect_err("over-ceiling send window must fail before admission");
         assert_eq!(error.kind(), ErrorKind::Limit);
         assert_eq!(error.limit_kind(), Some(LimitKind::TcpQueueBytes));
-        engine.shutdown().expect("bounded Engine must stop");
+        assert_eq!(engine.metrics().tcp_connects_accepted(), 0);
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn manual_literal_connect_uses_drive_and_cancel_before_drive_wins() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind manual fixture");
+        let address = listener.local_addr().expect("manual fixture address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept manual TCP");
+            let mut byte = [0_u8; 1];
+            socket.read_exact(&mut byte).expect("read manual byte");
+            socket.write_all(&byte).expect("echo manual byte");
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend(&config)
+            .expect("manual native backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("manual standalone TCP Engine must construct");
+        let connector = engine.tcp_connector();
+        let cancelled = connector
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cancel request must build"),
+            )
+            .expect("cancel request must submit");
+        cancelled
+            .handle()
+            .cancel()
+            .expect("cancel must be accepted");
+        assert!(matches!(
+            engine
+                .drive_until(cancelled)
+                .expect("cancelled waiter must drive"),
+            TcpConnectCompletion::Cancelled
+        ));
+
+        let pending = connector
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .send_queue_bytes(8)
+                    .receive_queue_bytes(8)
+                    .build()
+                    .expect("manual request must build"),
+            )
+            .expect("manual request must submit");
+        let mut connection = match engine.drive_until(pending).expect("connect must drive") {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("manual connect failed: {other:?}"),
+        };
+        connection
+            .try_send(vec![7])
+            .expect("manual byte must queue");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut byte = [0_u8; 1];
+        loop {
+            engine.drive(deadline).expect("manual Engine must drive");
+            match connection
+                .try_read(&mut byte)
+                .expect("manual read must remain live")
+            {
+                TcpRead::Pending => assert!(Instant::now() < deadline, "manual echo timed out"),
+                TcpRead::Data(1) => break,
+                other => panic!("unexpected manual read: {other:?}"),
+            }
+        }
+        assert_eq!(byte, [7]);
+        drop(connection);
+        server.join().expect("manual fixture must join");
+        engine.shutdown().expect("manual Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn live_cancel_releases_tcp_occupancy_and_queue_reservation() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind cancel fixture");
+        let address = listener.local_addr().expect("cancel fixture address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept cancelled TCP");
+            let mut byte = [0_u8; 1];
+            let _closed_or_reset = socket.read(&mut byte);
+        });
+        let config = EngineConfig::spawned().with_max_queued_bytes(16);
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let request = TcpConnectRequest::literal(address)
+            .connect_timeout(Duration::from_secs(2))
+            .send_queue_bytes(8)
+            .receive_queue_bytes(8)
+            .build()
+            .expect("cancel request must build");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(request)
+            .expect("literal connect must complete");
+        let live = engine.metrics();
+        assert_eq!(live.current().standalone_tcp_connections(), 1);
+        assert_eq!(live.current().reserved_tcp_queue_bytes(), 16);
+        connection
+            .handle()
+            .cancel()
+            .expect("live cancel must succeed");
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            connection.try_read(&mut byte),
+            Err(TcpStreamError::Cancelled)
+        ));
+        let released = engine.metrics();
+        assert_eq!(released.current().standalone_tcp_connections(), 0);
+        assert_eq!(released.current().reserved_tcp_queue_bytes(), 0);
+        drop(connection);
+        server.join().expect("cancel fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn standalone_occupancy_covers_pending_and_live_then_releases_on_drop() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind occupancy fixture");
+        let address = listener.local_addr().expect("occupancy fixture address");
+        let server = thread::spawn(move || {
+            let (first, _) = listener.accept().expect("accept first TCP session");
+            drop(first);
+            let (second, _) = listener.accept().expect("accept replacement TCP session");
+            drop(second);
+        });
+        let config = EngineConfig::spawned()
+            .with_max_standalone_tcp_connections(NonZeroUsize::new(1).expect("nonzero limit"));
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let connector = engine.tcp_connector();
+        let request = || {
+            TcpConnectRequest::literal(address)
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .expect("occupancy request must build")
+        };
+
+        let first = connector
+            .execute(request())
+            .expect("first TCP session must connect");
+        let rejected = connector
+            .submit(request())
+            .expect_err("a live session must retain the sole occupancy permit");
+        assert_eq!(rejected.kind(), ErrorKind::QueueFull);
+        drop(first);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+
+        let replacement = connector
+            .execute(request())
+            .expect("dropping the first session must release occupancy");
+        drop(replacement);
+        server.join().expect("occupancy fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn shutdown_aborts_a_live_native_tcp_session_and_joins() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind shutdown fixture");
+        let address = listener.local_addr().expect("shutdown fixture address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept shutdown TCP");
+            let mut byte = [0_u8; 1];
+            let _closed_or_reset = socket.read(&mut byte);
+        });
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("shutdown request must build"),
+            )
+            .expect("shutdown TCP session must connect");
+
+        engine.shutdown().expect("Engine with live TCP must join");
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            connection.try_read(&mut byte),
+            Err(TcpStreamError::Failed(error)) if error.kind() == ErrorKind::EngineStopped
+        ));
+        drop(connection);
+        server.join().expect("shutdown fixture must join");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn spawned_start_delivers_one_unique_connection_off_the_reactor() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind callback fixture");
+        let address = listener.local_addr().expect("callback fixture address");
+        let server = thread::spawn(move || {
+            let (_socket, _) = listener.accept().expect("accept callback TCP");
+        });
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let (sent, received) = mpsc::channel();
+        let handle = engine
+            .tcp_connector()
+            .start(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("callback request must build"),
+                move |completion| {
+                    sent.send(completion).expect("send callback completion");
+                },
+            )
+            .expect("callback connect must start");
+        let connection = match received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("callback must arrive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("callback connect failed: {other:?}"),
+        };
+        assert_eq!(connection.handle().id(), handle.id());
+        drop(connection);
+        server.join().expect("callback fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_finish_drains_then_half_closes_without_losing_the_reader() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind finish fixture");
+        let address = listener.local_addr().expect("finish fixture address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept finishing TCP");
+            let mut request = Vec::new();
+            socket
+                .read_to_end(&mut request)
+                .expect("observe client write FIN");
+            assert_eq!(request, b"finished");
+            socket.write_all(b"yes").expect("reply after client FIN");
+        });
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("finish request must build"),
+            )
+            .expect("finish connect must complete");
+        connection
+            .send(b"finished".to_vec())
+            .expect("finish payload must queue");
+        connection.finish().expect("write half must finish");
+        let mut response = [0_u8; 3];
+        assert_eq!(connection.read(&mut response).expect("read reply"), Some(3));
+        assert_eq!(&response, b"yes");
+        assert_eq!(connection.read(&mut response).expect("read EOF"), None);
+        drop(connection);
+        server.join().expect("finish fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn http_stream_and_tcp_share_the_parent_queue_budget() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let http_listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind HTTP budget fixture");
+        let http_address = http_listener.local_addr().expect("HTTP fixture address");
+        let (http_seen_tx, http_seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let http_server = thread::spawn(move || {
+            let (mut socket, _) = http_listener.accept().expect("accept streaming HTTP");
+            let mut request = [0_u8; 512];
+            let _ = socket.read(&mut request).expect("read HTTP request");
+            http_seen_tx.send(()).expect("signal HTTP admission");
+            release_rx.recv().expect("release HTTP fixture");
+        });
+        let tcp_listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind TCP budget fixture");
+        let tcp_address = tcp_listener.local_addr().expect("TCP fixture address");
+        let tcp_server = thread::spawn(move || {
+            let (_socket, _) = tcp_listener.accept().expect("accept budget TCP");
+        });
+
+        let config = EngineConfig::spawned()
+            .with_max_stream_queue_bytes_per_request(8)
+            .with_max_stream_queued_bytes(16)
+            .with_max_tcp_queue_bytes_per_connection(8)
+            .with_max_queued_bytes(16);
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("shared-budget Engine must construct");
+        let reader = engine
+            .client()
+            .submit_stream(
+                crate::StreamRequest::get(format!("http://{http_address}/"))
+                    .build()
+                    .expect("stream request must build"),
+            )
+            .expect("HTTP stream must reserve eight bytes");
+        http_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("HTTP stream must reach fixture");
+        let connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(tcp_address)
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("TCP request must build"),
+            )
+            .expect("TCP must consume the remaining eight bytes");
+        let rejected = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(tcp_address)
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("second TCP request must build"),
+            )
+            .expect_err("shared parent budget must reject another reservation");
+        assert_eq!(rejected.kind(), ErrorKind::Limit);
+        assert_eq!(engine.metrics().tcp_connects_accepted(), 1);
+
+        drop(connection);
+        drop(reader);
+        release_tx.send(()).expect("release HTTP fixture");
+        tcp_server.join().expect("TCP budget fixture must join");
+        http_server.join().expect("HTTP budget fixture must join");
+        engine.shutdown().expect("shared-budget Engine must stop");
     }
 
     struct Live {
