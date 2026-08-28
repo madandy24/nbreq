@@ -173,6 +173,14 @@ pub(crate) fn native_http_backend(
     native_http::NativeHttpFactory::new(config).into_backend()
 }
 
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn native_http_backend_with_write_limit(
+    config: &crate::EngineConfig,
+    bytes: usize,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new(config).into_backend_with_write_limit(bytes)
+}
+
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_http_factory_with_nameserver(
     config: &crate::EngineConfig,

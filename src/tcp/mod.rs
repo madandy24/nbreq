@@ -893,10 +893,10 @@ impl StdError for TcpFinishError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "native")]
-    use crate::LimitKind;
     use crate::dispatch::CallbackJob;
     use crate::{Engine, EngineConfig};
+    #[cfg(feature = "native")]
+    use crate::{LimitKind, TimeoutKind};
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
     use std::num::NonZeroUsize;
     use std::sync::Arc as StdArc;
@@ -1059,6 +1059,524 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
+    fn native_read_inactivity_fails_a_silent_live_connection() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind read-inactivity fixture");
+        let address = listener.local_addr().expect("read-inactivity address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept silent TCP");
+            let mut byte = [0_u8; 1];
+            let _closed_or_reset = socket.read(&mut byte);
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .read_inactivity_timeout(Duration::from_millis(50))
+                    .build()
+                    .expect("read-inactivity request must build"),
+            )
+            .expect("silent TCP must connect");
+        let cancel = connection.handle();
+        let (result_tx, result_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            result_tx
+                .send(connection.read(&mut byte))
+                .expect("send read-inactivity result");
+        });
+        let result = match result_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(error) => {
+                cancel.cancel().expect("guard cancellation must succeed");
+                panic!("read inactivity did not terminate the connection: {error}");
+            }
+        };
+        assert!(matches!(
+            result,
+            Err(TcpStreamError::Failed(error))
+                if error.kind() == ErrorKind::Timeout
+                    && error.timeout_kind() == Some(TimeoutKind::Inactivity)
+        ));
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        server.join().expect("silent fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_read_progress_refreshes_inactivity() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind read-progress fixture");
+        let address = listener.local_addr().expect("read-progress address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept read-progress TCP");
+            socket.write_all(b"a").expect("write first progress byte");
+            thread::sleep(Duration::from_millis(180));
+            socket.write_all(b"b").expect("write second progress byte");
+            thread::sleep(Duration::from_millis(180));
+            socket.write_all(b"c").expect("write third progress byte");
+            let mut byte = [0_u8; 1];
+            let _closed_or_reset = socket.read(&mut byte);
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .receive_queue_bytes(8)
+                    .read_inactivity_timeout(Duration::from_millis(300))
+                    .build()
+                    .expect("read-progress request must build"),
+            )
+            .expect("read-progress TCP must connect");
+        let started = Instant::now();
+        for expected in b"abc" {
+            let mut byte = [0_u8; 1];
+            assert_eq!(
+                connection.read(&mut byte).expect("read progress byte"),
+                Some(1)
+            );
+            assert_eq!(byte[0], *expected);
+        }
+        assert!(
+            started.elapsed() > Duration::from_millis(300),
+            "the fixture did not cross the original inactivity deadline"
+        );
+        drop(connection);
+        server.join().expect("read-progress fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_receive_backpressure_pauses_then_restarts_read_inactivity() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind read-pressure fixture");
+        let address = listener.local_addr().expect("read-pressure address");
+        let (written_tx, written_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept read-pressure TCP");
+            socket.write_all(b"abc").expect("fill receive window");
+            written_tx.send(()).expect("signal filled receive window");
+            let mut byte = [0_u8; 1];
+            let _closed_or_reset = socket.read(&mut byte);
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .receive_queue_bytes(3)
+                    .read_inactivity_timeout(Duration::from_millis(50))
+                    .build()
+                    .expect("read-pressure request must build"),
+            )
+            .expect("read-pressure TCP must connect");
+        written_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fixture must write the receive window");
+        thread::sleep(Duration::from_millis(150));
+
+        let mut bytes = [0_u8; 3];
+        assert_eq!(
+            connection
+                .try_read(&mut bytes)
+                .expect("a full receive window must pause inactivity"),
+            TcpRead::Data(3)
+        );
+        assert_eq!(&bytes, b"abc");
+
+        let cancel = connection.handle();
+        let (result_tx, result_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            result_tx
+                .send(connection.read(&mut byte))
+                .expect("send resumed-inactivity result");
+        });
+        let result = match result_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(error) => {
+                cancel.cancel().expect("guard cancellation must succeed");
+                panic!("read inactivity did not restart after drain: {error}");
+            }
+        };
+        assert!(matches!(
+            result,
+            Err(TcpStreamError::Failed(error))
+                if error.kind() == ErrorKind::Timeout
+                    && error.timeout_kind() == Some(TimeoutKind::Inactivity)
+        ));
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        server.join().expect("read-pressure fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_write_inactivity_fails_output_stalled_in_the_socket() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind write-inactivity fixture");
+        let address = listener.local_addr().expect("write-inactivity address");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (_socket, _) = listener.accept().expect("accept stalled writer TCP");
+            release_rx.recv().expect("release stalled writer fixture");
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_write_limit(&config, 0)
+            .expect("stalled-write backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("manual standalone TCP Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .send_queue_bytes(8)
+                    .receive_queue_bytes(1)
+                    .write_inactivity_timeout(Duration::from_millis(75))
+                    .build()
+                    .expect("write-inactivity request must build"),
+            )
+            .expect("stalled writer TCP must submit");
+        let mut connection = match engine
+            .drive_until(pending)
+            .expect("stalled writer TCP must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("stalled writer TCP failed to connect: {other:?}"),
+        };
+        connection
+            .try_send(vec![0xA5; 8])
+            .expect("output must be accepted into the bounded window");
+        assert_eq!(
+            connection
+                .try_finish()
+                .expect("finish request must be accepted"),
+            TcpFinishStatus::Pending
+        );
+        let started = Instant::now();
+        let guard_deadline = Instant::now() + Duration::from_secs(2);
+        let error = loop {
+            let drive_deadline = (Instant::now() + Duration::from_millis(20)).min(guard_deadline);
+            engine
+                .drive(drive_deadline)
+                .expect("manual stalled-write Engine must drive");
+            match connection.try_finish() {
+                Ok(TcpFinishStatus::Pending) => {
+                    assert!(
+                        Instant::now() < guard_deadline,
+                        "write inactivity did not terminate the connection"
+                    );
+                }
+                Ok(TcpFinishStatus::Finished) => {
+                    panic!("stalled socket unexpectedly finished its write half")
+                }
+                Err(error) => break error,
+            }
+        };
+        release_tx.send(()).expect("release stalled writer fixture");
+        assert!(
+            matches!(
+                &error,
+                TcpFinishError::Failed(error)
+                    if error.kind() == ErrorKind::Timeout
+                        && error.timeout_kind() == Some(TimeoutKind::Inactivity)
+            ),
+            "unexpected write-inactivity terminal: {error:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "write inactivity was not enforced promptly: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        server.join().expect("write-inactivity fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_partial_write_progress_refreshes_inactivity_and_preserves_bytes() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind partial-write fixture");
+        let address = listener.local_addr().expect("partial-write address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept partial writer TCP");
+            let mut bytes = [0_u8; 8];
+            socket
+                .read_exact(&mut bytes)
+                .expect("read every partial write");
+            assert_eq!(&bytes, b"abcdefgh");
+            socket.write_all(b"ok").expect("reply after partial writes");
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_write_limit(&config, 2)
+            .expect("partial-write backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("manual standalone TCP Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .send_queue_bytes(8)
+                    .receive_queue_bytes(2)
+                    .write_inactivity_timeout(Duration::from_millis(200))
+                    .build()
+                    .expect("partial-write request must build"),
+            )
+            .expect("partial-write TCP must submit");
+        let mut connection = match engine
+            .drive_until(pending)
+            .expect("partial-write TCP must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("partial-write TCP failed to connect: {other:?}"),
+        };
+        connection
+            .try_send(b"abcdefgh".to_vec())
+            .expect("partial output must enter the send window");
+        assert_eq!(
+            connection
+                .try_finish()
+                .expect("partial finish request must be accepted"),
+            TcpFinishStatus::Pending
+        );
+
+        let guard_deadline = Instant::now() + Duration::from_secs(2);
+        let mut pending_passes = 0;
+        loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(20)).min(guard_deadline))
+                .expect("partial-write Engine must drive");
+            match connection
+                .try_finish()
+                .expect("partial progress must not time out")
+            {
+                TcpFinishStatus::Pending => {
+                    pending_passes += 1;
+                    assert!(
+                        Instant::now() < guard_deadline,
+                        "partial writes did not drain"
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                }
+                TcpFinishStatus::Finished => break,
+            }
+        }
+        assert!(
+            pending_passes >= 3,
+            "the two-byte test limit did not produce partial progress"
+        );
+
+        let mut reply = [0_u8; 2];
+        loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(20)).min(guard_deadline))
+                .expect("partial reply Engine must drive");
+            match connection
+                .try_read(&mut reply)
+                .expect("partial writer reply must remain live")
+            {
+                TcpRead::Pending => assert!(
+                    Instant::now() < guard_deadline,
+                    "partial writer reply timed out"
+                ),
+                TcpRead::Data(2) => break,
+                other => panic!("unexpected partial writer read: {other:?}"),
+            }
+        }
+        assert_eq!(&reply, b"ok");
+        drop(connection);
+        server.join().expect("partial-write fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn finish_with_receives_write_inactivity_off_the_owner() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("bind finish-callback inactivity fixture");
+        let address = listener
+            .local_addr()
+            .expect("finish-callback inactivity address");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (_socket, _) = listener
+                .accept()
+                .expect("accept finish-callback inactivity TCP");
+            release_rx
+                .recv()
+                .expect("release finish-callback inactivity fixture");
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_write_limit(&config, 0)
+            .expect("stalled-write backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("manual standalone TCP Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(1)
+                    .write_inactivity_timeout(Duration::from_millis(60))
+                    .build()
+                    .expect("finish-callback request must build"),
+            )
+            .expect("finish-callback TCP must submit");
+        let mut connection = match engine
+            .drive_until(pending)
+            .expect("finish-callback TCP must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("finish-callback TCP failed to connect: {other:?}"),
+        };
+        connection
+            .try_send(b"full".to_vec())
+            .expect("finish-callback output must queue");
+        let (callback_tx, callback_rx) = mpsc::channel();
+        connection
+            .finish_with(move |result| {
+                callback_tx
+                    .send(result)
+                    .expect("send finish-callback inactivity result");
+            })
+            .expect("finish callback must register");
+
+        let guard_deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            engine
+                .drive((Instant::now() + Duration::from_millis(20)).min(guard_deadline))
+                .expect("finish-callback Engine must drive");
+            match callback_rx.try_recv() {
+                Ok(result) => break result,
+                Err(mpsc::TryRecvError::Empty) => assert!(
+                    Instant::now() < guard_deadline,
+                    "finish callback did not receive inactivity terminal"
+                ),
+                Err(error) => panic!("finish callback channel disconnected: {error}"),
+            }
+        };
+        assert!(matches!(
+            result,
+            Err(TcpFinishError::Failed(error))
+                if error.kind() == ErrorKind::Timeout
+                    && error.timeout_kind() == Some(TimeoutKind::Inactivity)
+        ));
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        release_tx
+            .send(())
+            .expect("release finish-callback inactivity fixture");
+        drop(connection);
+        server
+            .join()
+            .expect("finish-callback inactivity fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_peer_reset_is_not_flattened_into_a_generic_transport_failure() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind reset fixture");
+        let address = listener.local_addr().expect("reset fixture address");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (reset_tx, reset_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().expect("accept reset TCP");
+            accepted_tx.send(()).expect("signal accepted reset TCP");
+            reset_rx.recv().expect("release reset fixture");
+            socket2::SockRef::from(&socket)
+                .set_linger(Some(Duration::ZERO))
+                .expect("configure abortive close");
+            drop(socket);
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::literal(address)
+                    .build()
+                    .expect("reset request must build"),
+            )
+            .expect("reset TCP must connect");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server must accept reset TCP");
+        reset_tx.send(()).expect("trigger abortive close");
+
+        let cancel = connection.handle();
+        let (result_tx, result_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            result_tx
+                .send(connection.read(&mut byte))
+                .expect("send reset result");
+        });
+        let result = match result_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(error) => {
+                cancel.cancel().expect("guard cancellation must succeed");
+                panic!("peer reset did not terminate the connection: {error}");
+            }
+        };
+        assert!(matches!(result, Err(TcpStreamError::Reset)));
+        server.join().expect("reset fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
     fn native_tcp_limits_apply_after_capability_and_before_admission() {
         let config = EngineConfig::spawned().with_max_tcp_queue_bytes_per_connection(8);
         let factory = crate::backend::native_http_factory(&config);
@@ -1200,6 +1718,74 @@ mod tests {
         assert_eq!(released.current().reserved_tcp_queue_bytes(), 0);
         drop(connection);
         server.join().expect("cancel fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn live_cancel_and_split_half_drops_release_once_under_race() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::sync::Barrier;
+        use std::thread;
+
+        const REPEATS: usize = 25;
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind cancel/drop race fixture");
+        let address = listener.local_addr().expect("cancel/drop race address");
+        let server = thread::spawn(move || {
+            for _ in 0..REPEATS {
+                let (mut socket, _) = listener.accept().expect("accept raced TCP");
+                let mut byte = [0_u8; 1];
+                let _closed_or_reset = socket.read(&mut byte);
+            }
+        });
+
+        let config = EngineConfig::spawned();
+        let factory = crate::backend::native_http_factory(&config);
+        let engine = Engine::with_spawned_factory(config, factory)
+            .expect("native standalone TCP Engine must construct");
+        for _ in 0..REPEATS {
+            let connection = engine
+                .tcp_connector()
+                .execute(
+                    TcpConnectRequest::literal(address)
+                        .send_queue_bytes(4)
+                        .receive_queue_bytes(4)
+                        .build()
+                        .expect("raced TCP request must build"),
+                )
+                .expect("raced TCP must connect");
+            let handle = connection.handle();
+            let (reader, writer) = connection.split();
+            let barrier = StdArc::new(Barrier::new(4));
+            let reader_barrier = StdArc::clone(&barrier);
+            let reader_drop = thread::spawn(move || {
+                reader_barrier.wait();
+                drop(reader);
+            });
+            let writer_barrier = StdArc::clone(&barrier);
+            let writer_drop = thread::spawn(move || {
+                writer_barrier.wait();
+                drop(writer);
+            });
+            let cancel_barrier = StdArc::clone(&barrier);
+            let cancel = thread::spawn(move || {
+                cancel_barrier.wait();
+                handle.cancel().expect("raced cancel must be idempotent");
+            });
+            barrier.wait();
+            reader_drop.join().expect("reader drop must join");
+            writer_drop.join().expect("writer drop must join");
+            cancel.join().expect("cancel must join");
+            assert_eq!(
+                engine.metrics().current().standalone_tcp_connections(),
+                0,
+                "raced release must happen exactly once"
+            );
+            assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        }
+        server.join().expect("cancel/drop race fixture must join");
         engine.shutdown().expect("native Engine must stop");
     }
 

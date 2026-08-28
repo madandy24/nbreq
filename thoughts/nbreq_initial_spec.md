@@ -1143,8 +1143,14 @@ atomic registry-then-connect-state success transition cannot invert against abor
 connect cancel, cancel-all, shutdown, and fail-all now commit their terminal under that same registry
 lock before success can move the ID into the live map; individual cancellation rechecks live state in
 the same critical section. A deterministic overlap test failed before this repair, passes afterwards,
-and passed 50/50 repetitions. Hostname resolution, inactivity, pressure/reset, and platform gates
-remain.
+and passed 50/50 repetitions. F2.3 now carries connected read/write inactivity, bounded-receive
+pause/restart, deterministic stalled and partial-write handling, distinct peer-reset classification,
+and exact-once release through timeout/cancel/drop races. A same-batch review hold is also closed:
+when useful standalone progress and a terminal socket failure arrive in one reactor batch, progress
+is retained but the removed slot is not re-armed and the terminal Reset/Failed result wins without
+an Engine-wide Internal poll failure. The corrected exact working tree passed focused and repeated
+TCP coverage plus the complete Windows and exact-source Ubuntu gates. F2.3 is accepted. Hostname
+resolution and the remaining platform gates remain.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the

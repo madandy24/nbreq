@@ -1572,6 +1572,17 @@ impl NativeHttpFactory {
             self.connection_limits,
         )?))
     }
+
+    #[cfg(test)]
+    pub(super) fn into_backend_with_write_limit(
+        self,
+        bytes: usize,
+    ) -> Result<Box<dyn Backend + Send>, Error> {
+        let mut backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.reactor.limit_writes_for_test(bytes);
+        Ok(Box::new(backend))
+    }
 }
 
 impl BackendFactory for NativeHttpFactory {
@@ -1819,6 +1830,115 @@ struct NativeHttpBackend {
 struct StandaloneTcp {
     request_id: RequestId,
     owner: TcpIoOwner,
+    read_inactivity_timeout: Option<Duration>,
+    read_inactivity_deadline: Option<Instant>,
+    read_inactivity_paused: bool,
+    write_inactivity_timeout: Option<Duration>,
+    write_inactivity_deadline: Option<Instant>,
+    write_inactivity_active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandaloneInactivity {
+    Read,
+    Write,
+}
+
+impl StandaloneTcp {
+    fn new(
+        request_id: RequestId,
+        owner: TcpIoOwner,
+        read_inactivity_timeout: Option<Duration>,
+        write_inactivity_timeout: Option<Duration>,
+        now: Instant,
+    ) -> Self {
+        Self {
+            request_id,
+            owner,
+            read_inactivity_timeout,
+            read_inactivity_deadline: read_inactivity_timeout
+                .and_then(|timeout| now.checked_add(timeout)),
+            read_inactivity_paused: false,
+            write_inactivity_timeout,
+            write_inactivity_deadline: None,
+            write_inactivity_active: false,
+        }
+    }
+
+    fn sync_pressure(&mut self, now: Instant) {
+        if self.owner.read_allowance() == 0 {
+            self.read_inactivity_paused = true;
+            self.read_inactivity_deadline = None;
+        } else if self.read_inactivity_paused {
+            self.read_inactivity_paused = false;
+            self.read_inactivity_deadline = self
+                .read_inactivity_timeout
+                .and_then(|timeout| now.checked_add(timeout));
+        }
+
+        let output_waiting = self.owner.send_occupancy() != 0;
+        match (self.write_inactivity_active, output_waiting) {
+            (false, true) => {
+                self.write_inactivity_active = true;
+                self.write_inactivity_deadline = self
+                    .write_inactivity_timeout
+                    .and_then(|timeout| now.checked_add(timeout));
+            }
+            (true, false) => {
+                self.write_inactivity_active = false;
+                self.write_inactivity_deadline = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn note_read_progress(&mut self, now: Instant) {
+        if !self.read_inactivity_paused {
+            self.read_inactivity_deadline = self
+                .read_inactivity_timeout
+                .and_then(|timeout| now.checked_add(timeout));
+        }
+    }
+
+    fn note_write_progress(&mut self, now: Instant) {
+        let output_waiting = self.owner.send_occupancy() != 0;
+        self.write_inactivity_active = output_waiting;
+        self.write_inactivity_deadline = output_waiting
+            .then_some(self.write_inactivity_timeout)
+            .flatten()
+            .and_then(|timeout| now.checked_add(timeout));
+    }
+
+    fn note_peer_closed(&mut self) {
+        self.read_inactivity_paused = true;
+        self.read_inactivity_deadline = None;
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        [
+            self.read_inactivity_deadline,
+            self.write_inactivity_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn expired(&self, now: Instant) -> Option<StandaloneInactivity> {
+        if self
+            .read_inactivity_deadline
+            .is_some_and(|deadline| deadline <= now)
+        {
+            Some(StandaloneInactivity::Read)
+        } else if self
+            .write_inactivity_deadline
+            .is_some_and(|deadline| deadline <= now)
+        {
+            Some(StandaloneInactivity::Write)
+        } else {
+            None
+        }
+    }
 }
 
 struct PublicLookup {
@@ -3765,6 +3885,7 @@ impl NativeHttpBackend {
                 continue;
             }
             let result = (|| {
+                live.sync_pressure(Instant::now());
                 self.reactor
                     .set_read_allowance(slot, Some(live.owner.read_allowance()))
                     .map_err(native_internal_error)?;
@@ -3793,6 +3914,10 @@ impl NativeHttpBackend {
                         .map_err(native_transport_error)?;
                     live.owner.complete_write_shutdown()?;
                 }
+                live.sync_pressure(Instant::now());
+                self.reactor
+                    .set_deadline(slot, live.next_deadline())
+                    .map_err(native_internal_error)?;
                 Ok::<(), Error>(())
             })();
             if let Err(error) = result {
@@ -3806,7 +3931,11 @@ impl NativeHttpBackend {
         Ok(())
     }
 
-    fn handle_standalone_event(&mut self, event: &NativeEvent) -> Result<bool, Error> {
+    fn handle_standalone_event(
+        &mut self,
+        event: &NativeEvent,
+        terminal_failure_in_batch: bool,
+    ) -> Result<bool, Error> {
         let slot = match event {
             NativeEvent::Connected(slot)
             | NativeEvent::WriteProgress(slot, _)
@@ -3823,6 +3952,9 @@ impl NativeHttpBackend {
 
         match event {
             NativeEvent::Connected(slot) => {
+                if terminal_failure_in_batch {
+                    return Ok(true);
+                }
                 let Some(sink) = self.standalone_pending.remove(slot) else {
                     return Ok(true);
                 };
@@ -3850,35 +3982,65 @@ impl NativeHttpBackend {
                 self.reactor
                     .set_read_allowance(*slot, Some(owner.read_allowance()))
                     .map_err(native_internal_error)?;
-                self.standalone_live.insert(
-                    *slot,
-                    StandaloneTcp {
-                        request_id: sink.id(),
-                        owner,
-                    },
+                let live = StandaloneTcp::new(
+                    sink.id(),
+                    owner,
+                    sink.read_inactivity_timeout(),
+                    sink.write_inactivity_timeout(),
+                    Instant::now(),
                 );
+                self.reactor
+                    .set_deadline(*slot, live.next_deadline())
+                    .map_err(native_internal_error)?;
+                self.standalone_live.insert(*slot, live);
             }
             NativeEvent::WriteProgress(slot, written) => {
                 if let Some(live) = self.standalone_live.get_mut(slot) {
                     live.owner.write_progress(*written);
+                    live.note_write_progress(Instant::now());
+                    if !terminal_failure_in_batch {
+                        self.reactor
+                            .set_deadline(*slot, live.next_deadline())
+                            .map_err(native_internal_error)?;
+                    }
                 }
             }
             NativeEvent::WriteDrained(slot) => {
                 if let Some(live) = self.standalone_live.get_mut(slot) {
                     let progressed = live.owner.pump_bytes();
                     live.owner.write_progress(progressed);
+                    live.note_write_progress(Instant::now());
+                    if !terminal_failure_in_batch {
+                        self.reactor
+                            .set_deadline(*slot, live.next_deadline())
+                            .map_err(native_internal_error)?;
+                    }
                 }
             }
             NativeEvent::Data(slot, bytes) => {
                 if let Some(live) = self.standalone_live.get_mut(slot) {
+                    live.note_read_progress(Instant::now());
                     if let Err(error) = live.owner.push_inbound(bytes.clone()) {
                         live.owner.fail(error);
+                    } else {
+                        live.sync_pressure(Instant::now());
+                        if !terminal_failure_in_batch {
+                            self.reactor
+                                .set_deadline(*slot, live.next_deadline())
+                                .map_err(native_internal_error)?;
+                        }
                     }
                 }
             }
             NativeEvent::PeerClosed(slot) => {
                 if let Some(live) = self.standalone_live.get_mut(slot) {
                     live.owner.peer_closed();
+                    live.note_peer_closed();
+                    if !terminal_failure_in_batch {
+                        self.reactor
+                            .set_deadline(*slot, live.next_deadline())
+                            .map_err(native_internal_error)?;
+                    }
                 }
             }
             NativeEvent::Failed(slot, failure) => {
@@ -3888,10 +4050,17 @@ impl NativeHttpBackend {
                 }
                 if let Some(mut live) = self.standalone_live.remove(slot) {
                     self.standalone_request_to_slot.remove(&live.request_id);
-                    live.owner.fail(native_transport_error(failure.clone()));
+                    if failure.is_connection_reset() {
+                        live.owner.reset();
+                    } else {
+                        live.owner.fail(native_transport_error(failure.clone()));
+                    }
                 }
             }
             NativeEvent::DeadlineExpired(slot) => {
+                if terminal_failure_in_batch {
+                    return Ok(true);
+                }
                 if let Some(sink) = self.standalone_pending.remove(slot) {
                     self.standalone_request_to_slot.remove(&sink.id());
                     sink.fail(Error::timeout(
@@ -3899,6 +4068,27 @@ impl NativeHttpBackend {
                         "the standalone TCP connection-establishment timeout expired",
                     ));
                     self.reactor.cancel(*slot);
+                }
+                if let Some(mut live) = self.standalone_live.remove(slot) {
+                    if let Some(direction) = live.expired(Instant::now()) {
+                        self.standalone_request_to_slot.remove(&live.request_id);
+                        let message = match direction {
+                            StandaloneInactivity::Read => {
+                                "the standalone TCP read inactivity timeout expired"
+                            }
+                            StandaloneInactivity::Write => {
+                                "the standalone TCP write inactivity timeout expired"
+                            }
+                        };
+                        live.owner
+                            .fail(Error::timeout(TimeoutKind::Inactivity, message));
+                        self.reactor.cancel(*slot);
+                    } else {
+                        self.reactor
+                            .set_deadline(*slot, live.next_deadline())
+                            .map_err(native_internal_error)?;
+                        self.standalone_live.insert(*slot, live);
+                    }
                 }
             }
         }
@@ -3921,9 +4111,6 @@ impl NativeHttpBackend {
             .collect::<HashSet<_>>();
         let mut completions = Vec::new();
         for event in events {
-            if self.handle_standalone_event(&event)? {
-                continue;
-            }
             let event_slot = match &event {
                 NativeEvent::Connected(slot)
                 | NativeEvent::WriteProgress(slot, _)
@@ -3933,6 +4120,9 @@ impl NativeHttpBackend {
                 | NativeEvent::Failed(slot, _)
                 | NativeEvent::DeadlineExpired(slot) => *slot,
             };
+            if self.handle_standalone_event(&event, failed_slots.contains(&event_slot))? {
+                continue;
+            }
             if self.idle_slots.contains_key(&event_slot) {
                 match event {
                     NativeEvent::WriteProgress(_, _) | NativeEvent::WriteDrained(_) => {}
@@ -5218,6 +5408,7 @@ mod tests {
                     NativeFailure {
                         kind: NativeFailureKind::Read,
                         message: "simulated same-batch reset".to_owned(),
+                        io_kind: None,
                     },
                 ),
             ])
@@ -5229,6 +5420,70 @@ mod tests {
         };
         assert_eq!(error.kind(), ErrorKind::Transport);
         assert_eq!(error.transport_stage(), Some(TransportStage::Send));
+    }
+
+    #[test]
+    fn standalone_terminal_socket_failure_dominates_same_batch_write_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("TCP batch fixture must bind");
+        let address = listener.local_addr().expect("TCP batch fixture address");
+        let config = EngineConfig::manual();
+        let mut backend =
+            NativeHttpBackend::new(LIMITS, None, None, ConnectionLimits::from_config(&config))
+                .expect("native backend must construct");
+        let slot = backend
+            .reactor
+            .connect(address, None, 1024, 1024)
+            .expect("TCP batch fixture must connect");
+        let (_peer, _) = listener.accept().expect("TCP batch fixture must accept");
+        let engine = crate::EngineBuilder::manual()
+            .build()
+            .expect("manual Engine must construct");
+        let shared = engine.shared_for_testing();
+        let request_id = RequestId {
+            engine: shared.id,
+            sequence: 1,
+        };
+        let (_io, owner) = crate::tcp::io::TcpIoShared::pair(crate::tcp::io::TcpIoConfig {
+            engine_id: shared.id,
+            request_id,
+            shared,
+            run_mode: crate::RunMode::Manual,
+            send_window: 1024,
+            receive_window: 1024,
+            local: address,
+            peer: address,
+            engine_waker: Some(Arc::new(|| {})),
+            on_release: Box::new(|| {}),
+        });
+        backend.standalone_request_to_slot.insert(request_id, slot);
+        backend.standalone_live.insert(
+            slot,
+            StandaloneTcp::new(
+                request_id,
+                owner,
+                Some(Duration::from_secs(1)),
+                Some(Duration::from_secs(1)),
+                Instant::now(),
+            ),
+        );
+
+        assert!(backend.reactor.cancel(slot));
+        backend
+            .process_events(vec![
+                NativeEvent::WriteProgress(slot, 1),
+                NativeEvent::Failed(
+                    slot,
+                    NativeFailure {
+                        kind: NativeFailureKind::Read,
+                        message: "simulated standalone same-batch reset".to_owned(),
+                        io_kind: Some(std::io::ErrorKind::ConnectionReset),
+                    },
+                ),
+            ])
+            .expect("same-batch standalone progress must not re-arm a removed socket");
+
+        assert!(!backend.standalone_live.contains_key(&slot));
+        assert!(!backend.standalone_request_to_slot.contains_key(&request_id));
     }
 
     fn assert_socket_closed(stream: &mut std::net::TcpStream, buffer: &mut [u8], context: &str) {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::atomic::try_update_usize;
 use crate::context;
@@ -365,6 +365,10 @@ pub(crate) struct TcpConnectState {
     send_window: usize,
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     receive_window: usize,
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    read_inactivity_timeout: Option<Duration>,
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    write_inactivity_timeout: Option<Duration>,
     inner: Mutex<TcpConnectInner>,
     changed: Condvar,
     metrics: Arc<Metrics>,
@@ -374,6 +378,8 @@ struct TcpConnectAdmission {
     connector: TcpConnector,
     send_window: usize,
     receive_window: usize,
+    read_inactivity_timeout: Option<Duration>,
+    write_inactivity_timeout: Option<Duration>,
     callback: Option<TcpConnectCallback>,
     occupancy_permit: AdmissionPermit,
     queued_bytes_permit: BytePermit,
@@ -399,6 +405,8 @@ impl TcpConnectState {
             connector: admission.connector,
             send_window: admission.send_window,
             receive_window: admission.receive_window,
+            read_inactivity_timeout: admission.read_inactivity_timeout,
+            write_inactivity_timeout: admission.write_inactivity_timeout,
             inner: Mutex::new(TcpConnectInner {
                 completion: None,
                 terminal: false,
@@ -761,6 +769,14 @@ impl TcpConnectSink {
         self.state.receive_window
     }
 
+    pub(crate) fn read_inactivity_timeout(&self) -> Option<Duration> {
+        self.state.read_inactivity_timeout
+    }
+
+    pub(crate) fn write_inactivity_timeout(&self) -> Option<Duration> {
+        self.state.write_inactivity_timeout
+    }
+
     pub(crate) fn connected(
         &self,
         local: std::net::SocketAddr,
@@ -1035,6 +1051,8 @@ impl Shared {
         let receive_window = request
             .receive_queue_bytes()
             .unwrap_or(self.max_tcp_queue_bytes_per_connection);
+        let read_inactivity_timeout = request.read_inactivity_timeout();
+        let write_inactivity_timeout = request.write_inactivity_timeout();
         if send_window > self.max_tcp_queue_bytes_per_connection
             || receive_window > self.max_tcp_queue_bytes_per_connection
         {
@@ -1113,6 +1131,8 @@ impl Shared {
                 connector,
                 send_window,
                 receive_window,
+                read_inactivity_timeout,
+                write_inactivity_timeout,
                 callback,
                 occupancy_permit,
                 queued_bytes_permit,

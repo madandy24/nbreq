@@ -44,6 +44,7 @@ pub(crate) enum NativeFailureKind {
 pub(crate) struct NativeFailure {
     pub(crate) kind: NativeFailureKind,
     pub(crate) message: String,
+    pub(crate) io_kind: Option<io::ErrorKind>,
 }
 
 impl NativeFailure {
@@ -51,6 +52,7 @@ impl NativeFailure {
         Self {
             kind,
             message: format!("native {operation} failed: {error}"),
+            io_kind: Some(error.kind()),
         }
     }
 
@@ -58,7 +60,19 @@ impl NativeFailure {
         Self {
             kind: NativeFailureKind::Internal,
             message: message.into(),
+            io_kind: None,
         }
+    }
+
+    pub(crate) fn is_connection_reset(&self) -> bool {
+        matches!(
+            self.io_kind,
+            Some(
+                io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+            )
+        )
     }
 }
 
@@ -141,6 +155,8 @@ pub(crate) struct NativeReactor {
     tokens: HashMap<Token, SlotId>,
     next_token: usize,
     deadlines: BinaryHeap<Reverse<DeadlineEntry>>,
+    #[cfg(test)]
+    write_limit_per_poll: Option<usize>,
 }
 
 impl NativeReactor {
@@ -156,7 +172,14 @@ impl NativeReactor {
             tokens: HashMap::new(),
             next_token: FIRST_SOCKET_TOKEN,
             deadlines: BinaryHeap::new(),
+            #[cfg(test)]
+            write_limit_per_poll: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limit_writes_for_test(&mut self, bytes: usize) {
+        self.write_limit_per_poll = Some(bytes);
     }
 
     pub(crate) fn waker(&self) -> NativeWaker {
@@ -259,6 +282,7 @@ impl NativeReactor {
             return Err(NativeFailure {
                 kind: NativeFailureKind::OutboundQueueFull,
                 message: "native outbound queue limit exceeded".to_owned(),
+                io_kind: None,
             });
         }
         connection.outbound.extend(bytes.iter().copied());
@@ -557,6 +581,8 @@ impl NativeReactor {
     }
 
     fn flush_write(&mut self, id: SlotId, output: &mut Vec<NativeEvent>) -> bool {
+        #[cfg(test)]
+        let mut remaining_test_budget = self.write_limit_per_poll.unwrap_or(usize::MAX);
         let Some(connection) = self.connection_mut(id) else {
             return false;
         };
@@ -566,15 +592,22 @@ impl NativeReactor {
         let had_data = !connection.outbound.is_empty();
         let mut wrote_bytes = 0_usize;
         loop {
+            #[cfg(test)]
+            if remaining_test_budget == 0 {
+                break;
+            }
             let (front, _) = connection.outbound.as_slices();
             if front.is_empty() {
                 break;
             }
+            #[cfg(test)]
+            let front = &front[..front.len().min(remaining_test_budget)];
             match connection.stream.write(front) {
                 Ok(0) => {
                     let failure = NativeFailure {
                         kind: NativeFailureKind::Write,
                         message: "native socket write made no progress".to_owned(),
+                        io_kind: None,
                     };
                     self.remove(id);
                     output.push(NativeEvent::Failed(id, failure));
@@ -583,6 +616,10 @@ impl NativeReactor {
                 Ok(written) => {
                     wrote_bytes = wrote_bytes.saturating_add(written);
                     connection.outbound.drain(..written);
+                    #[cfg(test)]
+                    {
+                        remaining_test_budget = remaining_test_budget.saturating_sub(written);
+                    }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
@@ -656,6 +693,7 @@ impl NativeReactor {
                             NativeFailure {
                                 kind: NativeFailureKind::ReceiveLimit,
                                 message: "native receive limit exceeded".to_owned(),
+                                io_kind: None,
                             },
                         ));
                         return;
