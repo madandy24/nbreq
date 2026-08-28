@@ -68,10 +68,10 @@
 
 <h1>NBReq Post-Release Follow-up Plan</h1>
 <div class="subtitle">
-  Published baseline: <span class="mono">nbreq 0.1.0</span> &nbsp;|&nbsp;
-  Original tracker: <span class="mono">thoughts/project_nbreq_plan.html</span> &nbsp;|&nbsp;
+  Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
+  Original tracker: <a href="completed/project_nbreq_plan.html"><span class="mono">thoughts/completed/project_nbreq_plan.html</span></a> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">F0 accepted; F1 accepted</span>
+  Overall status: <span class="status status-progress">F1.1 D0–D7 and F2.1 accepted; synchronize the DNS recovery commit before opening F2.2</span>
 </div>
 
 <div class="panel">
@@ -85,13 +85,18 @@
   <strong>Starting point:</strong> native HTTP is the ordinary default; <span class="mono">Engine</span> uniquely owns networking, cancellation, wakeup, limits, metrics, worker services, and joined shutdown. DNS, TCP, HTTP/1.1, TLS, pooling, redirects, and streaming already run on that owner on Windows and Linux, with an old-Wine polling fallback. The follow-up exposes capabilities; it does not create another runtime.
 </div>
 
+<div class="callout danger">
+  <strong>Priority recovery incident (2026-08-26/27):</strong> D0–D7 are accepted. The exact repair shipped as <span class="mono">nbreq 0.1.1</span>, passed synthetic, Windows-adapter, Ubuntu-namespace, exact-package, native-GDS, and same-package ureq gates, and now runs through GDS's ordinary registry dependency. F2.1 has resumed independently. The source of truth is <a href="completed/project_nbreq_dns_recovery_plan.html"><span class="mono">thoughts/completed/project_nbreq_dns_recovery_plan.html</span></a>.
+</div>
+
 <h2 id="contents">Contents</h2>
 <ol class="toc">
   <li><a href="#boundary">Programme boundary</a></li>
   <li><a href="#principles">Frozen principles</a></li>
   <li><a href="#contract">Public contract freeze</a></li>
   <li><a href="#shape">Proposed API shape</a></li>
-  <li><a href="#work">Work packages</a></li>
+    <li><a href="#work">Work packages</a></li>
+    <li><a href="#f2-0">F2.0 ownership checkpoint</a></li>
   <li><a href="#sequence">Dependency sequence</a></li>
   <li><a href="#verification">Verification matrix</a></li>
   <li><a href="#questions">Open API footnotes</a></li>
@@ -139,11 +144,11 @@
 <ol>
   <li><strong>One Engine, three capabilities.</strong> HTTP <span class="mono">Client</span>, <span class="mono">Resolver</span>, and <span class="mono">TcpConnector</span> are issued tickets into one unique Engine lifecycle.</li>
   <li><strong>No public constructors.</strong> Capability handles are cheap and cloneable, but they neither own nor extend Engine life. Detached handles reject new work with <span class="mono">EngineStopped</span>.</li>
-  <li><strong>No hidden runtime.</strong> Public DNS uses the existing resolver thread and public TCP uses the existing native reactor. They never construct parallel pollers or private Engines.</li>
-  <li><strong>HTTP selection is only HTTP selection.</strong> <span class="mono">HttpBackend</span> does not select DNS or TCP. With native support compiled, an Engine using an explicit HTTP backend may still issue native DNS/TCP handles; without native support, those operations fail <span class="mono">Unsupported</span> before admission.</li>
+  <li><strong>No hidden runtime.</strong> Public DNS uses the existing resolver thread and public TCP uses the existing native reactor on Engines that own that reactor. They never construct parallel pollers, a sidecar native poller beside curl, or private Engines.</li>
+  <li><strong>HTTP selection is only HTTP selection.</strong> <span class="mono">HttpBackend</span> does not select DNS or TCP. <span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> tickets remain feature-invariant. Operations require the native backend owner. Curl and scaffold Engines return <span class="mono">Unsupported</span> before admission. Compiling native support does not attach a second native poller beside curl.</li>
   <li><strong>One terminal winner.</strong> Resolve and connect each have exactly one completed, failed, or cancelled terminal. Cancellation is idempotent after terminal state and fails closed across Engines.</li>
-  <li><strong>No user code on owners.</strong> Start callbacks use the accepted callback-dispatch domain and never run on the resolver or reactor thread or under internal locks.</li>
-  <li><strong>Manual means passive.</strong> Submit and <span class="mono">try_*</span> calls never drive. Blocking execute, wait, read, and send calls reject manual mode. <span class="mono">Engine::drive</span> advances HTTP, DNS, and TCP together.</li>
+  <li><strong>No user code inside network processing.</strong> Start and write-side <span class="mono">finish_with</span> callbacks use the accepted callback-dispatch domain and never run during resolver/reactor processing or under internal locks. Spawned callbacks do not run on the spawned network owner. Manual callbacks may run on the thread calling <span class="mono">Engine::drive</span>, but only after the current network-processing pass reaches the established safe callback-drain point.</li>
+  <li><strong>Manual means passive.</strong> Submit and <span class="mono">try_*</span> calls never drive. Blocking execute, wait, read, send, and finish calls reject manual mode. <span class="mono">Engine::drive</span> advances HTTP, DNS, and TCP together. <span class="mono">try_finish</span> is the passive write half-close poll and is valid in manual mode. <span class="mono">finish_with</span> is also valid in manual mode; delivery occurs during <span class="mono">Engine::drive</span>.</li>
   <li><strong>Bounds before growth.</strong> Names, result counts, commands, live operations, connections, and queued bytes are bounded before resource acquisition or buffer growth.</li>
   <li><strong>Joined shutdown.</strong> Engine-wide cancellation and consuming shutdown cover HTTP requests, public resolutions, public connects, and live TCP streams. No thread or socket ownership escapes that join.</li>
   <li><strong>One crate.</strong> Public interfaces remain in <span class="mono">nbreq</span>. Internal module/workspace reorganisation may remain invisible.</li>
@@ -173,7 +178,7 @@
   <li>Optional connected-phase <span class="mono">read_inactivity_timeout</span> and <span class="mono">write_inactivity_timeout</span> govern the live object. Write inactivity runs only while accepted output is waiting for socket progress. Read inactivity pauses under consumer backpressure. Blocking connected operations reject manual mode rather than driving it.</li>
   <li>The unsplit connection supports simple bidirectional use. <span class="mono">split(self)</span> returns unique reader and writer halves for concurrent ownership.</li>
   <li>Connected reads and writes are bounded queue I/O with passive <span class="mono">try_*</span> operations. They do not create a second Completion protocol.</li>
-  <li>An unfinished writer drop aborts the connection. Split <span class="mono">TcpWriter::finish(self)</span> drains accepted output and then half-closes the write side. Unsplit <span class="mono">TcpConnection::finish(&amp;mut self)</span> performs the same write-side operation without consuming the still-live reader.</li>
+  <li>Dropping the writer before a successful finish request aborts the connection. After <span class="mono">try_finish</span> has returned <span class="mono">Pending</span> or <span class="mono">Finished</span>, writer drop does not revoke the request; the Engine owns completing drain and half-close. Unsplit drop before reader EOF still aborts, even if the write side is finishing. Both <span class="mono">TcpConnection::finish</span> and <span class="mono">TcpWriter::finish</span> take <span class="mono">&amp;mut self</span>. Passive <span class="mono">try_finish</span> is valid in manual mode; blocking <span class="mono">finish</span> is spawned convenience and returns <span class="mono">WrongMode</span> when manual. <span class="mono">finish_with</span> is the callback observer for that same request-once finish.</li>
   <li>A reader drop before observed EOF cancels the connection, including after writer finish. Reader drop after EOF is harmless.</li>
   <li>Dropping an unsplit connection before its writer has finished and its reader has observed EOF aborts it. Dropping it after both directions are terminal is harmless.</li>
   <li>The reader drains retained bytes before reporting EOF. Reset, cancellation, Engine stop, and local fail-closed drop wake blocked readers and writers promptly.</li>
@@ -184,10 +189,10 @@
 <ul>
   <li>HTTP pool capacity, public DNS inflight capacity, and standalone TCP capacity are distinct anti-starvation budgets.</li>
   <li><span class="mono">max_connections</span> and <span class="mono">max_connections_per_origin</span> remain HTTP-only. <span class="mono">max_standalone_tcp_connections</span> independently bounds pending and live standalone TCP. OS/process resource limits may cap their sum, but standalone TCP occupancy does not consume or shrink the configured HTTP pool.</li>
-  <li>An Engine-wide queued-byte ceiling will cover HTTP upload/unread-response queues plus standalone TCP send/unread-receive queues once F2 can charge <span class="mono">max_queued_bytes</span> atomically. F0 does not publish that field. HTTP streaming keeps <span class="mono">max_stream_queued_bytes</span>.</li>
-  <li>Per-operation and per-connection windows may request less than their Engine limit, never more.</li>
-  <li>HTTP-internal DNS remains reserved from public-resolver exhaustion. A hostname connect reserves its standalone TCP permit for the lifetime of the accepted connect/live connection and borrows one public-DNS permit only while resolving. The DNS permit is released before socket establishment; the connect retains one ID and one canonical terminal throughout.</li>
-  <li><span class="mono">Engine::cancel_all</span> covers HTTP, public DNS, pending connects, and live standalone TCP. The callback-event budget is shared by callback-bearing HTTP, resolve, and connect terminals; connected queue I/O does not invent callbacks.</li>
+  <li>F2 introduces Engine-wide <span class="mono">max_queued_bytes</span> as a parent ceiling over HTTP streaming reservations plus TCP reservations. Accounting is reserved-window capacity, not bytes actually queued. Default is 16 MiB. It may be lower than <span class="mono">max_stream_queued_bytes</span>; effective HTTP stream admission must satisfy both limits. Zero disables admission that requires queued streaming or TCP capacity, not buffered HTTP. HTTP streaming keeps <span class="mono">max_stream_queued_bytes</span>. This parent-ceiling freeze is accepted in F2.0; the field is published when F2 wires admission.</li>
+  <li>Per-operation and per-connection windows may request less than their Engine limit, never more. Zero TCP send or receive windows remain rejected at <span class="mono">TcpConnectRequest::build()</span>.</li>
+  <li>HTTP-internal DNS remains reserved from public-resolver exhaustion. A hostname connect acquires its standalone TCP occupancy permit, Engine-wide queue reservation, and public-DNS inflight permit atomically at connect admission, before ID allocation and command enqueue. The DNS permit is released after that connect’s DNS terminal and before socket establishment; occupancy and queue reservations transfer into the live object and are not released merely because the finite connect completed. The connect retains one ID and one canonical terminal throughout.</li>
+  <li><span class="mono">Engine::cancel_all</span> covers HTTP, public DNS, pending connects, and live standalone TCP. The callback-event budget is shared by callback-bearing HTTP, resolve, and connect terminals plus write-side <span class="mono">finish_with</span>. Connected send/read do not invent callbacks. <span class="mono">finish_with</span> is a later reservation after connect completion; connect <span class="mono">start</span> still releases its permit at connect terminal. The finish callback permit is held until the callback returns.</li>
   <li>Metrics remain payload-free and distinguish HTTP, public DNS, and standalone TCP current/high-water/cumulative activity.</li>
 </ul>
 
@@ -235,7 +240,7 @@ while let Some(count) = reader.read(&mut buffer)? {
     consume(&buffer[..count]);
 }</code></pre>
 
-<p>Compiled public family: <span class="mono">TcpConnector</span>, <span class="mono">TcpConnectRequest</span>/<span class="mono">TcpConnectRequestBuilder</span>, <span class="mono">TcpConnectTarget</span>, <span class="mono">PendingTcpConnect</span>, <span class="mono">TcpConnectHandle</span>, <span class="mono">TcpConnectCompletion</span>, <span class="mono">TcpConnectWaitOutcome</span>, <span class="mono">TcpConnection</span>, <span class="mono">TcpConnectionHandle</span>, <span class="mono">TcpReader</span>, <span class="mono">TcpWriter</span>, <span class="mono">TcpRead</span>, <span class="mono">TcpStreamError</span>, <span class="mono">TcpSendError</span>/<span class="mono">TcpSendErrorKind</span>, and <span class="mono">TcpFinishError</span>.</p>
+<p>Compiled public family: <span class="mono">TcpConnector</span>, <span class="mono">TcpConnectRequest</span>/<span class="mono">TcpConnectRequestBuilder</span>, <span class="mono">TcpConnectTarget</span>, <span class="mono">PendingTcpConnect</span>, <span class="mono">TcpConnectHandle</span>, <span class="mono">TcpConnectCompletion</span>, <span class="mono">TcpConnectWaitOutcome</span>, <span class="mono">TcpConnection</span>, <span class="mono">TcpConnectionHandle</span>, <span class="mono">TcpReader</span>, <span class="mono">TcpWriter</span>, <span class="mono">TcpRead</span>, <span class="mono">TcpStreamError</span>, <span class="mono">TcpSendError</span>/<span class="mono">TcpSendErrorKind</span>, <span class="mono">TcpFinishError</span>, and <span class="mono">TcpFinishStatus</span>.</p>
 
 <div class="callout">
   <strong>Existing vocabulary wins:</strong> finite resolve/connect operations mirror HTTP <span class="mono">start</span>, <span class="mono">submit</span>, <span class="mono">execute</span>, <span class="mono">RequestId</span>, <span class="mono">ExecuteError</span>, and cloneable cancellation handles. Live TCP queue I/O mirrors the ownership lessons of <span class="mono">ResponseReader</span> and <span class="mono">UploadSender</span>, but it is not called <span class="mono">submit_stream</span> and does not adapt HTTP <span class="mono">Completion</span>.
@@ -270,10 +275,14 @@ TcpConnector::cancel(&amp;self, RequestId) -&gt; Result&lt;(), Error&gt;
 TcpConnection::try_send/send(&amp;mut self, Vec&lt;u8&gt;) -&gt; Result&lt;(), TcpSendError&gt;
 TcpConnection::try_read(&amp;mut self, &amp;mut [u8]) -&gt; Result&lt;TcpRead, TcpStreamError&gt;
 TcpConnection::read(&amp;mut self, &amp;mut [u8]) -&gt; Result&lt;Option&lt;usize&gt;, TcpStreamError&gt;
+TcpConnection::try_finish(&amp;mut self) -&gt; Result&lt;TcpFinishStatus, TcpFinishError&gt;
 TcpConnection::finish(&amp;mut self) -&gt; Result&lt;(), TcpFinishError&gt;
-TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
+TcpWriter::try_finish(&amp;mut self) -&gt; Result&lt;TcpFinishStatus, TcpFinishError&gt;
+TcpWriter::finish(&amp;mut self) -&gt; Result&lt;(), TcpFinishError&gt;
+TcpConnection::finish_with&lt;F&gt;(&amp;mut self, F) -&gt; Result&lt;(), Error&gt;
+TcpWriter::finish_with&lt;F&gt;(&amp;mut self, F) -&gt; Result&lt;(), Error&gt;</code></pre>
 <div class="callout warning">
-  <strong>F0 accepted.</strong> The contract skeleton compiles and rejects work before admission. F1 wires <span class="mono">Resolver</span> onto the existing DNS owner; F2 wires <span class="mono">TcpConnector</span> onto the existing reactor. HTTP streaming still uses <span class="mono">max_stream_queued_bytes</span> exactly as in 0.1.0. The Engine-wide <span class="mono">max_queued_bytes</span> name is retained for F2, when HTTP and TCP reservations can share one charged counter.
+  <strong>F0 accepted.</strong> The contract skeleton compiles and rejects work before admission. F1 wires <span class="mono">Resolver</span> onto the existing DNS owner; F2 wires <span class="mono">TcpConnector</span> onto the existing reactor. HTTP streaming still uses <span class="mono">max_stream_queued_bytes</span> exactly as in 0.1.0. The Engine-wide <span class="mono">max_queued_bytes</span> reserved-window parent ceiling (default 16 MiB) is accepted in F2.0 and is published when F2 wires admission. <span class="mono">QueueLimitExceeded</span> was removed from the unreleased send-error enum.
 </div>
 
 <h2 id="work">5. Work Packages</h2>
@@ -306,7 +315,8 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
   <li><strong>F1-R1 — OS search suffixes.</strong> <span class="status status-done">Accepted</span>. Engine construction snapshots bounded normalized suffixes. Public search sequences candidates on the existing session (one RequestId/permit/deadline). HTTP and hostname TCP remain exact-name only.</li>
   <li><strong>F1-R2 — Broader public DNS failure fixtures.</strong> <span class="status status-done">Accepted</span>. FORMERR and unparseable replies are <span class="mono">DnsFailure::Malformed</span>; successful DNS-over-TCP fallback completes; truncated-after-TCP is <span class="mono">Truncated</span>; malformed TCP payloads are <span class="mono">Malformed</span>. <span class="mono">MAX_CNAME_HOPS</span> is the total CNAME links consumed across in-message chains and follow-up queries. In-message CNAME caches at hop zero; follow-up CNAME is not cached under the alias; hop overflow and root CNAME are <span class="mono">Protocol</span>. HTTP still maps these to <span class="mono">Transport</span>+<span class="mono">Dns</span> with no <span class="mono">DnsFailure</span> payload. TCP-fallback cancel waits until the TCP query has been read.</li>
   <li><strong>F1-R3 — Cross-platform F1 gate.</strong> <span class="status status-done">Accepted</span>. Exact-source Ubuntu/Linux evidence is recorded below. macOS is not part of F1 and no macOS support claim is made.</li>
-  <li><strong>F2</strong> remains closed: <span class="mono">TcpConnector</span> is unwired.</li>
+  <li><strong>F1.1 — Resolver transport recovery.</strong> <span class="status status-done">D0–D7 accepted</span>. The exact repair is published as <span class="mono">nbreq 0.1.1</span>, independently resolved from crates.io, and live-proven through GDS's ordinary registry dependency. Full evidence remains in <a href="completed/project_nbreq_dns_recovery_plan.html">the archived DNS recovery plan</a>.</li>
+  <li><strong>F2</strong> F2.0 and F2.1 are accepted. The isolated live I/O seam includes bounded queue/drop/finish state and the atomic callback admission/activation repair. <span class="mono">TcpConnector</span> operations stay unwired; F2.2 has not started.</li>
 </ul>
 <div class="callout">
   <strong>Pre-fix Ubuntu F1-R3 (2026-08-25, retained, not the final exact-source F1 gate):</strong> standard test host via PuTTY saved session <span class="mono">gds-client-01i linode</span>. Toolchain <span class="mono">rustc 1.85.0 (4d91de4e4 2025-02-17)</span> and <span class="mono">cargo 1.85.0 (d73d2caf9 2024-12-31)</span>. Archive SHA-256 <span class="mono">6FF5BA9A91E5247B5CEC169941F470A472270A33E3A452B48DF139FE12186DF7</span> extracted at <span class="mono">/tmp/nbreq-f1/nbreq</span>. Focused lib tests: 34 <span class="mono">dns_wiring_tests</span> and 8 <span class="mono">native_dns_config</span> tests. Complete <span class="mono">xtask verify --offline</span> 20/20 in 226.886s. One preceding <span class="mono">cargo fetch --locked</span> populated three Windows-only lockfile crates that were not compiled on Linux; the gate then ran offline. This archive predates the IPv6 HTTP-view freeze.
@@ -372,18 +382,182 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <p><strong>Acceptance:</strong> Windows and exact-source Ubuntu prove positive/negative answers, ordering, cache modes/expiry, DNS server errors, malformed/truncated replies, bounds, cancellation races, manual drive, callback isolation, public-vs-HTTP fairness, and joined shutdown. Existing HTTP unknown-host tests remain byte-for-byte equivalent at the public error layer.</p>
 
 <h3>F2 — Expose TcpConnector and bounded live streams</h3>
-<p><span class="status status-open">Not started</span></p>
+<p><span class="status status-progress">F2.0 and F2.1 accepted; F2.2 not started</span></p>
 <ul>
   <li>Add finite hostname/literal connect requests on the existing resolver and reactor owners, with one Engine-scoped ID space and canonical connect terminal.</li>
-  <li>Reject port zero and unspecified literal destination addresses at <span class="mono">TcpConnectRequest::build()</span>, before admission or DNS/socket work.</li>
+  <li>Reject port zero and unspecified literal destination addresses at <span class="mono">TcpConnectRequest::build()</span>, before admission or DNS/socket work. Zero TCP queue windows remain rejected at build.</li>
   <li>Add standalone TCP admission/fairness independently of the HTTP idle pool. The standalone budget does not consume <span class="mono">max_connections</span>; ordinary OS/process limits still bound the combined sockets.</li>
   <li>Implement one unique unsplit connection plus consuming split into unique reader/writer halves.</li>
   <li>Implement bounded send and unread-receive queues, passive <span class="mono">try_*</span>, spawned blocking convenience, wakeups, and manual-drive behaviour.</li>
-  <li>Introduce <span class="mono">max_queued_bytes</span> when HTTP streaming and TCP queues can charge the Engine-wide ceiling atomically.</li>
+  <li>Introduce <span class="mono">max_queued_bytes</span> as a reserved-window parent ceiling over HTTP streaming reservations plus TCP reservations (F2.0 accepted; publish with admission wiring).</li>
   <li>Implement explicit writer finish, retained-byte-before-EOF, fail-closed drops, reset/error propagation, and cloneable connection cancellation.</li>
   <li>Expose local/peer addresses and payload-free metrics, but no raw socket or TLS escape hatch.</li>
 </ul>
 <p><strong>Acceptance:</strong> literal and hostname connects, combined budget charging, unsplit and split duplex traffic, partial progress, backpressure, half-close, FIN with retained bytes, reset, cancel at every stage, drop races, Engine stop, and callback/manual modes pass on Windows and Ubuntu. The old-Wine fallback receives a focused lifecycle pass before any Wine support claim.</p>
+
+<h4 id="f2-0">F2.0 ownership/design checkpoint</h4>
+<p><span class="status status-done">Accepted 2026-08-26</span></p>
+<p>F2.0 is accepted. Native <span class="mono">TcpConnector</span> capability stays off until later slices. F2.1 wires isolated live queue/drop/finish state without sockets, including accepted FQ-12 <span class="mono">finish_with</span>.</p>
+
+<div class="callout">
+  <strong>Accepted freezes:</strong>
+  <ol>
+    <li><span class="mono">max_queued_bytes</span> uses reserved-window accounting, not occupancy.</li>
+    <li>Default is 16 MiB.</li>
+    <li>It is a parent ceiling over HTTP streaming reservations plus TCP reservations.</li>
+    <li>It may be lower than <span class="mono">max_stream_queued_bytes</span>; effective HTTP stream admission must satisfy both limits.</li>
+    <li>Zero disables admission that requires queued streaming or TCP capacity, not buffered HTTP.</li>
+    <li>Remove unreleased <span class="mono">TcpSendErrorKind::QueueLimitExceeded</span>. Aggregate refusal is admission <span class="mono">Limit</span>. Do not return Engine-global send-time queue refusal.</li>
+    <li>Hostname connects acquire the public-DNS inflight permit atomically at connect admission, before ID allocation and command enqueue. Release it after that connect’s DNS terminal and before socket establishment.</li>
+    <li>Zero TCP queue windows remain rejected at request build (already compiled).</li>
+  </ol>
+</div>
+
+<h4>Independent finite-connect and live I/O state</h4>
+<p>Do not represent connect completion and live I/O with one exclusive phase enum. Keep two independent states that may briefly coexist for the same <span class="mono">RequestId</span>:</p>
+<ul>
+  <li><span class="mono">TcpConnectState</span> in <span class="mono">core.connects</span> — finite connect waiter/callback/terminal, analogue of <span class="mono">ResolveState</span>.</li>
+  <li><span class="mono">TcpIoShared</span> in <span class="mono">core.live_tcp</span> — live queues, pump occupancy, drop/abort, analogue of streaming control state.</li>
+</ul>
+<p>Same Engine-scoped ID. After a failed or cancelled connect, only <span class="mono">connects</span> existed and is removed at commit. After success, <span class="mono">connects</span> is removed at connect commit and <span class="mono">live_tcp</span> remains until both directions are terminal or abort wins. ReactorCore <span class="mono">active_connects</span> tracks only the finite connect; live sockets keep spawned polling through <span class="mono">wants_poll_without_requests</span>.</p>
+<pre><code>TcpConnectState {
+    id, changed,
+    completion: Option&lt;TcpConnectCompletion&gt;,  // take, not clone
+    callback / callback_permit,
+    occupancy: Option&lt;AdmissionPermit&gt;,        // until transfer or fail/cancel
+    queue_reservation: Option&lt;BytePermit&gt;,     // Engine-wide parent
+    dns_borrow: Option&lt;AdmissionPermit&gt;,       // hostname only
+}
+
+TcpIoShared {
+    occupancy: Option&lt;AdmissionPermit&gt;,        // received at success transition
+    queue_reservation: Option&lt;BytePermit&gt;,
+    send_window, receive_window,
+    outbound_bytes, pump_bytes, inbound_bytes,
+    write_finish_requested, write_finished, read_eof,
+    terminal: Option&lt;TcpAbort&gt;,
+    local, peer, condvar, engine_waker,
+}</code></pre>
+
+<h4>Exact admission order</h4>
+<p>Under the <span class="mono">core</span> mutex, after builder validation:</p>
+<ol>
+  <li>Lifecycle not Running / Engine stopped → <span class="mono">EngineStopped</span>.</li>
+  <li><span class="mono">!supports_standalone_tcp</span> → <span class="mono">Unsupported</span> before ID (curl, scaffold, native proving Engine without this reactor owner).</li>
+  <li>Hostname and <span class="mono">!supports_public_resolver</span> → <span class="mono">Unsupported</span> before ID. Literal connect still allowed when the native reactor owner is present without DNS.</li>
+  <li>Per-direction window exceeds <span class="mono">max_tcp_queue_bytes_per_connection</span> → <span class="mono">Limit(TcpQueueBytes)</span>.</li>
+  <li>Engine TCP per-connection ceiling is zero → <span class="mono">Limit</span> (standalone TCP disabled).</li>
+  <li><span class="mono">max_queued_bytes == 0</span> → <span class="mono">Limit</span> (queued TCP capacity disabled; buffered HTTP remains admissible).</li>
+  <li>Occupancy <span class="mono">AdmissionPermit</span> against <span class="mono">max_standalone_tcp_connections</span> (pending plus live).</li>
+  <li>Engine-wide <span class="mono">BytePermit</span> of <span class="mono">send_window + receive_window</span> against <span class="mono">max_queued_bytes</span>.</li>
+  <li>Hostname only: public-DNS <span class="mono">AdmissionPermit</span> against <span class="mono">max_inflight_resolutions</span>.</li>
+  <li>Callback permit only for <span class="mono">start()</span>.</li>
+  <li>Allocate <span class="mono">RequestId</span>, insert <span class="mono">core.connects</span>, enqueue <span class="mono">Submission::Connect</span>.</li>
+  <li>Command-queue refusal rolls back the map entry; RAII drops every acquired permit; <span class="mono">QueueFull</span>.</li>
+</ol>
+<p>HTTP <span class="mono">accept_stream</span> keeps its existing <span class="mono">max_stream_queued_bytes</span> reservation and, under the same mutex, must also acquire the parent <span class="mono">max_queued_bytes</span> reservation. If either CAS fails, admission fails <span class="mono">Limit</span> and no ID is issued. Buffered HTTP does not charge either counter. <span class="mono">max_queued_bytes == 0</span> rejects streaming and TCP only.</p>
+
+<h4>Atomic success transition</h4>
+<p>On the reactor thread, one <span class="mono">core</span> mutex critical section (which also serializes <span class="mono">cancel</span> / <span class="mono">cancel_all</span> / <span class="mono">fail_all</span>):</p>
+<ol>
+  <li>Lock <span class="mono">core</span> and the connect inner mutex.</li>
+  <li>If the finite connect is already terminal: unlock, tear down the just-established slot, do not insert live state.</li>
+  <li>Construct <span class="mono">TcpIoShared</span>. Take occupancy and Engine-wide/TCP queue reservations from <span class="mono">TcpConnectState</span> into it. DNS permit is already gone.</li>
+  <li>Insert <span class="mono">core.live_tcp[id]</span>.</li>
+  <li>Commit <span class="mono">TcpConnectCompletion::Completed(TcpConnection)</span> into the connect inner (unique take, not clone); notify the waiter; take any terminal callback job.</li>
+  <li>Remove <span class="mono">core.connects[id]</span>.</li>
+  <li>Unlock. Queue the callback off-owner. Remove the ID from ReactorCore <span class="mono">active_connects</span> only. Backend standalone slot remains.</li>
+</ol>
+<p>Connect timeout ends when that live object is committed. Inactivity timers start afterwards.</p>
+
+<h4>Cancel races around the transition</h4>
+<table>
+<tr><th>When</th><th>Winner</th><th>Connect terminal</th><th>Live I/O</th><th>Permits</th></tr>
+<tr><td>Before (DNS or connecting; no live map entry)</td><td>Cancel first-wins on <span class="mono">TcpConnectState::commit</span></td><td><span class="mono">Cancelled</span></td><td>None. Backend tears down DNS/connecting slot if present.</td><td>Occupancy, parent reservation, and any remaining DNS borrow drop with the connect state.</td></tr>
+<tr><td>During (same <span class="mono">core</span> lock as success)</td><td>Serialized. Cancel waits, then observes either still-connecting or already-live.</td><td>Exactly one of <span class="mono">Completed</span> or <span class="mono">Cancelled</span></td><td>Never insert live after a cancelled connect. Never un-commit <span class="mono">Completed</span>.</td><td>Follow the observed winner.</td></tr>
+<tr><td>After (connect committed; <span class="mono">live_tcp</span> present)</td><td>Finite connect stays <span class="mono">Completed</span>. Same ID aborts live I/O.</td><td>Unchanged <span class="mono">Completed</span>. Waiter/callback still receive the unique connection.</td><td><span class="mono">TcpAbort::Cancelled</span>; subsequent send/read/finish fail closed. Socket is abortive, not FIN.</td><td>Released when abort wins, not when the public object later drops.</td></tr>
+</table>
+<p><span class="mono">TcpConnectHandle</span> and <span class="mono">TcpConnectionHandle</span> share the ID. Cancel after terminal on the finite connect is idempotent; if live state remains it is a live abort. Wrong-Engine IDs fail closed before map lookup. <span class="mono">cancel_all</span>, <span class="mono">begin_shutdown</span>, and <span class="mono">fail_all</span> iterate both maps. Panic fail-all keeps current HTTP/DNS snapshot-then-complete order and appends both TCP maps before <span class="mono">queue.wake</span>.</p>
+
+<h4>Permit release (live)</h4>
+<p>Occupancy and parent/TCP reservations live on <span class="mono">TcpIoShared</span> after the success transition. Release exactly once when both directions are terminal (<span class="mono">write_finished</span> and observed read EOF after draining retained inbound) <em>or</em> abort wins (cancel, reset, failure, EngineStopped, fail-closed unfinished drop). Then remove <span class="mono">core.live_tcp[id]</span>. Public object Drop after that is harmless and must not release again. Public object Drop before that is abort, which is what releases.</p>
+
+<h4>Send-pump accounting</h4>
+<p>Public send-window occupancy is the sum of bytes still in the user outbound queue and bytes staged in the <span class="mono">NativeReactor</span> pump. Moving a chunk from the user queue into <span class="mono">queue_write</span> must not release window capacity. Decrease consumed bytes only on actual socket write progress (<span class="mono">WriteProgress</span> / partial flush). <span class="mono">try_send</span> sees remaining = <span class="mono">send_window - (outbound_bytes + pump_bytes)</span>. <span class="mono">ChunkTooLarge</span> if the buffer can never fit the window; local <span class="mono">WouldBlock</span> if it does not fit remaining occupancy. Refused bytes are never consumed. Native <span class="mono">receive_limit</span> stays a non-binding lifetime cap (<span class="mono">usize::MAX</span>); unread backpressure uses <span class="mono">set_read_allowance</span>.</p>
+
+<h4>Passive manual finish (FQ-11 accepted)</h4>
+<pre><code>enum TcpFinishStatus { Pending, Finished }
+TcpConnection::try_finish(&amp;mut self) -&gt; Result&lt;TcpFinishStatus, TcpFinishError&gt;
+TcpConnection::finish(&amp;mut self) -&gt; Result&lt;(), TcpFinishError&gt;
+TcpWriter::try_finish(&amp;mut self) -&gt; Result&lt;TcpFinishStatus, TcpFinishError&gt;
+TcpWriter::finish(&amp;mut self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
+<ul>
+  <li><strong>Request-once:</strong> the first successful <span class="mono">try_finish</span> closes the write side to new sends and requests drain-then-half-close.</li>
+  <li><strong>Later polls:</strong> return <span class="mono">Pending</span> until accepted bytes have reached the socket and the owner has performed write shutdown, then <span class="mono">Finished</span>. They do not request another finish.</li>
+  <li>After the request is accepted, <span class="mono">try_send</span> returns <span class="mono">Closed</span> with the caller’s buffer intact.</li>
+  <li><span class="mono">try_finish</span> is passive and valid in manual mode. The caller drives the Engine externally.</li>
+  <li>Blocking <span class="mono">finish</span> is spawned convenience and returns <span class="mono">WrongMode</span> in manual mode. Both unsplit and split writer use <span class="mono">&amp;mut self</span>.</li>
+  <li>Drop before a successful finish request aborts. Drop after <span class="mono">Pending</span> or <span class="mono">Finished</span> does not revoke the request. Unsplit drop before reader EOF still aborts even if the write side is finishing.</li>
+</ul>
+
+<h4 id="fq-12">Write-side finish callback (FQ-12 accepted)</h4>
+<p><span class="status status-done">Accepted 2026-08-26</span></p>
+<p>After a successful finish request the writer may be dropped, and then nothing can observe drain and write shutdown. <span class="mono">try_finish</span> requires keeping the writer to poll. Blocking <span class="mono">finish</span> requires sitting on a spawned Engine. FQ-12 adds the missing observer without a new handle or waiter. It is accepted on the F2.1 seam; F2.2 sockets remain unopened.</p>
+<pre><code>impl TcpConnection {
+    pub fn finish_with&lt;F&gt;(&amp;mut self, callback: F) -&gt; Result&lt;(), Error&gt;
+    where
+        F: FnOnce(Result&lt;(), TcpFinishError&gt;) + Send + 'static;
+}
+impl TcpWriter {
+    pub fn finish_with&lt;F&gt;(&amp;mut self, callback: F) -&gt; Result&lt;(), Error&gt;
+    where
+        F: FnOnce(Result&lt;(), TcpFinishError&gt;) + Send + 'static;
+}</code></pre>
+<ul>
+  <li>Successful registration atomically attaches one callback and requests drain-then-half-close (idempotent if <span class="mono">try_finish</span> already requested).</li>
+  <li><strong>No half-apply on failure.</strong> If finish was not yet requested and registration fails, do not request finish. If finish was already requested and only callback reservation fails, the finish request stays; no callback is attached; the request is not revoked. In both cases the callback is dropped without being invoked.</li>
+  <li>Registration uses <span class="mono">Error</span>: <span class="mono">QueueFull</span> when callback-event capacity is exhausted (same kind HTTP and Resolver <span class="mono">start()</span> already return; no new <span class="mono">LimitKind</span>), <span class="mono">EngineStopped</span> when the Engine has stopped, <span class="mono">InvalidRequest</span> for a second <span class="mono">finish_with</span>. The first callback remains if a second registration fails.</li>
+  <li>The callback permit is retained until the callback returns, not merely until finish becomes terminal or the job is queued.</li>
+  <li>Registration uses the existing callback-activation barrier and the connection’s existing <span class="mono">RequestId</span>. The lifecycle check, callback-event permit reservation, and activation increment must occur atomically under the registry lifecycle lock before shutdown can cross its admission barrier. This preserves never-before-return, shutdown sealing, panic containment, and per-connection callback serialization, including when <span class="mono">finish_with()</span> is called from the connect callback.</li>
+  <li>At most one finish callback belongs to the write half, even if the connection is subsequently split. No new handle or <span class="mono">WaiterTarget</span>.</li>
+  <li>Valid in spawned and manual modes. Manual delivery occurs during <span class="mono">Engine::drive</span>. Spawned delivery uses the accepted callback-dispatch domain. It is not <span class="mono">WrongMode</span> when manual.</li>
+  <li>The callback never runs inline before <span class="mono">finish_with</span> returns, during resolver/reactor processing, on the spawned network owner, or under locks. Manual delivery may run on the driving thread after a safe processing pass. Successful registration after the write half is already <span class="mono">Finished</span> still queues the callback; it does not run inline.</li>
+  <li><strong>Terminal mapping:</strong> Engine shutdown → <span class="mono">TcpFinishError::EngineStopped</span>; <span class="mono">cancel_all()</span>, handle cancellation, or abandoning the unsplit connection → <span class="mono">Cancelled</span>; peer reset → <span class="mono">Reset</span>; other transport failure → <span class="mono">Failed(Error)</span>; successful drain and write shutdown → <span class="mono">Ok(())</span>.</li>
+  <li>Dropping the writer after successful registration does not cancel the finish. The Engine still owes the callback a terminal result.</li>
+  <li>Blocking <span class="mono">finish()</span> returning does not mean the callback has run.</li>
+  <li>It reports only write-half completion, not peer EOF or whole-connection closure. Live <span class="mono">try_send</span>/<span class="mono">try_read</span> still have no callbacks.</li>
+  <li><span class="mono">try_finish</span> remains the passive poll. Blocking <span class="mono">finish</span> remains spawned convenience. This is the third familiar style.</li>
+  <li>This amends the F2 freeze that connected queue I/O does not invent callbacks: only write-side <span class="mono">finish_with</span> charges the shared callback-event budget after connect completion. Connect <span class="mono">start</span> still releases its permit at connect terminal; <span class="mono">finish_with</span> is a later, separate reservation.</li>
+  <li><span class="mono">UploadSender::finish</span> stays without a callback. That HTTP-streaming asymmetry is recorded and is not a TCP hold.</li>
+</ul>
+
+<div class="callout success">
+  <strong>F2.1 accepted (2026-08-28):</strong> <span class="mono">try_begin_callback_event()</span> checks lifecycle, reserves callback capacity, and increments the activation count while holding the registry core lock, returning the permit and activation guard together. A deterministic regression pauses immediately after this atomic boundary, overlaps shutdown, proves shutdown cannot seal while activation is held, and requires the accepted callback to receive <span class="mono">TcpFinishError::EngineStopped</span>. All 25 TCP seam tests passed, the regression passed 50/50 repetitions, warning-denied all-feature clippy passed, and the complete Windows verifier passed 20/20 in 33.495s. No sockets or public capability flip landed. The accepted working tree remains uncommitted and unpushed pending the next checkpoint.
+</div>
+
+<div class="callout warning">
+  <strong>Before F2.2:</strong> this F2.1 working tree is based on F1 commit <span class="mono">b163266</span>. The accepted resolver-generation repair is commit <span class="mono">cbafb84</span> on <span class="mono">codex/dns-recovery-main</span> and is present in the published <span class="mono">0.1.1</span> lineage, but not in this tree. Integrate that repair as a separate lineage step before hostname-connect or other native-DNS-touching F2.2 work; do not bury it inside the socket slice.
+</div>
+
+<h4>Curl / scaffold / owner rule</h4>
+<ul>
+  <li>Resolver and TcpConnector tickets remain feature-invariant.</li>
+  <li>Operations require the native backend owner (existing DNS thread / existing reactor).</li>
+  <li>Curl and scaffold return <span class="mono">Unsupported</span> before admission, ID, permits, callback reservation, or command enqueue.</li>
+  <li>NBReq does not create a second native poller beside curl.</li>
+</ul>
+
+<h4>Recommended implementation slices</h4>
+<ol>
+  <li><strong>F2.1</strong> <span class="status status-done">Accepted</span> isolated <span class="mono">TcpIoShared</span> queue/drop/wakeup seam, including pump-occupancy accounting, FQ-12 <span class="mono">finish_with</span>, and atomic callback admission/activation against shutdown; no public capability flip; no sockets.</li>
+  <li><strong>F2.2</strong> registry/reactor connect submission, occupancy + parent reservation, native literal loopback duplex.</li>
+  <li><strong>F2.3</strong> inactivity, <span class="mono">shutdown_write</span> on the real reactor, and connected-phase pressure. Split halves and spawned blocking <span class="mono">finish</span> already exist on the F2.1 seam.</li>
+  <li><strong>F2.4</strong> exact hostname resolution, admission-time DNS borrow, serial address attempts.</li>
+  <li><strong>F2.5</strong> cancel/shutdown/WrongEngine/platform gates, including focused Wine lifecycle.</li>
+</ol>
+
+<h4>Remaining human questions</h4>
+<p>F2.0 and F2.1 questions are closed. <strong>FQ-12</strong> is accepted as a public contract and implementation seam: write-side <span class="mono">finish_with</span> is the callback observer for request-once finish, and callback admission/activation is atomic against shutdown. The next design work is F2.2 after the accepted DNS recovery commit is synchronized into this lineage.</p>
 
 <h3>F3 — Remove the wire-only Hickory dependency</h3>
 <p><span class="status status-deferred">After F1 and F2 acceptance</span></p>
@@ -438,7 +612,7 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 </table>
 
 <div class="callout">
-  <strong>Release policy:</strong> milestone completion does not automatically choose a version number or publish. A likely <span class="mono">0.2.x</span> line may contain the new facades, but the release boundary is chosen only after the API and package evidence are reviewed. Hickory removal may ship independently if it is behaviour-only and useful earlier.
+  <strong>Release policy:</strong> milestone completion does not automatically publish. <span class="mono">0.1.1</span> is the narrow resolver-recovery exception: published <span class="mono">v0.1.0</span> plus hotfix <span class="mono">07128d0</span>, release metadata, and the already-committed README improvement from <span class="mono">789712b</span>; it contains no F1 Resolver or F2 TCP facade. A likely <span class="mono">0.2.x</span> line may contain the new facades after their API and package evidence are reviewed. Hickory removal may ship independently if it is behaviour-only and useful earlier.
 </div>
 
 <h2 id="verification">7. Verification Matrix</h2>
@@ -447,8 +621,8 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <tr><th>Area</th><th>Required evidence</th></tr>
 <tr><td>Ownership traits</td><td>Compile proofs for cloneable issued tickets, unique connection/halves, <span class="mono">Send</span>/<span class="mono">!Sync</span>, and no public construction or raw escape.</td></tr>
 <tr><td>Terminal races</td><td>Complete/fail/cancel/stop races commit exactly once; late same-Engine cancellation is harmless; wrong-Engine IDs fail closed.</td></tr>
-<tr><td>Callbacks</td><td>User callbacks never run on resolver/reactor owners or under locks; panic containment and callback-stack shutdown retain existing guarantees.</td></tr>
-<tr><td>Manual mode</td><td>Submit and <span class="mono">try_*</span> are passive; blocking methods reject; one drive advances HTTP, DNS, and TCP without nested drive.</td></tr>
+<tr><td>Callbacks</td><td>User callbacks never run during resolver/reactor processing, on spawned network owners, or under locks; manual callbacks may run on the driving thread after a safe pass. Panic containment and callback-stack shutdown retain existing guarantees. Write-side <span class="mono">finish_with</span> uses the same domain, is never inline before return, holds its permit until return, and is owed a terminal on stop/<span class="mono">cancel_all</span>. Registration/activation must be atomic against shutdown.</td></tr>
+<tr><td>Manual mode</td><td>Submit and <span class="mono">try_*</span> are passive; blocking methods reject; one drive advances HTTP, DNS, and TCP without nested drive. <span class="mono">try_finish</span> polls write half-close between drives. <span class="mono">finish_with</span> delivers during <span class="mono">drive</span>.</td></tr>
 <tr><td>DNS semantics</td><td>Answer/NXDOMAIN/NoData, failure rcodes, exact/search policy, ordering, TTL/cache modes, CNAME bounds, UDP/TCP fallback, malformed input, cancellation, and shutdown.</td></tr>
 <tr><td>TCP semantics</td><td>Literal/hostname connect, duplex progress, bounds, partial queues, retained EOF, half-close, abortive close, drop rules, cancellation, and shutdown.</td></tr>
 <tr><td>Fairness and limits</td><td>Public DNS cannot starve HTTP resolution; TCP cannot consume HTTP reservation; aggregate queued bytes remain strict under concurrent HTTP/TCP pressure.</td></tr>
@@ -460,7 +634,7 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 
 <table>
 <tr><th>ID</th><th>Question</th><th>Recommended answer</th><th>Status</th></tr>
-<tr><td class="mono nowrap">FQ-01</td><td>Does obtaining an unavailable capability fail, or does its first operation fail?</td><td><span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> issue ordinary tickets; unavailable operations fail <span class="mono">Unsupported</span> before ID, permit, or queue acquisition. This keeps issuance cheap and feature-invariant.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-01</td><td>Does obtaining an unavailable capability fail, or does its first operation fail?</td><td><span class="mono">Engine::resolver()</span> and <span class="mono">tcp_connector()</span> issue ordinary tickets; issuance stays feature-invariant. Operations require the native backend owner. Curl and scaffold return <span class="mono">Unsupported</span> before ID, permit, or queue acquisition. Compiling native support does not attach a second native poller beside curl.</td><td><span class="status status-done">Accepted for F0; curl/owner wording corrected 2026-08-26</span></td></tr>
 <tr><td class="mono nowrap">FQ-02</td><td>What does an optional trailing dot mean?</td><td>Accept zero or one terminal dot as an explicit absolute spelling; normalize cache/question identity to lowercase ASCII without the terminal dot, and retain the absolute bit so execution can suppress search-suffix expansion even when <span class="mono">use_search_suffixes(true)</span> is requested. Reject the root name and malformed/multiple empty labels.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-03</td><td>How do cache modes behave?</td><td><span class="mono">Use</span>: read and populate. <span class="mono">Refresh</span>: skip cache read and replace from the network. <span class="mono">Bypass</span>: neither read nor populate. Negative cache entries follow the same mode and expose honest validity.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-04</td><td>What are the default address family and combined-family order?</td><td>Default to <span class="mono">AddressFamily::Both</span> and <span class="mono">AddressOrder::Ipv4ThenIpv6</span>. This collects both families and orders the public result; it does not copy HTTP's lookup fallback. TCP Happy Eyeballs may later consume both families without changing resolver result semantics.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
@@ -468,8 +642,10 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <tr><td class="mono nowrap">FQ-06</td><td>Does a connect total timeout continue after connection?</td><td>No. Resolve/connect terminal clocks end when the live object is produced. Optional read/write inactivity policies govern the connected phase and pause under consumer backpressure where progress is impossible.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-07</td><td>Does a combined-family lookup mean fallback or collection?</td><td>Call the public variant <span class="mono">AddressFamily::Both</span>: collect A and AAAA and order the combined result explicitly. A failure in either required family fails the initial operation rather than hiding a partial result. HTTP retains its private serial A/AAAA-on-NoData policy.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
 <tr><td class="mono nowrap">FQ-08</td><td>How does manual <span class="mono">drive_until</span> support three terminal types?</td><td>Make <span class="mono">Engine::drive_until</span> generic over a tiny sealed waiter-target trait with an associated output. Implement it only for HTTP, resolve, and connect pending types. Do not add a grab-bag completion enum or capability-specific method names.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
-<tr><td class="mono nowrap">FQ-09</td><td>What happens when the unsplit connection is dropped?</td><td>Drop before writer finish plus reader EOF aborts; drop after both directions are terminal is harmless. Splitting transfers the same rule to the two unique halves.</td><td><span class="status status-done">Accepted for F0</span></td></tr>
+<tr><td class="mono nowrap">FQ-09</td><td>What happens when the unsplit connection is dropped?</td><td>Drop before a successful write-finish request plus reader EOF aborts. After <span class="mono">try_finish</span> has returned <span class="mono">Pending</span> or <span class="mono">Finished</span>, writer drop does not revoke the request, but unsplit drop before reader EOF still aborts because the read side is abandoned. Drop after both directions are terminal is harmless.</td><td><span class="status status-done">Accepted for F0; drop-after-finish-request refined in F2.0</span></td></tr>
 <tr><td class="mono nowrap">FQ-10</td><td>What is public search-suffix expansion?</td><td>Per-request opt-in only. Snapshot OS suffixes at Engine construction, then apply a frozen NBReq candidate algorithm: trailing-dot is exact-only; undotted names try suffixes and skip bare exact when any suffix exists; dotted relative names try exact first. Continue on NXDOMAIN and NoData; fail closed on operational errors. Cache by queried candidate, never by the relative request name. <span class="mono">from_cache</span> is true only when the entire search required no network. Exhausted-negative <span class="mono">valid_until</span> is the earliest contributing validity, or <span class="mono">None</span>. <span class="mono">candidate_name()</span> is <span class="mono">Option&lt;&amp;str&gt;</span> for Answer only (expanded question, not CNAME target). HTTP and hostname TCP never expand. Ignore OS <span class="mono">ndots</span> and Windows devolution.</td><td><span class="status status-done">Accepted for F1-R1</span></td></tr>
+<tr><td class="mono nowrap">FQ-11</td><td>How is manual write half-close polled?</td><td><span class="mono">TcpFinishStatus::{Pending, Finished}</span>. <span class="mono">try_finish(&amp;mut self)</span> on the unsplit connection and split writer is request-once then poll. Later sends return <span class="mono">Closed</span>. It is valid in manual mode and never drives. Blocking <span class="mono">finish(&amp;mut self)</span> is spawned convenience and returns <span class="mono">WrongMode</span> when manual. Unique ownership plus request-once state is the protocol; consuming <span class="mono">finish(self)</span> is not used.</td><td><span class="status status-done">Accepted for F2.0</span></td></tr>
+<tr><td class="mono nowrap">FQ-12</td><td>Does write-side finish have a callback form?</td><td>Yes. <span class="mono">TcpConnection::finish_with</span> and <span class="mono">TcpWriter::finish_with</span> take <span class="mono">&amp;mut self</span> and <span class="mono">FnOnce(Result&lt;(), TcpFinishError&gt;) + Send + 'static</span>, returning <span class="mono">Result&lt;(), Error&gt;</span>. Callback-event exhaustion is <span class="mono">ErrorKind::QueueFull</span>. The permit is held until the callback returns. Registration uses the existing activation barrier and the connection’s <span class="mono">RequestId</span>. At most one write-half callback, even after split. Terminal mapping: shutdown → <span class="mono">EngineStopped</span>; cancel/unsplit-drop → <span class="mono">Cancelled</span>; reset → <span class="mono">Reset</span>; other transport → <span class="mono">Failed</span>; success → <span class="mono">Ok(())</span>.</td><td><span class="status status-done">Accepted for F2.1</span></td></tr>
 </table>
 
 <h2 id="later">9. Later Register</h2>
@@ -499,7 +675,7 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <tr><td class="nowrap">2026-08-25</td><td>Generalize manual <span class="mono">drive_until</span> with a sealed target trait.</td><td>Preserves the existing HTTP shape while returning each capability's own terminal type.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Unsplit TCP drop follows the same two-direction terminal rule as split ownership.</td><td>No accepted output is silently truncated and a wholly terminal connection needs no redundant cancellation.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Name the resolve builder <span class="mono">ResolveRequest::hostname</span> rather than <span class="mono">new</span>.</td><td>Project clippy denies <span class="mono">new_ret_no_self</span>; HTTP already uses <span class="mono">builder</span>/<span class="mono">get</span> and TCP already uses <span class="mono">hostname</span>/<span class="mono">literal</span>.</td></tr>
-<tr><td class="nowrap">2026-08-25</td><td>Unsplit <span class="mono">TcpConnection::finish</span> takes <span class="mono">&amp;mut self</span>; split <span class="mono">TcpWriter::finish</span> consumes <span class="mono">self</span>.</td><td>Consuming the unsplit connection on finish would drop the reader before EOF and abort under the two-direction rule.</td></tr>
+<tr><td class="nowrap">2026-08-25</td><td>Unsplit <span class="mono">TcpConnection::finish</span> takes <span class="mono">&amp;mut self</span>; split <span class="mono">TcpWriter::finish</span> consumes <span class="mono">self</span>.</td><td>Consuming the unsplit connection on finish would drop the reader before EOF and abort under the two-direction rule. Superseded for the split writer by the F2.0 <span class="mono">&amp;mut self</span> freeze.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Do not publish <span class="mono">max_queued_bytes</span> in F0.</td><td>Resource limits must be real. HTTP streaming keeps <span class="mono">max_stream_queued_bytes</span>. Introduce the Engine-wide name in F2 when HTTP and TCP can charge it atomically.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Keep only <span class="mono">type Output</span> on public <span class="mono">WaiterTarget</span>.</td><td>Polling and numeric Engine identity are crate-private associated functions on the sealed supertrait, not methods. Supertrait methods remain callable; a second public bound such as crate-private <span class="mono">Poll</span> cannot be named by downstream generic code.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>Public DNS total deadline uses <span class="mono">TimeoutKind::Total</span>, not a Resolve stage.</td><td>The DNS facade already identifies the operation; <span class="mono">DnsFailure</span> remains for protocol/server categories.</td></tr>
@@ -512,6 +688,9 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <tr><td class="nowrap">2026-08-25</td><td>F1-R3 Ubuntu exact-source gate is complete. F1 is an acceptance candidate, not finally accepted.</td><td>Overseers accepted F1-R3. This close-out records host, toolchain, archive SHA-256, focused tests, and the offline 20/20 gate. Do not mark F1 finally accepted, start F2, commit, or push until overseers review this last diff.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>IPv6-only public completions update the public AAAA family cache but never mutate HTTP’s coherent A-first name-level cache view. IPv4 and Both may publish that view.</td><td>Only public resolutions that include the A-family decision may publish or invalidate HTTP’s private name-level cache. HTTP’s A-first, AAAA-on-A-NoData policy is unchanged.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>F1 accepted.</td><td>Overseer and companion review found no remaining technical hold. Public Resolver is live on the existing DNS owner; <span class="mono">TcpConnector</span> stays unwired. Do not start F2 in this commit.</td></tr>
+<tr><td class="nowrap">2026-08-26</td><td>Correct explicit-curl/HTTP-selection wording: Resolver/TcpConnector tickets stay feature-invariant; operations require the native backend owner; curl/scaffold return <span class="mono">Unsupported</span> before admission; compiling native does not attach a second native poller beside curl.</td><td>The previous “explicit HTTP backend may still issue native DNS/TCP handles” sentence could be read as growing a sidecar native reactor on a curl Engine.</td></tr>
+<tr><td class="nowrap">2026-08-26</td><td>F2.0 accepted. FQ-11 freezes <span class="mono">try_finish</span>. Split <span class="mono">TcpWriter::finish</span> takes <span class="mono">&amp;mut self</span>. Drop after a successful finish request does not revoke it; unsplit drop before reader EOF still aborts. Remove unreleased <span class="mono">QueueLimitExceeded</span>. F2.1 may wire isolated live I/O state without sockets.</td><td>Reservation accounting proved Engine-global send-time refusal cannot occur. Consuming split <span class="mono">finish(self)</span> made manual <span class="mono">WrongMode</span> destructive. Unique writer ownership plus request-once state is enough.</td></tr>
+<tr><td class="nowrap">2026-08-26</td><td>FQ-12 accepted. Callback-capacity exhaustion is <span class="mono">ErrorKind::QueueFull</span>. The callback permit is retained until the callback returns. Registration uses the existing callback-activation barrier and the connection’s <span class="mono">RequestId</span>. Terminal mapping is shutdown → <span class="mono">EngineStopped</span>, cancel/unsplit-drop → <span class="mono">Cancelled</span>, reset → <span class="mono">Reset</span>, other transport → <span class="mono">Failed</span>, success → <span class="mono">Ok(())</span>. Compiled on the F2.1 seam.</td><td>Overseer correction of <span class="mono">Limit</span> to <span class="mono">QueueFull</span>, plus permit-until-return and activation/RequestId invariants. Do not start F2.2, commit, or push until this F2.1 slice is reviewed.</td></tr>
 </table>
 
 <h2 id="progress">11. Progress Log</h2>
@@ -532,6 +711,21 @@ TcpWriter::finish(self) -&gt; Result&lt;(), TcpFinishError&gt;</code></pre>
 <tr><td class="nowrap">2026-08-25</td><td>F1-R3 documentation/evidence close-out. Windows adapter suffixes are the implemented <span class="mono">Domain</span>/<span class="mono">DhcpDomain</span> registry path (SearchList-first, ranked-adapter fallback, computer-Domain-last, no devolution). F1-R3 is complete. Overall status is F1 acceptance candidate; F1 is not finally accepted.</td><td>Ubuntu host <span class="mono">gds-client-01i linode</span>, rustc/cargo 1.85.0, archive SHA-256 <span class="mono">6FF5BA9A91E5247B5CEC169941F470A472270A33E3A452B48DF139FE12186DF7</span>, 34 DNS-wiring + 8 configuration tests, <span class="mono">xtask verify --offline</span> 20/20 in 226.886s. One locked fetch populated three Windows-only crates that were not compiled on Linux; the gate then ran offline. Linux/Windows helpers cover the fail-closed macOS error contract; on-Mac discovery remains F6. Do not start F2, commit, or push.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>IPv6 HTTP-view freeze: <span class="mono">publish_http_view</span> is a no-op for <span class="mono">AddressFamily::Ipv6</span>. IPv4 and Both still publish or invalidate HTTP’s A-first name-level view.</td><td>Windows <span class="mono">xtask verify --offline</span> 20/20 in 62.144s. Ubuntu host <span class="mono">gds-client-01i linode</span>, rustc/cargo 1.85.0, final archive SHA-256 <span class="mono">A7582DAFE8FBDC16764F2C6956B597D15E19126D87C798344B419D589B490B00</span>, 36 DNS-wiring + 8 configuration tests, <span class="mono">xtask verify --offline</span> 20/20 in 227.489s fully offline. Pre-fix SHA-256 <span class="mono">6FF5BA9A91E5247B5CEC169941F470A472270A33E3A452B48DF139FE12186DF7</span> is retained only as earlier R3 evidence.</td></tr>
 <tr><td class="nowrap">2026-08-25</td><td>F1 accepted. Tracker and specification record the overseer decision. The complete F1 tree, including <span class="mono">src/dns_wiring_tests.rs</span>, is committed as one acceptance commit.</td><td>Windows 20/20 in 62.144s; final Ubuntu SHA-256 <span class="mono">A7582DAFE8FBDC16764F2C6956B597D15E19126D87C798344B419D589B490B00</span>, 36 wiring + 8 configuration tests, 20/20 in 227.489s. Next move is F2 <span class="mono">TcpConnector</span> on the existing reactor, as a separate slice.</td></tr>
+<tr><td class="nowrap">2026-08-26</td><td>F2.0 accepted. FQ-11 <span class="mono">try_finish</span> compiled. <span class="mono">QueueLimitExceeded</span> removed. Isolated <span class="mono">TcpIoShared</span> F2.1 seam is in the working tree: queues, pump occupancy, drop/abort, finish request-once, no sockets, no <span class="mono">TcpConnector</span> capability flip.</td><td>Focused tcp module tests plus public-contract thread traits. Do not start F2.2 socket wiring, commit, or push until this F2.1 slice is reviewed.</td></tr>
+<tr><td class="nowrap">2026-08-26</td><td>FQ-12 accepted and compiled on the F2.1 seam. <span class="mono">finish_with</span> uses <span class="mono">QueueFull</span>, retains the callback permit until return, and shares the connection <span class="mono">RequestId</span> plus activation barrier. No sockets. No <span class="mono">TcpConnector</span> capability flip.</td><td>Focused tcp module tests covering QueueFull without half-apply, late registration, second registration after split, writer drop, unsplit-drop Cancelled, manual drive delivery, stop/reset/failure terminals, panic containment, and same-RequestId serialization. Do not start F2.2, commit, or push until this F2.1 slice is reviewed.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>F2.1 review found a shutdown-sealing race: callback capacity is reserved while lifecycle is running, but the registry core lock is released before the activation count is incremented. Shutdown can seal in that interval. F2.1 remains unaccepted and is paused before sockets. Callback-context wording was also corrected: manual callbacks may execute on the thread calling <span class="mono">drive</span> after the safe network pass; the prohibition is network processing/spawned-owner/lock execution, not thread identity in manual mode.</td><td>Replace separate reserve/activate calls with one registry operation that checks lifecycle, reserves the permit, and increments activation under the lifecycle lock. Add a deterministic overlapping <span class="mono">finish_with</span>/shutdown regression, then rerun focused and complete verification. Do not start F2.2, commit, or push.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>F1.1 DNS transport recovery incident plan opened. A long-lived GDS Engine remained in DNS failure after network reacquisition while the configured server, Windows resolver, and fresh NBReq 0.1.0 processes worked. The dedicated tracker separates exact-artifact reproduction, deterministic real-socket generation testing, a minimal <span class="mono">v0.1.0</span> repair, Windows/Ubuntu gates, forward-port, and GDS soak.</td><td>Preserve the surviving incident process for optional UDP capture. Create an isolated <span class="mono">codex/dns-recovery-0.1</span> worktree from <span class="mono">v0.1.0</span>. Keep the uncommitted F2.1 tree untouched and paused. Follow <a href="completed/project_nbreq_dns_recovery_plan.html"><span class="mono">completed/project_nbreq_dns_recovery_plan.html</span></a>.</td></tr>
+<tr><td class="nowrap">2026-08-27</td><td>F1.1 D3/D4 accepted. The exact-<span class="mono">v0.1.0</span> hotfix <span class="mono">07128d0</span> recovered the original Engine across a real Windows adapter bounce and five isolated Ubuntu veth generations, with joined shutdown and complete exact-source gates. Patch-release scope is frozen as <span class="mono">v0.1.0</span> plus that repair, version/lock/release metadata, and the README improvement from <span class="mono">789712b</span>; no F1/F2 APIs.</td><td>D5 forward-port in a clean worktree, then D6 exact-package rehearsal and GDS canary/soak/ureq rollback. D7 tag/publish requires explicit owner authorization. F2.1 remains untouched and paused.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D5 accepted as isolated main-line commit <span class="mono">cbafb84</span>, not merged into F2. D6 exact crate candidate is clean commit <span class="mono">a0599c8</span> on the separate <span class="mono">v0.1.0</span> lineage. Its 39-member package passed the complete Windows gate and package verification; SHA-256 is <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span>. No F1/F2 API is present.</td><td>Run the hashed GDS native recovery/soak/shutdown and same-package ureq rollback gates. Publication remains D7 and requires explicit authorization.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 clean GDS package built from isolated GDS commit <span class="mono">22ca310</span> and exact NBReq candidate <span class="mono">a0599c8</span>. The 12-file package verified its x86 host/DLL/shim, selector exports, runtime data, exact crate hash/VCS identity, and absence of libcurl. ZIP SHA-256 is <span class="mono">C1672FE893120D05D8B2B72ABE8492685966CA9A7A1460B37FBE3603020F9DFF</span>.</td><td>Run the live D6 native and ureq gates. After D7 publication, GDS will dogfood the newest released patch through an ordinary exact registry <span class="mono">0.1.1</span> pin; the unpublished-local seam is pre-release only.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 exact-package native consumer gate passed through a roughly 2.5-hour live GDS run and a supervised adapter outage. The same PID/Engine produced typed DNS failures, recovered both long-poll channels five seconds after its last DNS failure, and immediately completed an <span class="mono">OK</span> post without restart. The unchanged board state is a separate GDS health-freshness observation.</td><td>Complete native normal shutdown and same-package ureq startup/website/shutdown evidence before accepting D6.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 native process joined both pollers and exited normally; the same package then selected explicit ureq in a new process, started both channels, and served a successful authenticated website burst. Native Drop was 1ms/0ms.</td><td>Close ureq normally and verify no residual process. D7 remains separately authorized publication.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D6 accepted. The same-package ureq rollback joined both pollers, completed both Drops in 0ms, and left no GDS process. Exact <span class="mono">0.1.1</span> package identity, native mini-soak, physical adapter recovery, native shutdown, ureq traffic/rollback, and final exit are all closed.</td><td>D7 publication remains pending explicit owner authorization. After publication, prove a clean external registry consumer and move GDS's ordinary exact pin/lock to <span class="mono">0.1.1</span>.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 non-publishing preflight passed on clean commit <span class="mono">a0599c8</span>. <span class="mono">cargo publish --dry-run --locked</span> packaged and verified all 39 files, reached the upload stage, then aborted as a dry run; the exact crate hash remained <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span>. No release tag exists yet.</td><td>Await explicit owner authorization for the tag/push/publication sequence.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 release branch and annotated <span class="mono">v0.1.1</span> tag were pushed; the tag peels to exact clean commit <span class="mono">a0599c87500ce6bb7499546b914faa771dd49438</span>. GitHub Actions run <span class="mono">33133914449</span> passed Ubuntu stable, Ubuntu MSRV 1.85, Windows stable, RustSec, and license jobs against that SHA. The exact 39-file crate remains SHA-256 <span class="mono">DCCE8E27AEAD7CA63E8D3D4F93D2CAB59290E746CAC2DFD92EEC31B8517F9C90</span>, and the release worktree is clean.</td><td>Ready for permanent crates.io publication after the owner's explicit instruction. Then prove a clean registry consumer and update GDS's ordinary exact <span class="mono">0.1.1</span> pin/lock. F2.1 remains paused.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td><span class="mono">nbreq 0.1.1</span> was permanently published after explicit owner authorization. A fresh independent project resolved exact <span class="mono">=0.1.1</span> from crates.io; Cargo recorded checksum <span class="mono">dcce8e27aead7ca63e8d3d4f93d2cab59290e746cac2dfd92eec31b8517f9c90</span>, matching the frozen artifact, then compiled it and passed an ordinary-native loopback HTTP exchange plus shutdown.</td><td>The patch release and external-registry proof are complete. Finish D7 by moving GDS's ordinary exact registry pin/lock to <span class="mono">0.1.1</span> and proving that normal consumer build. F2.1 remains paused.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>D7 accepted. GDS commit <span class="mono">b540784491c4d2f6ae6d35a240b0b97aabdbb2ff</span> uses exact registry <span class="mono">nbreq 0.1.1</span> and the matching checksum through its ordinary locked build, with a lock-derived provenance banner. Its clean normal package ZIP is SHA-256 <span class="mono">673482F4F111172EEC651D7E759EAD427A68738CEE87089A37FF23C952652155</span>. Live PID <span class="mono">72436</span> selected native, ran both channels, matched 19 accepted frames to 19 <span class="mono">OK</span> posts, passed green-board/website checks, then joined both pollers and exited with 0ms shutdowns and 1ms/0ms Drops. Only the separate database server remained.</td><td>The DNS recovery patch-release track is closed. Resume the preserved F2.1 activation-barrier fix before F2.2 sockets; D8 and macOS remain later work.</td></tr>
+<tr><td class="nowrap">2026-08-28</td><td>F2.1 accepted. One registry operation performs lifecycle check, callback-event reservation, and activation increment atomically under the core lock. The deterministic overlapping <span class="mono">finish_with</span>/shutdown regression proves the accepted callback cannot be stranded behind callback-domain sealing.</td><td>All 25 TCP seam tests passed; the race regression passed 50/50 repetitions; warning-denied all-feature clippy passed; complete Windows verification passed 20/20 in 33.495s. No socket wiring or <span class="mono">TcpConnector</span> capability flip was started. Before F2.2, synchronize accepted DNS recovery commit <span class="mono">cbafb84</span> separately from this F1 <span class="mono">b163266</span>-based tree.</td></tr>
 </table>
 
 </body>

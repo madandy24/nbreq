@@ -25,7 +25,7 @@ pub(crate) enum LifecycleState {
     Stopped,
 }
 
-struct AdmissionPermit {
+pub(crate) struct AdmissionPermit {
     inflight: Arc<AtomicUsize>,
 }
 
@@ -581,7 +581,7 @@ pub(crate) struct Shared {
     callback_activation_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
-struct CallbackActivation<'shared> {
+pub(crate) struct CallbackActivation<'shared> {
     shared: &'shared Shared,
 }
 
@@ -1064,6 +1064,38 @@ impl Shared {
         lock_unpoisoned(&self.core).lifecycle = LifecycleState::Stopped;
         self.stopped.store(true, Ordering::Release);
         self.queue.wake();
+    }
+
+    pub(crate) fn try_begin_callback_event(
+        &self,
+    ) -> Result<(AdmissionPermit, CallbackActivation<'_>), Error> {
+        let core = lock_unpoisoned(&self.core);
+        if core.lifecycle != LifecycleState::Running {
+            return Err(Error::new(
+                ErrorKind::EngineStopped,
+                "the owning Engine has stopped accepting work",
+            ));
+        }
+        let permit =
+            AdmissionPermit::try_acquire(&self.callback_inflight, self.callback_inflight_limit)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::QueueFull,
+                        "the Engine's callback request/event capacity is full",
+                    )
+                })?;
+        *lock_unpoisoned(&self.callback_activations) += 1;
+        drop(core);
+        Ok((permit, CallbackActivation { shared: self }))
+    }
+
+    pub(crate) fn enqueue_callback_job(&self, job: CallbackJob) {
+        let _queued = self.callback_domain.enqueue_terminal(job);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fire_callback_activation_hook(&self) {
+        self.run_callback_activation_hook();
     }
 
     pub(crate) fn wait_for_callback_activations(&self) {

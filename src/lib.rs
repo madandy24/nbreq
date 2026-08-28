@@ -8,7 +8,8 @@
 //!
 //! [`Engine::resolver`] and [`Engine::tcp_connector`] issue cloneable capability tickets into the
 //! same Engine lifecycle. Public hostname resolution is served by the Engine-owned native DNS
-//! service when that owner is present. Standalone TCP remains unwired until F2.
+//! service when that owner is present. Standalone TCP live queue/drop/finish state is internally
+//! wired; `TcpConnector` operations remain unwired until a later F2 slice.
 #![doc = include_str!("../docs/getting-started.md")]
 
 mod atomic;
@@ -57,8 +58,8 @@ pub use stream::{
 pub use tcp::{
     PendingTcpConnect, TcpConnectCompletion, TcpConnectHandle, TcpConnectRequest,
     TcpConnectRequestBuilder, TcpConnectTarget, TcpConnectWaitOutcome, TcpConnection,
-    TcpConnectionHandle, TcpConnector, TcpFinishError, TcpRead, TcpReader, TcpSendError,
-    TcpSendErrorKind, TcpStreamError, TcpWriter,
+    TcpConnectionHandle, TcpConnector, TcpFinishError, TcpFinishStatus, TcpRead, TcpReader,
+    TcpSendError, TcpSendErrorKind, TcpStreamError, TcpWriter,
 };
 pub use types::{
     CallbackDispatch, Completion, DnsFailure, DriveStatus, EngineConfig, Error, ErrorKind,

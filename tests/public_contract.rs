@@ -5,8 +5,8 @@ use nbreq::EngineBuilder;
 use nbreq::{
     Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
     PendingRequest, PendingResolve, PendingTcpConnect, RequestHandle, Resolver, ResourceMetrics,
-    ResponseReader, StreamRequest, TcpConnection, TcpConnector, TcpReader, TcpWriter, UploadBody,
-    UploadSender,
+    ResponseReader, StreamRequest, TcpConnection, TcpConnector, TcpFinishStatus, TcpReader,
+    TcpWriter, UploadBody, UploadSender,
 };
 
 fn assert_send<T: Send>() {}
@@ -32,6 +32,7 @@ fn public_thread_traits_match_the_contract() {
     assert_send::<TcpConnection>();
     assert_send::<TcpReader>();
     assert_send::<TcpWriter>();
+    assert_send::<TcpFinishStatus>();
 }
 
 #[test]

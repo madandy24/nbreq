@@ -15,9 +15,11 @@ pub enum RunMode {
 
 /// Selects the HTTP implementation used by an [`Engine`](crate::Engine).
 ///
-/// This enum selects HTTP only. It does not select DNS or TCP. With native support compiled, an
-/// Engine using an explicit HTTP backend may still issue native DNS/TCP handles; without native
-/// support, those operations fail [`ErrorKind::Unsupported`] before admission.
+/// This enum selects HTTP only. It does not select DNS or TCP. [`crate::Engine::resolver`] and
+/// [`crate::Engine::tcp_connector`] tickets always issue (feature-invariant). Resolve and connect
+/// operations require the Engine's native backend owner. Curl and scaffold Engines reject those
+/// operations with [`ErrorKind::Unsupported`] before admission. Compiling native support does not
+/// attach a second native poller beside curl.
 ///
 /// The variant remains present without the default `native` feature so portable configuration can
 /// fail explicitly during Engine construction rather than changing type shape.

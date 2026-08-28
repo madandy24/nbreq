@@ -1049,7 +1049,7 @@ admission if it exceeds that ceiling.
 TCP family: `TcpConnectRequest` / `TcpConnectRequestBuilder`, `TcpConnectTarget`, `TcpConnector`,
 `PendingTcpConnect`, `TcpConnectHandle`, `TcpConnectCompletion`, `TcpConnectWaitOutcome`,
 `TcpConnection`, `TcpConnectionHandle`, `TcpReader`, `TcpWriter`, `TcpRead`, `TcpStreamError`,
-`TcpSendError` / `TcpSendErrorKind`, `TcpFinishError`.
+`TcpSendError` / `TcpSendErrorKind`, `TcpFinishError`, `TcpFinishStatus`.
 
 ```text
 TcpConnectRequest::hostname(impl Into<String>, u16) -> TcpConnectRequestBuilder
@@ -1065,9 +1065,19 @@ TcpConnector::start/submit/execute/cancel  // same finite-operation shape as Res
 TcpConnection::try_send/send(&mut self, Vec<u8>) -> Result<(), TcpSendError>
 TcpWriter::try_send/send(&mut self, Vec<u8>) -> Result<(), TcpSendError>
 TcpSendError::into_remaining(self) -> Vec<u8>
+TcpConnection::try_finish(&mut self) -> Result<TcpFinishStatus, TcpFinishError>
+TcpWriter::try_finish(&mut self) -> Result<TcpFinishStatus, TcpFinishError>
 TcpConnection::finish(&mut self) -> Result<(), TcpFinishError>
-TcpWriter::finish(self) -> Result<(), TcpFinishError>
+TcpWriter::finish(&mut self) -> Result<(), TcpFinishError>
+TcpConnection::finish_with<F>(&mut self, F) -> Result<(), Error>
+TcpWriter::finish_with<F>(&mut self, F) -> Result<(), Error>
 ```
+
+FQ-12 `finish_with` is the callback observer for the same request-once write half-close. Callback-event
+exhaustion is `ErrorKind::QueueFull`. The permit is held until the callback returns. Registration
+uses the existing callback-activation barrier and the connection’s `RequestId`. Lifecycle check,
+callback-event permit reservation, and activation increment occur atomically under the registry
+lifecycle lock, so shutdown cannot seal the callback domain between acceptance and activation.
 
 Hostname TCP connect uses the public resolver defaults: exact name with no search expansion,
 `AddressFamily::Both`, `AddressOrder::Ipv4ThenIpv6`, and `CacheMode::Use`. It tries addresses
@@ -1077,19 +1087,28 @@ future per-connect DNS policy is expressed through new builder options rather th
 HTTP's private A/AAAA fallback.
 
 `TcpFinishError` distinguishes already-closed write half, reset, Engine stop, manual-mode
-rejection, transport failure, cancellation, and F0 `Unsupported`. Blocking connected `read`,
-`send`, and `finish` reject manual mode rather than driving it.
+rejection, transport failure, cancellation, and `Unsupported` on Engines without the native TCP
+owner. Blocking connected `read`, `send`, and `finish` reject manual mode rather than driving it.
+`try_finish` is the passive write half-close poll and is valid in manual mode. `finish_with` is the
+callback observer for that same request: valid in manual and spawned modes, never inline before it
+returns, and not `WrongMode` when manual. Spawned delivery never runs on the network owner. Manual
+delivery may run on the thread calling `Engine::drive`, but only after the current network-processing
+pass reaches the safe callback-drain point. No callback runs during resolver/reactor processing or
+under internal locks. Blocking `finish` remains spawned convenience.
 
 Port zero and unspecified literals (`0.0.0.0`, `::`, and IPv4-mapped unspecified) are rejected at
 build. Cleartext only; no `into_std`, raw handle, descriptor, or socket escape.
 `TcpConnection`, `TcpReader`, and `TcpWriter` are unique, `Send`, and neither `Clone` nor `Sync`.
-Unsplit drop before writer-finished plus reader-EOF aborts; after both terminal it is harmless.
-Writer drop unfinished aborts. Reader drop before EOF cancels; after EOF it is harmless. Those
-runtime drop rules are type/rustdoc contract in F0; there is no hidden socket simulation.
+Unsplit drop before a successful write-finish request plus reader-EOF aborts; after both terminal
+it is harmless. Writer drop before a successful `try_finish`/`finish` request aborts. Writer drop
+after `try_finish` has returned `Pending` or `Finished` does not revoke the request. Reader drop
+before EOF cancels; after EOF it is harmless. Unsplit drop before reader EOF still aborts even if
+the write side is finishing.
 
-`TcpConnection::finish` takes `&mut self` so the unsplit reader remains usable after write-half-close.
-The split writer uses consuming `finish(self)`. This is the one spelling adjustment forced by the
-two-direction drop rule.
+`TcpConnection::finish` and `TcpWriter::finish` both take `&mut self`. Unique writer ownership
+plus request-once finish state is the protocol. `finish_with` may be registered after `try_finish`,
+including after `Finished`. Writer drop after a successful finish request or `finish_with`
+registration does not revoke the request.
 
 Engine configuration added without changing HTTP 0.1.0 limits:
 
@@ -1105,7 +1124,17 @@ not consume or shrink the configured HTTP pool.
 
 The Engine-wide `max_queued_bytes` name is retained in the follow-up plan and is introduced in F2
 when HTTP streaming and standalone TCP queues can charge it atomically. HTTP streaming continues to
-use `max_stream_queued_bytes`.
+use `max_stream_queued_bytes`. F2.0 accepted reserved-window parent-ceiling accounting (default
+16 MiB; may be lower than the HTTP sub-limit; zero disables queued streaming/TCP only).
+`TcpConnector` operations remain unwired. F2.1 wires isolated live queue/drop/finish state without
+sockets. Its `finish_with` shutdown race is repaired by one registry operation that checks
+lifecycle, reserves the callback-event permit, and increments callback activation atomically under
+the registry core lock. A deterministic overlapping-shutdown regression proves shutdown waits for
+that activation and the accepted callback receives `EngineStopped`. The repair passed focused,
+repeated, and complete Windows verification, and F2.1 is accepted. F2.2 sockets remain unopened.
+Before native-DNS-touching F2.2 work, synchronize accepted resolver
+generation repair `cbafb84` separately into this F1 `b163266`-based lineage.
+`TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations once F1 wiring is live;
 `tcp_connects_*` remain zero until F2. Occupancy gauges `inflight_resolutions`,
@@ -1114,7 +1143,8 @@ Payload-free metrics: `resolutions_*` count finite public DNS operations once F1
 
 `Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
 standalone TCP). Public resolutions accepted on a native Engine with the DNS owner participate in
-that barrier. Standalone TCP remains unwired.
+that barrier. `TcpConnector` operations remain unwired; F2.1 isolated live I/O state is not yet
+reachable from connect admission.
 
 F1 is accepted: `Resolver` is wired onto
 the existing Engine-owned DNS service. Applied
