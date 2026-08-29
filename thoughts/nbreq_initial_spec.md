@@ -1184,6 +1184,22 @@ run plus 25/25 repetitions through the automatic missing-AFD fallback, including
 finish/half-close, live cancel, later connection, callback finish, zero final gauges, joined shutdown,
 and no remaining process. Final review accepted F2.5 without a production-owner or public-contract
 change. F2 is closed; F3 remains a separate unopened dependency-extraction project.
+
+Post-F3 packaging freeze: F4 introduces a default-on Cargo feature named `resolver` for the
+user-facing Resolver capability. The feature name does not mean “DNS exists.” A build using
+`default-features = false, features = ["native"]` still owns and drives exact-name DNS for native
+HTTP and hostname `TcpConnector` on the existing Engine resolver thread. It retains nameserver
+discovery (`ipconfig` on Windows and `resolv-conf` on Linux), DNS wire/cache/cancellation/lifecycle,
+and any `DnsFailure` surface shared with hostname TCP. It does not fall back to a blocking OS
+resolver and does not create another poller.
+
+With `resolver` disabled, F4 gates the public `Engine::resolver()` capability, Resolver request /
+handle / completion exports, separable public-operation registry and callback plumbing, and public
+search-suffix discovery. Windows `windows-registry` is therefore a dependency of the default-on
+`resolver` feature, not of native HTTP: HTTP and hostname TCP use exact names and require only the
+already-existing nameserver path. Default builds keep all accepted F1/F2 APIs and behaviour. The
+feature boundary lands after F3 so bounded wire replacement and conditional-compilation extraction
+remain separate reviewable changes. F2 is not reopened.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
