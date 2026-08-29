@@ -6,13 +6,20 @@
 //! admission, callback reservation, or command queuing. Per-request system-search suffix expansion
 //! follows the accepted FQ-10 candidate algorithm and never affects HTTP or hostname TCP.
 
+#[cfg(feature = "resolver")]
 use std::net::IpAddr;
+#[cfg(feature = "resolver")]
 use std::num::NonZeroUsize;
+#[cfg(feature = "resolver")]
 use std::sync::Arc;
+#[cfg(feature = "resolver")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "resolver")]
 use crate::registry::{ResolveCallback, ResolveState, Shared};
-use crate::{Error, ErrorKind, ExecuteError, RequestId};
+use crate::{Error, ErrorKind};
+#[cfg(feature = "resolver")]
+use crate::{ExecuteError, RequestId};
 
 /// Maximum DNS presentation length without a terminal dot.
 const MAX_DNS_NAME_LEN: usize = 253;
@@ -84,12 +91,13 @@ pub enum ResolveStatus {
 }
 
 /// One address collected by a public resolution.
+#[cfg(feature = "resolver")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResolvedAddress {
     address: IpAddr,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolvedAddress {
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(address: IpAddr) -> Self {
@@ -104,6 +112,7 @@ impl ResolvedAddress {
 }
 
 /// A completed public resolution, including valid NXDOMAIN and NoData answers.
+#[cfg(feature = "resolver")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveResponse {
     name: String,
@@ -114,7 +123,7 @@ pub struct ResolveResponse {
     candidate_name: Option<String>,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolveResponse {
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(
@@ -192,7 +201,7 @@ impl ResolveResponse {
 }
 
 /// Canonical terminal outcome of an accepted public resolution.
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ResolveCompletion {
@@ -205,7 +214,7 @@ pub enum ResolveCompletion {
 }
 
 /// Result of a waiter-local public-resolution timeout.
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ResolveWaitOutcome {
@@ -216,6 +225,7 @@ pub enum ResolveWaitOutcome {
 }
 
 /// An owned public hostname-resolution request.
+#[cfg(feature = "resolver")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveRequest {
     name: String,
@@ -228,7 +238,7 @@ pub struct ResolveRequest {
     total_timeout: Option<Duration>,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolveRequest {
     /// Starts a resolution builder for an exact ASCII or punycode hostname.
     #[must_use]
@@ -312,7 +322,7 @@ impl ResolveRequest {
 }
 
 /// Builder for an owned [`ResolveRequest`].
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 #[derive(Clone, Debug)]
 pub struct ResolveRequestBuilder {
     name: String,
@@ -324,7 +334,7 @@ pub struct ResolveRequestBuilder {
     total_timeout: Option<Duration>,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolveRequestBuilder {
     /// Selects which address families to collect.
     #[must_use]
@@ -405,13 +415,13 @@ impl ResolveRequestBuilder {
 /// let _ = nbreq::Resolver::new();
 /// ```
 #[derive(Clone, Debug)]
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 pub struct Resolver {
     shared: Arc<Shared>,
     max_resolve_results: NonZeroUsize,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl Resolver {
     pub(crate) fn new(shared: Arc<Shared>, max_resolve_results: NonZeroUsize) -> Self {
         Self {
@@ -470,13 +480,13 @@ impl Resolver {
 
 /// Engine-bound control handle for one accepted public resolution.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 pub struct ResolveHandle {
     resolver: Resolver,
     id: RequestId,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolveHandle {
     pub(crate) fn new(resolver: Resolver, id: RequestId) -> Self {
         Self { resolver, id }
@@ -496,13 +506,13 @@ impl ResolveHandle {
 
 /// Accepted public resolution plus a direct terminal-state waiter.
 #[derive(Debug)]
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 pub struct PendingResolve {
     handle: ResolveHandle,
     state: Arc<ResolveState>,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl PendingResolve {
     pub(crate) fn new(handle: ResolveHandle, state: Arc<ResolveState>) -> Self {
         Self { handle, state }
@@ -609,7 +619,7 @@ fn invalid_dns_name(message: &str) -> Error {
     Error::new(ErrorKind::InvalidRequest, message)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "resolver"))]
 mod tests {
     use super::*;
     #[cfg(feature = "resolver")]

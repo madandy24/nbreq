@@ -1234,6 +1234,23 @@ tests. The 44-file crate packaged and verified offline. The 273/271 and 313/311 
 splits are target-specific coverage. Final review accepted F4.1 as the Cargo/API/dependency boundary;
 later registry/reactor cleanup and module movement remain separate, and all of F4 is not accepted
 here.
+
+F4.2 is the separate behaviour-preserving native-only cleanup. With `resolver` disabled it removes
+the public resolve request/state/callback admission path, queued resolve submissions, reactor active
+resolve tracking, backend public-completion plumbing, and public-lookup maps. It retains the native
+DNS owner and transport, nameserver discovery, cache/recovery, address-family/cache policy needed by
+hostname TCP, the hostname-connect DNS admission borrow, Engine limits, and the payload-free metrics
+shape. Any private support flag shared by hostname TCP describes the native resolver owner rather
+than the absent public capability. Default/all-feature behaviour and public APIs do not change.
+Registry redesign and mechanical module movement remain outside F4.2.
+
+The F4.2 implementation passed the complete offline verifier 24/24 on Windows and on the exact
+tracked-source Ubuntu archive. Native-only compiled and tested without the external Resolver
+lifecycle (268 Windows / 266 Ubuntu library tests); default/all-feature behaviour remained at 313 /
+311. The exact Ubuntu archive SHA-256 was
+`FF974A5435DB7BE70524F77C91998E54B1084875171F9BAF64B0D2047CD020C4`. Final review
+accepted this native-only lifecycle compile-out as F4.2. It does not accept or begin mechanical
+module extraction.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the

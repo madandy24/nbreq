@@ -12,11 +12,14 @@ use crate::stream::{ResponseControl, ResponseSink, response_pair};
 use crate::tcp::io::{TcpAbort, TcpIoConfig, TcpIoOwner, TcpIoShared};
 use crate::{
     Client, Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestHandle,
-    RequestId, ResolveCompletion, ResolveRequest, ResponseReader, RunMode, StreamRequest,
-    TcpConnectCompletion, TcpConnectRequest, TcpConnection, TcpConnectionHandle, TcpConnector,
+    RequestId, ResponseReader, RunMode, StreamRequest, TcpConnectCompletion, TcpConnectRequest,
+    TcpConnection, TcpConnectionHandle, TcpConnector,
 };
+#[cfg(feature = "resolver")]
+use crate::{ResolveCompletion, ResolveRequest};
 
 pub(crate) type CompletionCallback = Box<dyn FnOnce(Completion) + Send + 'static>;
+#[cfg(feature = "resolver")]
 pub(crate) type ResolveCallback = Box<dyn FnOnce(ResolveCompletion) + Send + 'static>;
 pub(crate) type TcpConnectCallback = Box<dyn FnOnce(TcpConnectCompletion) + Send + 'static>;
 type ExternalWaker = Arc<dyn Fn() -> Result<(), Error> + Send + Sync + 'static>;
@@ -210,6 +213,7 @@ impl RequestState {
     }
 }
 
+#[cfg(feature = "resolver")]
 struct ResolveInner {
     completion: Option<ResolveCompletion>,
     callback: Option<ResolveCallback>,
@@ -218,6 +222,7 @@ struct ResolveInner {
     callback_permit: Option<AdmissionPermit>,
 }
 
+#[cfg(feature = "resolver")]
 pub(crate) struct ResolveState {
     id: RequestId,
     inner: Mutex<ResolveInner>,
@@ -225,6 +230,7 @@ pub(crate) struct ResolveState {
     metrics: Arc<Metrics>,
 }
 
+#[cfg(feature = "resolver")]
 impl fmt::Debug for ResolveState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -235,7 +241,7 @@ impl fmt::Debug for ResolveState {
     }
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 impl ResolveState {
     fn new(
         id: RequestId,
@@ -609,7 +615,7 @@ pub(crate) enum Submission {
         response: ResponseSink,
         accepted_at: Instant,
     },
-    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+    #[cfg(feature = "resolver")]
     Resolve {
         request: ResolveRequest,
         state: Arc<ResolveState>,
@@ -752,6 +758,7 @@ struct CoreState {
     next_sequence: u64,
     requests: HashMap<RequestId, Arc<RequestState>>,
     stream_requests: HashMap<RequestId, Arc<StreamRequestState>>,
+    #[cfg(feature = "resolver")]
     resolutions: HashMap<RequestId, Arc<ResolveState>>,
     connects: HashMap<RequestId, Arc<TcpConnectState>>,
     live_tcp: HashMap<RequestId, Arc<TcpIoShared>>,
@@ -761,7 +768,7 @@ pub(crate) struct AcceptedRequest {
     pub(crate) state: Arc<RequestState>,
 }
 
-#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+#[cfg(feature = "resolver")]
 pub(crate) struct AcceptedResolve {
     pub(crate) state: Arc<ResolveState>,
 }
@@ -853,7 +860,7 @@ pub(crate) struct Shared {
     inflight_limit: usize,
     resolution_inflight: Arc<AtomicUsize>,
     resolution_inflight_limit: usize,
-    public_resolver_supported: AtomicBool,
+    native_resolver_supported: AtomicBool,
     standalone_tcp_supported: AtomicBool,
     callback_inflight: Arc<AtomicUsize>,
     callback_inflight_limit: usize,
@@ -923,6 +930,7 @@ impl Shared {
                 next_sequence: 1,
                 requests: HashMap::new(),
                 stream_requests: HashMap::new(),
+                #[cfg(feature = "resolver")]
                 resolutions: HashMap::new(),
                 connects: HashMap::new(),
                 live_tcp: HashMap::new(),
@@ -931,7 +939,7 @@ impl Shared {
             inflight_limit: config.max_inflight_requests().get(),
             resolution_inflight: Arc::new(AtomicUsize::new(0)),
             resolution_inflight_limit: config.max_inflight_resolutions().get(),
-            public_resolver_supported: AtomicBool::new(false),
+            native_resolver_supported: AtomicBool::new(false),
             standalone_tcp_supported: AtomicBool::new(false),
             callback_inflight: Arc::new(AtomicUsize::new(0)),
             callback_inflight_limit: callback_capacity,
@@ -1050,13 +1058,13 @@ impl Shared {
         Ok(AcceptedRequest { state })
     }
 
-    pub(crate) fn set_public_resolver_supported(&self, supported: bool) {
-        self.public_resolver_supported
+    pub(crate) fn set_native_resolver_supported(&self, supported: bool) {
+        self.native_resolver_supported
             .store(supported, Ordering::Release);
     }
 
-    pub(crate) fn public_resolver_supported(&self) -> bool {
-        self.public_resolver_supported.load(Ordering::Acquire)
+    pub(crate) fn native_resolver_supported(&self) -> bool {
+        self.native_resolver_supported.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_standalone_tcp_supported(&self, supported: bool) {
@@ -1089,7 +1097,7 @@ impl Shared {
             ));
         }
         let hostname = matches!(request.target(), crate::TcpConnectTarget::Hostname { .. });
-        if hostname && !self.public_resolver_supported() {
+        if hostname && !self.native_resolver_supported() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
                 "hostname TCP connections require the native resolver owner",
@@ -1248,7 +1256,7 @@ impl Shared {
         Ok(AcceptedTcpConnect { state })
     }
 
-    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+    #[cfg(feature = "resolver")]
     pub(crate) fn accept_resolve(
         self: &Arc<Self>,
         request: ResolveRequest,
@@ -1273,7 +1281,7 @@ impl Shared {
                 ));
             }
         }
-        if !self.public_resolver_supported() {
+        if !self.native_resolver_supported() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
                 "public hostname resolution is not available on this Engine",
@@ -1503,7 +1511,9 @@ impl Shared {
                 "request ID belongs to another Engine",
             ));
         }
-        let (state, stream_state, resolve_state, tcp_terminal, live_tcp) = {
+        #[cfg(feature = "resolver")]
+        let resolve_state;
+        let (state, stream_state, tcp_terminal, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let connect_state = core.connects.get(&request_id).cloned();
             let tcp_won = connect_state.as_ref().is_some_and(|state| {
@@ -1514,10 +1524,13 @@ impl Shared {
             } else {
                 core.live_tcp.get(&request_id).cloned()
             };
+            #[cfg(feature = "resolver")]
+            {
+                resolve_state = core.resolutions.get(&request_id).cloned();
+            }
             (
                 core.requests.get(&request_id).cloned(),
                 core.stream_requests.get(&request_id).cloned(),
-                core.resolutions.get(&request_id).cloned(),
                 tcp_won.then_some(connect_state).flatten(),
                 live_tcp,
             )
@@ -1533,7 +1546,9 @@ impl Shared {
             self.complete_state(&state, Completion::Cancelled);
         } else if let Some(state) = stream_state {
             self.cancel_stream_state(&state);
-        } else if let Some(state) = resolve_state {
+        }
+        #[cfg(feature = "resolver")]
+        if let Some(state) = resolve_state {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
         self.queue.wake();
@@ -1541,7 +1556,9 @@ impl Shared {
     }
 
     pub(crate) fn cancel_all(&self) {
-        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
+        #[cfg(feature = "resolver")]
+        let resolutions;
+        let (requests, stream_requests, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let barrier = core.next_sequence.saturating_sub(1);
             let connects = core
@@ -1561,6 +1578,15 @@ impl Shared {
                     tcp_terminals.push(state);
                 }
             }
+            #[cfg(feature = "resolver")]
+            {
+                resolutions = core
+                    .resolutions
+                    .iter()
+                    .filter(|(id, _state)| id.sequence <= barrier)
+                    .map(|(_id, state)| Arc::clone(state))
+                    .collect::<Vec<_>>();
+            }
             (
                 core.requests
                     .iter()
@@ -1568,11 +1594,6 @@ impl Shared {
                     .map(|(_id, state)| Arc::clone(state))
                     .collect::<Vec<_>>(),
                 core.stream_requests
-                    .iter()
-                    .filter(|(id, _state)| id.sequence <= barrier)
-                    .map(|(_id, state)| Arc::clone(state))
-                    .collect::<Vec<_>>(),
-                core.resolutions
                     .iter()
                     .filter(|(id, _state)| id.sequence <= barrier)
                     .map(|(_id, state)| Arc::clone(state))
@@ -1591,6 +1612,7 @@ impl Shared {
         for state in stream_requests {
             self.cancel_stream_state(&state);
         }
+        #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
@@ -1611,7 +1633,9 @@ impl Shared {
     }
 
     pub(crate) fn begin_shutdown(&self) {
-        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
+        #[cfg(feature = "resolver")]
+        let resolutions;
+        let (requests, stream_requests, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             if core.lifecycle == LifecycleState::Running {
                 core.lifecycle = LifecycleState::ShuttingDown;
@@ -1632,10 +1656,13 @@ impl Shared {
                     tcp_terminals.push(state);
                 }
             }
+            #[cfg(feature = "resolver")]
+            {
+                resolutions = core.resolutions.values().cloned().collect::<Vec<_>>();
+            }
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
-                core.resolutions.values().cloned().collect::<Vec<_>>(),
                 tcp_terminals,
                 core.live_tcp.values().cloned().collect::<Vec<_>>(),
             )
@@ -1646,6 +1673,7 @@ impl Shared {
         for state in stream_requests {
             self.cancel_stream_state(&state);
         }
+        #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
@@ -1724,6 +1752,7 @@ impl Shared {
         }
     }
 
+    #[cfg(feature = "resolver")]
     pub(crate) fn complete_resolve_state(
         &self,
         state: &Arc<ResolveState>,
@@ -1910,7 +1939,9 @@ impl Shared {
     }
 
     pub(crate) fn fail_all(&self, error: Error) {
-        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
+        #[cfg(feature = "resolver")]
+        let resolutions;
+        let (requests, stream_requests, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
             let mut tcp_terminals = Vec::new();
@@ -1924,10 +1955,13 @@ impl Shared {
                     tcp_terminals.push(state);
                 }
             }
+            #[cfg(feature = "resolver")]
+            {
+                resolutions = core.resolutions.values().cloned().collect::<Vec<_>>();
+            }
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
-                core.resolutions.values().cloned().collect::<Vec<_>>(),
                 tcp_terminals,
                 core.live_tcp.values().cloned().collect::<Vec<_>>(),
             )
@@ -1940,6 +1974,7 @@ impl Shared {
                 self.finish_stream_state(&state);
             }
         }
+        #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Failed(error.clone()));
         }
@@ -2015,9 +2050,13 @@ impl Shared {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn active_count(&self) -> usize {
         let core = lock_unpoisoned(&self.core);
+        #[cfg(feature = "resolver")]
+        let resolutions = core.resolutions.len();
+        #[cfg(not(feature = "resolver"))]
+        let resolutions = 0;
         core.requests.len()
             + core.stream_requests.len()
-            + core.resolutions.len()
+            + resolutions
             + core.connects.len()
             + core.live_tcp.len()
     }
@@ -2070,7 +2109,7 @@ mod tests {
         );
         let (engine, _controller) = crate::testing::engine(config).expect("Engine must construct");
         let shared = engine.shared_for_testing();
-        shared.set_public_resolver_supported(true);
+        shared.set_native_resolver_supported(true);
         shared.set_standalone_tcp_supported(true);
 
         let pending = engine
@@ -2104,7 +2143,7 @@ mod tests {
         );
         let (engine, _controller) = crate::testing::engine(config).expect("Engine must construct");
         let shared = engine.shared_for_testing();
-        shared.set_public_resolver_supported(true);
+        shared.set_native_resolver_supported(true);
         shared.set_standalone_tcp_supported(true);
 
         let resolve = engine

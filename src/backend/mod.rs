@@ -7,9 +7,11 @@ use crate::registry::Shared;
 use crate::registry::TcpConnectSink;
 use crate::stream::ResponseSink;
 use crate::{
-    Completion, Error, ErrorKind, Request, RequestId, ResolveCompletion, ResolveRequest,
-    ShutdownError, StreamRequest, TcpConnectRequest,
+    Completion, Error, ErrorKind, Request, RequestId, ShutdownError, StreamRequest,
+    TcpConnectRequest,
 };
+#[cfg(feature = "resolver")]
+use crate::{ResolveCompletion, ResolveRequest};
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
@@ -37,6 +39,7 @@ pub(crate) struct BackendCompletion {
     pub(crate) completion: Completion,
 }
 
+#[cfg(feature = "resolver")]
 pub(crate) struct BackendResolveCompletion {
     pub(crate) id: RequestId,
     pub(crate) completion: ResolveCompletion,
@@ -81,6 +84,7 @@ pub(crate) trait Backend {
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error>;
     fn shutdown(&mut self) -> Result<(), ShutdownError>;
 
+    #[cfg(feature = "resolver")]
     fn submit_resolve(
         &mut self,
         _id: RequestId,
@@ -94,6 +98,7 @@ pub(crate) trait Backend {
         )))
     }
 
+    #[cfg(feature = "resolver")]
     fn poll_resolves(&mut self) -> Result<Vec<BackendResolveCompletion>, Error> {
         Ok(Vec::new())
     }
@@ -122,7 +127,7 @@ pub(crate) trait Backend {
         false
     }
 
-    fn supports_public_resolver(&self) -> bool {
+    fn supports_native_resolver(&self) -> bool {
         false
     }
 
@@ -143,7 +148,7 @@ pub(crate) trait BackendFactory: Send {
         false
     }
 
-    fn supports_public_resolver(&self) -> bool {
+    fn supports_native_resolver(&self) -> bool {
         false
     }
 

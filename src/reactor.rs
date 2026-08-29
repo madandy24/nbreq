@@ -4,18 +4,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::backend::BackendFactory;
-use crate::backend::{
-    Backend, BackendCompletion, BackendResolveCompletion, PollMode, interruptible_poll_deadline,
-};
-use crate::registry::{
-    RequestState, ResolveState, Shared, StreamRequestState, Submission, TcpConnectSink,
-};
+#[cfg(feature = "resolver")]
+use crate::backend::BackendResolveCompletion;
+use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
+#[cfg(feature = "resolver")]
+use crate::registry::ResolveState;
+use crate::registry::{RequestState, Shared, StreamRequestState, Submission, TcpConnectSink};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
 pub(crate) struct ReactorCore<B: Backend + ?Sized> {
     backend: Box<B>,
     active: HashMap<RequestId, Arc<RequestState>>,
     active_streams: HashMap<RequestId, Arc<StreamRequestState>>,
+    #[cfg(feature = "resolver")]
     active_resolves: HashMap<RequestId, Arc<ResolveState>>,
 }
 
@@ -25,6 +26,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
             backend,
             active: HashMap::new(),
             active_streams: HashMap::new(),
+            #[cfg(feature = "resolver")]
             active_resolves: HashMap::new(),
         }
     }
@@ -74,6 +76,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                         .submit_stream(id, request, response, accepted_at);
                     self.active_streams.insert(id, state);
                 }
+                #[cfg(feature = "resolver")]
                 Submission::Resolve {
                     request,
                     state,
@@ -112,16 +115,25 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
 
         progressed |= self.reap_cancelled();
         progressed |= self.reap_terminal_streams(shared);
-        let early_resolves = self.backend.poll_resolves()?;
-        progressed |= !early_resolves.is_empty();
-        self.commit_resolve_completions(shared, early_resolves);
+        #[cfg(feature = "resolver")]
+        {
+            let early_resolves = self.backend.poll_resolves()?;
+            progressed |= !early_resolves.is_empty();
+            self.commit_resolve_completions(shared, early_resolves);
+        }
         let completions = self.backend.poll(deadline)?;
+        #[cfg(feature = "resolver")]
         let resolve_completions = self.backend.poll_resolves()?;
         if let Some(error) = shared.queue.take_external_wake_failure() {
             return Err(error);
         }
-        progressed |= !completions.is_empty() || !resolve_completions.is_empty();
+        progressed |= !completions.is_empty();
+        #[cfg(feature = "resolver")]
+        {
+            progressed |= !resolve_completions.is_empty();
+        }
         self.commit_backend_completions(shared, completions);
+        #[cfg(feature = "resolver")]
         self.commit_resolve_completions(shared, resolve_completions);
         progressed |= self.reap_cancelled();
         progressed |= self.reap_terminal_streams(shared);
@@ -152,6 +164,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                     response.cancel();
                     shared.finish_stream_state(&state);
                 }
+                #[cfg(feature = "resolver")]
                 Submission::Resolve { state, .. } => {
                     if !state.is_terminal() {
                         shared.complete_resolve_state(&state, crate::ResolveCompletion::Cancelled);
@@ -180,17 +193,29 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
             self.backend.cancel(id);
         }
         self.active_streams.clear();
+        #[cfg(feature = "resolver")]
         for id in self.active_resolves.keys().copied().collect::<Vec<_>>() {
             self.backend.cancel(id);
         }
+        #[cfg(feature = "resolver")]
         self.active_resolves.clear();
         self.backend.shutdown()
     }
 
     pub(crate) fn transport_wait(&self) -> Option<std::time::Duration> {
+        let no_active_resolves = {
+            #[cfg(feature = "resolver")]
+            {
+                self.active_resolves.is_empty()
+            }
+            #[cfg(not(feature = "resolver"))]
+            {
+                true
+            }
+        };
         if self.active.is_empty()
             && self.active_streams.is_empty()
-            && self.active_resolves.is_empty()
+            && no_active_resolves
             && !self.backend.wants_poll_without_requests()
         {
             return None;
@@ -212,17 +237,22 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
             self.backend.cancel(*id);
             self.active.remove(id);
         }
+        #[cfg(feature = "resolver")]
         let resolve_terminal = self
             .active_resolves
             .iter()
             .filter(|(_id, state)| state.is_terminal())
             .map(|(id, _state)| *id)
             .collect::<Vec<_>>();
+        #[cfg(feature = "resolver")]
         for id in &resolve_terminal {
             self.backend.cancel(*id);
             self.active_resolves.remove(id);
         }
-        !terminal.is_empty() || !resolve_terminal.is_empty()
+        let reaped = !terminal.is_empty();
+        #[cfg(feature = "resolver")]
+        let reaped = reaped || !resolve_terminal.is_empty();
+        reaped
     }
 
     fn commit_backend_completions(
@@ -237,6 +267,7 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
         }
     }
 
+    #[cfg(feature = "resolver")]
     fn commit_resolve_completions(
         &mut self,
         shared: &Arc<Shared>,

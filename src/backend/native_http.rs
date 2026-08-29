@@ -8,6 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "resolver")]
+use super::BackendResolveCompletion;
 use super::native::{
     NATIVE_SAFETY_POLL, NativeEvent, NativeFailure, NativeFailureKind, NativeReactor, SlotId,
 };
@@ -18,7 +20,7 @@ use super::native_tls::{
     NativeTls, NativeTlsConfigs, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
     encrypted_receive_limit,
 };
-use super::{Backend, BackendCompletion, BackendFactory, BackendResolveCompletion, PollMode};
+use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::metrics::Metrics;
 use crate::registry::{Shared, TcpConnectSink};
 use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, UploadPoll};
@@ -26,10 +28,11 @@ use crate::tcp::io::TcpIoOwner;
 use crate::types::{http_origin, redirected_request};
 use crate::{
     AddressFamily, AddressOrder, CacheMode, Completion, EngineConfig, Error, ErrorKind, Header,
-    LimitKind, Method, Request, RequestId, ResolveCompletion, ResolveRequest, ResolveResponse,
-    ResolveStatus, ResolvedAddress, Response, ResponseHead, ShutdownError, StreamRequest,
-    TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure, TransportStage,
+    LimitKind, Method, Request, RequestId, ResolveStatus, Response, ResponseHead, ShutdownError,
+    StreamRequest, TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure, TransportStage,
 };
+#[cfg(feature = "resolver")]
+use crate::{ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress};
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
 const STACK_RESPONSE_HEADER_SLOTS: usize = 32;
@@ -1657,7 +1660,7 @@ impl BackendFactory for NativeHttpFactory {
         true
     }
 
-    fn supports_public_resolver(&self) -> bool {
+    fn supports_native_resolver(&self) -> bool {
         self.resolver.is_some()
     }
 
@@ -1856,8 +1859,11 @@ struct NativeHttpBackend {
     transfers: HashMap<SlotId, HttpTransfer>,
     request_to_resolve: HashMap<RequestId, ResolveKey>,
     resolves: HashMap<ResolveKey, PendingResolve>,
+    #[cfg(feature = "resolver")]
     request_to_public: HashMap<RequestId, ResolveKey>,
+    #[cfg(feature = "resolver")]
     public_lookups: HashMap<ResolveKey, PublicLookup>,
+    #[cfg(feature = "resolver")]
     pending_public: Vec<BackendResolveCompletion>,
     standalone_request_to_resolve: HashMap<RequestId, ResolveKey>,
     standalone_resolves: HashMap<ResolveKey, StandaloneResolve>,
@@ -2033,6 +2039,7 @@ impl StandaloneTcp {
     }
 }
 
+#[cfg(feature = "resolver")]
 struct PublicLookup {
     request_id: RequestId,
     total_deadline: Option<Instant>,
@@ -2201,8 +2208,11 @@ impl NativeHttpBackend {
             transfers: HashMap::new(),
             request_to_resolve: HashMap::new(),
             resolves: HashMap::new(),
+            #[cfg(feature = "resolver")]
             request_to_public: HashMap::new(),
+            #[cfg(feature = "resolver")]
             public_lookups: HashMap::new(),
+            #[cfg(feature = "resolver")]
             pending_public: Vec::new(),
             standalone_request_to_resolve: HashMap::new(),
             standalone_resolves: HashMap::new(),
@@ -2819,44 +2829,49 @@ impl NativeHttpBackend {
                     self.finish_standalone_resolve(lookup, public);
                     continue;
                 }
-                let Some(lookup) = self.public_lookups.remove(&result.key) else {
-                    continue;
-                };
-                self.request_to_public.remove(&lookup.request_id);
-                if lookup
-                    .total_deadline
-                    .is_some_and(|deadline| deadline <= Instant::now())
+                #[cfg(feature = "resolver")]
                 {
-                    if let Some(resolver) = &self.resolver {
-                        resolver.cancel(result.key)?;
+                    let Some(lookup) = self.public_lookups.remove(&result.key) else {
+                        continue;
+                    };
+                    self.request_to_public.remove(&lookup.request_id);
+                    if lookup
+                        .total_deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                    {
+                        if let Some(resolver) = &self.resolver {
+                            resolver.cancel(result.key)?;
+                        }
+                        self.pending_public.push(BackendResolveCompletion {
+                            id: lookup.request_id,
+                            completion: public_total_timeout(),
+                        });
+                        continue;
                     }
                     self.pending_public.push(BackendResolveCompletion {
                         id: lookup.request_id,
-                        completion: public_total_timeout(),
+                        completion: match public {
+                            PublicLookupOutcome::Completed {
+                                name,
+                                status,
+                                addresses,
+                                valid_until,
+                                from_cache,
+                                candidate_name,
+                            } => ResolveCompletion::Completed(ResolveResponse::new(
+                                name,
+                                status,
+                                addresses.into_iter().map(ResolvedAddress::new).collect(),
+                                valid_until,
+                                from_cache,
+                                candidate_name,
+                            )),
+                            PublicLookupOutcome::Failed(error) => ResolveCompletion::Failed(error),
+                        },
                     });
                     continue;
                 }
-                self.pending_public.push(BackendResolveCompletion {
-                    id: lookup.request_id,
-                    completion: match public {
-                        PublicLookupOutcome::Completed {
-                            name,
-                            status,
-                            addresses,
-                            valid_until,
-                            from_cache,
-                            candidate_name,
-                        } => ResolveCompletion::Completed(ResolveResponse::new(
-                            name,
-                            status,
-                            addresses.into_iter().map(ResolvedAddress::new).collect(),
-                            valid_until,
-                            from_cache,
-                            candidate_name,
-                        )),
-                        PublicLookupOutcome::Failed(error) => ResolveCompletion::Failed(error),
-                    },
-                });
+                #[cfg(not(feature = "resolver"))]
                 continue;
             }
             let Some(pending) = self.resolves.remove(&result.key) else {
@@ -2956,6 +2971,7 @@ impl NativeHttpBackend {
         }
     }
 
+    #[cfg(feature = "resolver")]
     fn expire_public_lookups(&mut self) -> Result<(), Error> {
         let now = Instant::now();
         let expired = self
@@ -3013,6 +3029,7 @@ impl NativeHttpBackend {
     }
 
     fn drain_dns(&mut self) -> Result<(), Error> {
+        #[cfg(feature = "resolver")]
         self.expire_public_lookups()?;
         self.expire_standalone_resolves()?;
         let http = self.process_resolver_results()?;
@@ -4683,10 +4700,13 @@ impl Backend for NativeHttpBackend {
                 let _cancel_result = resolver.cancel(key);
             }
         }
-        if let Some(key) = self.request_to_public.remove(&id) {
-            self.public_lookups.remove(&key);
-            if let Some(resolver) = &self.resolver {
-                let _cancel_result = resolver.cancel(key);
+        #[cfg(feature = "resolver")]
+        {
+            if let Some(key) = self.request_to_public.remove(&id) {
+                self.public_lookups.remove(&key);
+                if let Some(resolver) = &self.resolver {
+                    let _cancel_result = resolver.cancel(key);
+                }
             }
         }
         if let Some(slot) = self.request_to_slot.remove(&id) {
@@ -4730,9 +4750,12 @@ impl Backend for NativeHttpBackend {
         self.transfers.clear();
         self.request_to_resolve.clear();
         self.resolves.clear();
-        self.request_to_public.clear();
-        self.public_lookups.clear();
-        self.pending_public.clear();
+        #[cfg(feature = "resolver")]
+        {
+            self.request_to_public.clear();
+            self.public_lookups.clear();
+            self.pending_public.clear();
+        }
         self.standalone_request_to_resolve.clear();
         self.standalone_resolves.clear();
         self.pending_http_from_dns.clear();
@@ -4766,8 +4789,18 @@ impl Backend for NativeHttpBackend {
     }
 
     fn wants_poll_without_requests(&self) -> bool {
+        let has_public_lookups = {
+            #[cfg(feature = "resolver")]
+            {
+                !self.public_lookups.is_empty()
+            }
+            #[cfg(not(feature = "resolver"))]
+            {
+                false
+            }
+        };
         self.idle_count != 0
-            || !self.public_lookups.is_empty()
+            || has_public_lookups
             || !self.standalone_resolves.is_empty()
             || !self.standalone_pending.is_empty()
             || !self.standalone_live.is_empty()
@@ -4777,7 +4810,7 @@ impl Backend for NativeHttpBackend {
         true
     }
 
-    fn supports_public_resolver(&self) -> bool {
+    fn supports_native_resolver(&self) -> bool {
         self.resolver.is_some()
     }
 
@@ -4853,6 +4886,7 @@ impl Backend for NativeHttpBackend {
         }
     }
 
+    #[cfg(feature = "resolver")]
     fn submit_resolve(
         &mut self,
         id: RequestId,
@@ -4908,12 +4942,14 @@ impl Backend for NativeHttpBackend {
         None
     }
 
+    #[cfg(feature = "resolver")]
     fn poll_resolves(&mut self) -> Result<Vec<BackendResolveCompletion>, Error> {
         self.drain_dns()?;
         Ok(std::mem::take(&mut self.pending_public))
     }
 }
 
+#[cfg(feature = "resolver")]
 fn public_total_timeout() -> ResolveCompletion {
     ResolveCompletion::Failed(Error::timeout(
         TimeoutKind::Total,

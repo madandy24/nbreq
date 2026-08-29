@@ -115,7 +115,7 @@ impl Engine {
         mut backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
         let streaming_supported = backend.supports_streaming();
-        let public_resolver_supported = backend.supports_public_resolver();
+        let native_resolver_supported = backend.supports_native_resolver();
         let standalone_tcp_supported = backend.supports_standalone_tcp();
         let id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
         if id == u64::MAX {
@@ -142,7 +142,7 @@ impl Engine {
             streaming_supported,
             Arc::clone(&metrics),
         );
-        shared.set_public_resolver_supported(public_resolver_supported);
+        shared.set_native_resolver_supported(native_resolver_supported);
         shared.set_standalone_tcp_supported(standalone_tcp_supported);
         backend.attach_metrics(metrics);
         let runtime = match config.run_mode() {
@@ -212,7 +212,7 @@ impl Engine {
             Arc::clone(&metrics),
         )?;
         let streaming_supported = factory.supports_streaming();
-        let public_resolver_supported = factory.supports_public_resolver();
+        let native_resolver_supported = factory.supports_native_resolver();
         let standalone_tcp_supported = factory.supports_standalone_tcp();
         let shared = Shared::new(
             id,
@@ -221,7 +221,7 @@ impl Engine {
             streaming_supported,
             metrics,
         );
-        shared.set_public_resolver_supported(public_resolver_supported);
+        shared.set_native_resolver_supported(native_resolver_supported);
         shared.set_standalone_tcp_supported(standalone_tcp_supported);
         let reactor_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()

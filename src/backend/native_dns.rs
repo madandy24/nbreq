@@ -132,11 +132,15 @@ impl ResolveFailure {
 #[derive(Debug)]
 pub(super) enum PublicLookupOutcome {
     Completed {
+        #[cfg(feature = "resolver")]
         name: String,
         status: ResolveStatus,
         addresses: Vec<IpAddr>,
+        #[cfg(feature = "resolver")]
         valid_until: Option<Instant>,
+        #[cfg(feature = "resolver")]
         from_cache: bool,
+        #[cfg(feature = "resolver")]
         candidate_name: Option<String>,
     },
     Failed(Error),
@@ -197,6 +201,7 @@ enum QueryPolicy {
 
 #[derive(Clone)]
 struct PublicSession {
+    #[cfg(feature = "resolver")]
     identity: String,
     /// Queried candidate for the current/winning lookup. Exact lookups keep this equal to
     /// `identity`. Search expansion stores the suffix-expanded question name.
@@ -802,6 +807,7 @@ fn begin_public_resolve(
     result_waker: &NativeWaker,
 ) {
     let mut session = PublicSession {
+        #[cfg(feature = "resolver")]
         identity: spec.host.clone(),
         candidate: String::new(),
         candidates: public_search_candidates(&spec.host, spec.expand_search, search_suffixes),
@@ -954,7 +960,7 @@ fn start_current_candidate(
 }
 
 fn complete_public_session(session: &PublicSession) -> PublicLookupOutcome {
-    let (status, mut addresses, valid_until) = match session.family {
+    let (status, mut addresses, family_valid_until) = match session.family {
         AddressFamily::Ipv4 => family_response(session.ipv4.as_ref()),
         AddressFamily::Ipv6 => family_response(session.ipv6.as_ref()),
         AddressFamily::Both => combine_both(session),
@@ -962,8 +968,9 @@ fn complete_public_session(session: &PublicSession) -> PublicLookupOutcome {
     if addresses.len() > session.max_results {
         addresses.truncate(session.max_results);
     }
+    #[cfg(feature = "resolver")]
     let (status, valid_until, candidate_name) = if status == ResolveStatus::Answer {
-        (status, valid_until, Some(session.candidate.clone()))
+        (status, family_valid_until, Some(session.candidate.clone()))
     } else {
         (
             if session.saw_nodata {
@@ -975,12 +982,26 @@ fn complete_public_session(session: &PublicSession) -> PublicLookupOutcome {
             None,
         )
     };
+    #[cfg(not(feature = "resolver"))]
+    let status = if status == ResolveStatus::Answer {
+        status
+    } else if session.saw_nodata {
+        ResolveStatus::NoData
+    } else {
+        ResolveStatus::NameNotFound
+    };
+    #[cfg(not(feature = "resolver"))]
+    let _ = family_valid_until;
     PublicLookupOutcome::Completed {
+        #[cfg(feature = "resolver")]
         name: session.identity.clone(),
         status,
         addresses,
+        #[cfg(feature = "resolver")]
         valid_until,
+        #[cfg(feature = "resolver")]
         from_cache: session.from_cache,
+        #[cfg(feature = "resolver")]
         candidate_name,
     }
 }

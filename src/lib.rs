@@ -64,11 +64,7 @@ pub use dns::{
     ResolvedAddress, Resolver,
 };
 #[cfg(all(not(feature = "resolver"), feature = "native"))]
-pub(crate) use dns::{
-    AddressFamily, AddressOrder, CacheMode, ResolveResponse, ResolveStatus, ResolvedAddress,
-};
-#[cfg(not(feature = "resolver"))]
-pub(crate) use dns::{ResolveCompletion, ResolveRequest};
+pub(crate) use dns::{AddressFamily, AddressOrder, CacheMode, ResolveStatus};
 pub use engine::{Engine, EngineBuilder};
 pub use metrics::{EngineMetrics, ResourceMetrics};
 pub use stream::{

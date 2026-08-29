@@ -273,7 +273,7 @@ impl Metrics {
         }
     }
 
-    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
+    #[cfg(feature = "resolver")]
     pub(crate) fn resolution_accepted(&self, inflight: usize) {
         saturating_increment(&self.resolutions_accepted);
         update_max(&self.high_inflight_resolutions, inflight);
@@ -283,6 +283,7 @@ impl Metrics {
         update_max(&self.high_inflight_resolutions, inflight);
     }
 
+    #[cfg(feature = "resolver")]
     pub(crate) fn resolution_terminal(&self, completion: &crate::ResolveCompletion) {
         match completion {
             crate::ResolveCompletion::Completed(_) => {
