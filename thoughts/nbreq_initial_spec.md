@@ -1251,6 +1251,23 @@ lifecycle (268 Windows / 266 Ubuntu library tests); default/all-feature behaviou
 `FF974A5435DB7BE70524F77C91998E54B1084875171F9BAF64B0D2047CD020C4`. Final review
 accepted this native-only lifecycle compile-out as F4.2. It does not accept or begin mechanical
 module extraction.
+
+F4.3 is the first mechanical extraction and moves tests only. The inline `native_http` and
+`native_dns` test-module bodies move to child `tests.rs` files while retaining their existing module
+paths, names, imports, fixtures, feature selection, and behaviour. Production bodies and visibility
+do not change. Permitted textual adjustments inside the moved bodies are the extra directory
+component needed by source-relative checked-in corpus paths and rustfmt reflow caused by removing
+the outer inline-module indentation. The unformatted moved bodies must first compare exactly with
+`HEAD` after normalizing those paths. HTTP wire/framing extraction, owner state changes, and further
+DNS decomposition remain unopened until this move is separately reviewed.
+
+The F4.3 implementation passed the focused moved-module suites on Windows and Ubuntu with the
+unchanged 63 HTTP and 39 DNS tests. The complete offline verifier passed 24/24 on both platforms:
+63.242s on Windows and 317.631s on the exact-source Ubuntu archive. Linux retained 266 native-only
+and 311 default/all-feature library tests; Windows retained 268 and 313 respectively. The Ubuntu
+archive SHA-256 was `5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE92A72`
+and was verified on `gds-client-01i linode` with rustc/cargo 1.85.0. This remains a test-isolation
+acceptance candidate only; production module extraction is not opened by this evidence.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
