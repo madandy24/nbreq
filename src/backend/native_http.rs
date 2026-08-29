@@ -1618,6 +1618,18 @@ impl NativeHttpFactory {
         backend.standalone_dns_handoff_gate = Some((entered, release));
         Ok(Box::new(backend))
     }
+
+    #[cfg(test)]
+    pub(super) fn into_backend_with_standalone_socket_gate(
+        self,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Result<Box<dyn Backend + Send>, Error> {
+        let mut backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.standalone_socket_gate = Some((entered, release));
+        Ok(Box::new(backend))
+    }
 }
 
 impl BackendFactory for NativeHttpFactory {
@@ -1869,6 +1881,8 @@ struct NativeHttpBackend {
     #[cfg(test)]
     standalone_dns_handoff_gate:
         Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    standalone_socket_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 struct StandaloneResolve {
@@ -2211,6 +2225,8 @@ impl NativeHttpBackend {
             failed_standalone_address_delay: None,
             #[cfg(test)]
             standalone_dns_handoff_gate: None,
+            #[cfg(test)]
+            standalone_socket_gate: None,
         })
     }
 
@@ -3115,6 +3131,15 @@ impl NativeHttpBackend {
             }
             self.standalone_request_to_slot.insert(pending.id(), slot);
             self.standalone_pending.insert(slot, pending);
+            #[cfg(test)]
+            if let Some((entered, release)) = self.standalone_socket_gate.take() {
+                entered
+                    .send(())
+                    .expect("observe owned standalone socket attempt");
+                release
+                    .recv()
+                    .expect("release owned standalone socket attempt");
+            }
             return;
         }
     }

@@ -994,6 +994,28 @@ mod tests {
         engine.shutdown().expect("scaffold Engine must stop");
     }
 
+    #[cfg(feature = "native")]
+    #[test]
+    fn detached_tcp_connector_rejects_after_engine_stop_before_admission() {
+        let engine = Engine::new(EngineConfig::spawned()).expect("native Engine must construct");
+        let connector = engine.tcp_connector();
+        let shared = engine.shared_for_testing();
+        engine.shutdown().expect("empty native Engine must stop");
+
+        let error = connector
+            .submit(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("detached request must build"),
+            )
+            .expect_err("detached connector must reject new work");
+        assert_eq!(error.kind(), ErrorKind::EngineStopped);
+        let metrics = shared.metrics_snapshot();
+        assert_eq!(metrics.tcp_connects_accepted(), 0);
+        assert_eq!(metrics.current().standalone_tcp_connections(), 0);
+        assert_eq!(metrics.current().reserved_tcp_queue_bytes(), 0);
+    }
+
     #[test]
     fn per_connection_queue_cannot_exceed_the_engine_ceiling() {
         let engine = Engine::with_backend(
@@ -2334,6 +2356,207 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
+    fn tcp_wrong_engine_actions_fail_without_touching_the_owner() {
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let mut owner = crate::testing::native_http_engine_manual_with_nameserver(
+            EngineConfig::manual(),
+            dns.address(),
+        )
+        .expect("owning manual Engine must construct");
+        let mut foreign = crate::testing::native_http_engine_manual_with_nameserver(
+            EngineConfig::manual(),
+            dns.address(),
+        )
+        .expect("foreign manual Engine must construct");
+
+        let first = owner
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("wrong-engine-cancel.test", 9)
+                    .build()
+                    .expect("foreign-cancel request must build"),
+            )
+            .expect("foreign-cancel request must submit");
+        let error = foreign
+            .tcp_connector()
+            .cancel(first.handle().id())
+            .expect_err("foreign connector must reject the owner ID");
+        assert_eq!(error.kind(), ErrorKind::WrongEngine);
+        first
+            .handle()
+            .cancel()
+            .expect("owning connector must still cancel");
+        assert!(matches!(
+            owner
+                .drive_until(first)
+                .expect("owning Engine must observe cancellation"),
+            TcpConnectCompletion::Cancelled
+        ));
+
+        let second = owner
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("wrong-engine-drive.test", 9)
+                    .build()
+                    .expect("foreign-drive request must build"),
+            )
+            .expect("foreign-drive request must submit");
+        let owner_handle = second.handle();
+        let error = foreign
+            .drive_until(second)
+            .expect_err("foreign Engine must reject the owner waiter");
+        assert_eq!(error.kind(), ErrorKind::WrongEngine);
+        owner_handle
+            .cancel()
+            .expect("foreign drive rejection must leave owner cancellation live");
+        owner
+            .drive(Instant::now() + Duration::from_millis(50))
+            .expect("owner must drain cancelled commands");
+
+        let metrics = owner.metrics();
+        assert_eq!(metrics.tcp_connects_accepted(), 2);
+        assert_eq!(metrics.tcp_connects_cancelled(), 2);
+        assert_eq!(metrics.current().inflight_resolutions(), 0);
+        assert_eq!(metrics.current().standalone_tcp_connections(), 0);
+        assert_eq!(foreign.metrics().tcp_connects_accepted(), 0);
+        assert_eq!(dns.queries(), 0);
+        owner.shutdown().expect("owning Engine must stop");
+        foreign.shutdown().expect("foreign Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn cancel_while_socket_attempt_is_owned_cannot_publish_or_leak() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("bind socket-phase cancellation fixture");
+        let address = listener
+            .local_addr()
+            .expect("socket-phase cancellation address");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let cancelled_server = thread::spawn(move || {
+            let (mut socket, _) = listener
+                .accept()
+                .expect("accept owned socket-phase attempt");
+            accepted_tx
+                .send(())
+                .expect("signal accepted socket-phase attempt");
+            let mut byte = [0_u8; 1];
+            match socket.read(&mut byte) {
+                Ok(0) | Err(_) => {}
+                Ok(count) => panic!("cancelled socket sent {count} unexpected bytes"),
+            }
+            closed_tx.send(()).expect("signal cancelled socket closure");
+        });
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_standalone_socket_gate(
+            &config, entered_tx, release_rx,
+        )
+        .expect("socket-gated backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("socket-gated manual Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("socket-phase request must build"),
+            )
+            .expect("socket-phase request must submit");
+        let cancel = pending.handle();
+        let driver = thread::spawn(move || {
+            engine
+                .drive(Instant::now() + Duration::from_millis(100))
+                .expect("socket-gated Engine must drive");
+            engine
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("real socket attempt must become owner-visible");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("owned socket attempt must reach the peer");
+        cancel
+            .cancel()
+            .expect("socket-phase cancellation must commit");
+        assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        release_tx.send(()).expect("release socket attempt owner");
+        let mut engine = driver.join().expect("socket-gated driver must join");
+        engine
+            .drive(Instant::now() + Duration::from_millis(100))
+            .expect("owner must tear down cancelled socket attempt");
+        closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancelled socket attempt must close at the peer");
+        cancelled_server
+            .join()
+            .expect("cancelled socket server must join");
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind replacement socket fixture");
+        let address = listener.local_addr().expect("replacement socket address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept replacement socket");
+            let mut byte = [0_u8; 1];
+            socket.read_exact(&mut byte).expect("read replacement byte");
+            assert_eq!(byte, [7]);
+            socket.write_all(&byte).expect("echo replacement byte");
+        });
+        let replacement = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .connect_timeout(Duration::from_secs(2))
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("replacement request must build"),
+            )
+            .expect("replacement request must submit");
+        let mut connection = match engine
+            .drive_until(replacement)
+            .expect("replacement connect must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("replacement connection failed: {other:?}"),
+        };
+        connection
+            .try_send(vec![7])
+            .expect("replacement byte must queue");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut byte = [0_u8; 1];
+        loop {
+            engine
+                .drive(deadline)
+                .expect("replacement Engine must drive");
+            match connection
+                .try_read(&mut byte)
+                .expect("replacement read must stay live")
+            {
+                TcpRead::Pending => assert!(Instant::now() < deadline, "replacement timed out"),
+                TcpRead::Data(1) => break,
+                other => panic!("unexpected replacement read: {other:?}"),
+            }
+        }
+        assert_eq!(byte, [7]);
+        drop(connection);
+        server.join().expect("replacement server must join");
+        engine.shutdown().expect("socket-gated Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
     fn live_cancel_releases_tcp_occupancy_and_queue_reservation() {
         use std::io::Read;
         use std::net::TcpListener;
@@ -2378,6 +2601,106 @@ mod tests {
         drop(connection);
         server.join().expect("cancel fixture must join");
         engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn cancel_all_terminates_live_finish_callback_and_allows_later_tcp() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind cancel-all finish fixture");
+        let address = listener.local_addr().expect("cancel-all finish address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept cancel-all TCP");
+            let mut bytes = [0_u8; 8];
+            while let Ok(count) = socket.read(&mut bytes) {
+                if count == 0 {
+                    break;
+                }
+            }
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_write_limit(&config, 0)
+            .expect("stalled-write backend must construct");
+        let mut engine =
+            Engine::with_backend(config, backend).expect("cancel-all manual Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("cancel-all request must build"),
+            )
+            .expect("cancel-all request must submit");
+        let mut connection = match engine
+            .drive_until(pending)
+            .expect("cancel-all connect must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("cancel-all connect failed: {other:?}"),
+        };
+        connection
+            .try_send(b"full".to_vec())
+            .expect("cancel-all output must queue");
+        let (callback_tx, callback_rx) = mpsc::channel();
+        connection
+            .finish_with(move |result| {
+                callback_tx
+                    .send(result)
+                    .expect("send cancel-all finish terminal");
+            })
+            .expect("cancel-all finish callback must register");
+
+        engine.cancel_all();
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            connection.try_read(&mut byte),
+            Err(TcpStreamError::Cancelled)
+        ));
+        engine
+            .drive(Instant::now() + Duration::from_millis(100))
+            .expect("cancel-all Engine must drain owner and callback work");
+        assert!(matches!(
+            callback_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancel-all finish callback must run"),
+            Err(TcpFinishError::Cancelled)
+        ));
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        drop(connection);
+        server.join().expect("cancel-all server must join");
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind post-cancel-all fixture");
+        let address = listener.local_addr().expect("post-cancel-all address");
+        let server = thread::spawn(move || {
+            let (_socket, _) = listener.accept().expect("accept post-cancel-all TCP");
+        });
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .build()
+                    .expect("post-cancel-all request must build"),
+            )
+            .expect("cancel_all must not close later admission");
+        let replacement = match engine
+            .drive_until(pending)
+            .expect("post-cancel-all connect must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("post-cancel-all connect failed: {other:?}"),
+        };
+        drop(replacement);
+        server.join().expect("post-cancel-all server must join");
+        engine.shutdown().expect("cancel-all Engine must stop");
     }
 
     #[cfg(feature = "native")]
@@ -2529,6 +2852,82 @@ mod tests {
         ));
         drop(connection);
         server.join().expect("shutdown fixture must join");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn shutdown_delivers_engine_stopped_to_real_finish_callback_and_joins() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind shutdown-finish fixture");
+        let address = listener.local_addr().expect("shutdown-finish address");
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept shutdown-finish TCP");
+            let mut bytes = [0_u8; 8];
+            while let Ok(count) = socket.read(&mut bytes) {
+                if count == 0 {
+                    break;
+                }
+            }
+        });
+
+        let config = EngineConfig::manual();
+        let backend = crate::backend::native_http_backend_with_write_limit(&config, 0)
+            .expect("shutdown-finish stalled backend must construct");
+        let mut engine = Engine::with_backend(config, backend)
+            .expect("shutdown-finish manual Engine must construct");
+        let shared = engine.shared_for_testing();
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(address)
+                    .send_queue_bytes(4)
+                    .receive_queue_bytes(4)
+                    .build()
+                    .expect("shutdown-finish request must build"),
+            )
+            .expect("shutdown-finish request must submit");
+        let mut connection = match engine
+            .drive_until(pending)
+            .expect("shutdown-finish connect must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("shutdown-finish connect failed: {other:?}"),
+        };
+        connection
+            .try_send(b"full".to_vec())
+            .expect("shutdown-finish output must queue");
+        let (callback_tx, callback_rx) = mpsc::channel();
+        connection
+            .finish_with(move |result| {
+                callback_tx
+                    .send(result)
+                    .expect("send shutdown-finish terminal");
+            })
+            .expect("shutdown-finish callback must register");
+
+        engine
+            .shutdown()
+            .expect("Engine with a real finish callback must join");
+        assert!(matches!(
+            callback_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("shutdown-finish callback must run"),
+            Err(TcpFinishError::EngineStopped)
+        ));
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            connection.try_read(&mut byte),
+            Err(TcpStreamError::Failed(error)) if error.kind() == ErrorKind::EngineStopped
+        ));
+        let metrics = shared.metrics_snapshot();
+        assert_eq!(metrics.current().standalone_tcp_connections(), 0);
+        assert_eq!(metrics.current().reserved_tcp_queue_bytes(), 0);
+        drop(connection);
+        server.join().expect("shutdown-finish server must join");
     }
 
     #[cfg(feature = "native")]

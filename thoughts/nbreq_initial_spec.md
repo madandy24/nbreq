@@ -1171,7 +1171,19 @@ tracked-files archive SHA-256 is
 `BC627D915117C36311A41E9F686ECD9950449287AFB1F073A16404EDB3544062`; Ubuntu passed the 53-test
 focused TCP suite, 25 repetitions of the four serial/handoff/deadline/publication regressions, and
 the 20-step offline verifier in 262.585 seconds with 301 library and 10 public-contract tests.
-F2.4 is accepted and remains uncommitted; the remaining platform gates stay in F2.5.
+F2.4 is accepted and committed as `ecac4c1`. F2.5 changes no public API or runtime policy. Its
+Windows lifecycle fixtures cover detached admission, WrongEngine isolation, cancellation while a
+real reactor socket attempt is owned but unpublished, cancel-all over a live finish callback with
+later admission, and shutdown over a live finish callback. The corrected five-test set passed 25/25
+repetitions and the Windows verifier passed 20/20 in 102.025 seconds with 308 library tests. Final
+exact-source Ubuntu archive SHA-256
+`0D968D886563051FC938BD0973ECB276E3B697532E865B8FE35E9E15A4BA6334` passed 58 focused TCP tests,
+the five lifecycle tests 25/25, and the offline 20-step verifier in 223.631 seconds with 306 library
+tests, then removed its source/target state. A public-API i686 probe on stock Wine 5 passed an initial
+run plus 25/25 repetitions through the automatic missing-AFD fallback, including send/read,
+finish/half-close, live cancel, later connection, callback finish, zero final gauges, joined shutdown,
+and no remaining process. Final review accepted F2.5 without a production-owner or public-contract
+change. F2 is closed; F3 remains a separate unopened dependency-extraction project.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the

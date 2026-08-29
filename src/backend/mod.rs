@@ -181,6 +181,16 @@ pub(crate) fn native_http_backend_with_write_limit(
     native_http::NativeHttpFactory::new(config).into_backend_with_write_limit(bytes)
 }
 
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn native_http_backend_with_standalone_socket_gate(
+    config: &crate::EngineConfig,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new(config)
+        .into_backend_with_standalone_socket_gate(entered, release)
+}
+
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_http_factory_with_nameserver(
     config: &crate::EngineConfig,
