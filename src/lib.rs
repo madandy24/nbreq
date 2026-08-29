@@ -6,11 +6,24 @@
 //! implementations can be selected explicitly with [`EngineBuilder::http_backend`]. The default
 //! build and ordinary [`Engine::new`] constructor use NBReq's native HTTP implementation.
 //!
-//! [`Engine::resolver`] and [`Engine::tcp_connector`] issue cloneable capability tickets into the
-//! same Engine lifecycle. Public hostname resolution is served by the Engine-owned native DNS
-//! service when that owner is present. Standalone TCP live queue/drop/finish state is internally
-//! wired; native literal-address `TcpConnector` operations are in their F2 proving phase while
-//! hostname connects remain gated.
+//! [`Engine::tcp_connector`] issues a cloneable capability ticket into the same Engine lifecycle.
+//! The default-on `resolver` feature additionally exposes public hostname resolution through
+//! `Engine::resolver`. Both capabilities use the Engine-owned native DNS and reactor owners.
+#![cfg_attr(
+    not(feature = "resolver"),
+    doc = r#"
+
+The public Resolver API is absent when the `resolver` feature is disabled:
+
+```compile_fail
+use nbreq::{Engine, Resolver};
+
+fn public_resolver_is_not_compiled(engine: &Engine) {
+    let _: Resolver = engine.resolver();
+}
+```
+"#
+)]
 #![doc = include_str!("../docs/getting-started.md")]
 
 mod atomic;
@@ -44,11 +57,18 @@ mod dns_wiring_tests;
 
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};
+#[cfg(feature = "resolver")]
 pub use dns::{
     AddressFamily, AddressOrder, CacheMode, PendingResolve, ResolveCompletion, ResolveHandle,
     ResolveRequest, ResolveRequestBuilder, ResolveResponse, ResolveStatus, ResolveWaitOutcome,
     ResolvedAddress, Resolver,
 };
+#[cfg(all(not(feature = "resolver"), feature = "native"))]
+pub(crate) use dns::{
+    AddressFamily, AddressOrder, CacheMode, ResolveResponse, ResolveStatus, ResolvedAddress,
+};
+#[cfg(not(feature = "resolver"))]
+pub(crate) use dns::{ResolveCompletion, ResolveRequest};
 pub use engine::{Engine, EngineBuilder};
 pub use metrics::{EngineMetrics, ResourceMetrics};
 pub use stream::{

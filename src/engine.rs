@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "resolver")]
+use crate::Resolver;
 use crate::backend::{self, Backend};
 use crate::context::{ContextGuard, ContextKind};
 use crate::dispatch::DispatcherOwner;
@@ -15,8 +17,8 @@ use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
 use crate::waiter::sealed::Sealed;
 use crate::{
-    Client, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, Resolver, RunMode,
-    ShutdownError, ShutdownOutcome, TcpConnector, WaiterTarget,
+    Client, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, RunMode, ShutdownError,
+    ShutdownOutcome, TcpConnector, WaiterTarget,
 };
 
 static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
@@ -31,9 +33,9 @@ enum RuntimeOwner {
 /// Unique owner of one lifecycle, resource, and bulk-cancellation domain.
 ///
 /// Engine is `Send`, deliberately non-cloneable, and deliberately not `Sync` in the initial
-/// contract. [`Engine::client`], [`Engine::resolver`], and [`Engine::tcp_connector`] issue cheap
-/// cloneable capability tickets. Tickets neither own nor extend Engine lifetime. Explicit shutdown
-/// consumes the Engine owner.
+/// contract. [`Engine::client`] and [`Engine::tcp_connector`] issue cheap cloneable capability
+/// tickets; the default-on `resolver` feature also provides `Engine::resolver`. Tickets neither own
+/// nor extend Engine lifetime. Explicit shutdown consumes the Engine owner.
 ///
 /// ```compile_fail
 /// use nbreq::Engine;
@@ -289,6 +291,7 @@ impl Engine {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use]
+    #[cfg(feature = "resolver")]
     pub fn resolver(&self) -> Resolver {
         Resolver::new(Arc::clone(&self.shared), self.config.max_resolve_results())
     }
@@ -324,8 +327,8 @@ impl Engine {
         self.shared.metrics_snapshot()
     }
 
-    /// Cancels HTTP requests, public resolutions, pending connects, and live standalone TCP
-    /// accepted before the cancellation barrier while keeping the Engine alive.
+    /// Cancels HTTP requests, public resolutions when compiled, pending connects, and live
+    /// standalone TCP accepted before the cancellation barrier while keeping the Engine alive.
     pub fn cancel_all(&self) {
         self.shared.cancel_all();
     }
@@ -726,7 +729,8 @@ impl EngineBuilder {
         self
     }
 
-    /// Selects the public-resolver inflight budget.
+    /// Selects the DNS inflight budget shared by public Resolver operations (when compiled) and
+    /// hostname TCP connects.
     #[must_use]
     pub fn max_inflight_resolutions(mut self, resolutions: NonZeroUsize) -> Self {
         self.config = self.config.with_max_inflight_resolutions(resolutions);
@@ -740,7 +744,8 @@ impl EngineBuilder {
         self
     }
 
-    /// Selects the Engine ceiling for addresses returned by one public resolution.
+    /// Selects the Engine ceiling for addresses retained by one DNS result or hostname-connect
+    /// attempt.
     #[must_use]
     pub fn max_resolve_results(mut self, results: NonZeroUsize) -> Self {
         self.config = self.config.with_max_resolve_results(results);

@@ -15,11 +15,10 @@ pub enum RunMode {
 
 /// Selects the HTTP implementation used by an [`Engine`](crate::Engine).
 ///
-/// This enum selects HTTP only. It does not select DNS or TCP. [`crate::Engine::resolver`] and
-/// [`crate::Engine::tcp_connector`] tickets always issue (feature-invariant). Resolve and connect
-/// operations require the Engine's native backend owner. Curl and scaffold Engines reject those
-/// operations with [`ErrorKind::Unsupported`] before admission. Compiling native support does not
-/// attach a second native poller beside curl.
+/// This enum selects HTTP only. It does not select DNS or TCP. `Engine::tcp_connector` is available
+/// independently, while the default-on `resolver` feature exposes `Engine::resolver`. Their
+/// operations require the Engine's native backend owner. Compiling native support does not attach
+/// a second native poller beside another selected HTTP backend.
 ///
 /// The variant remains present without the default `native` feature so portable configuration can
 /// fail explicitly during Engine construction rather than changing type shape.
@@ -269,9 +268,10 @@ impl EngineConfig {
         self
     }
 
-    /// Selects the public-resolver inflight budget. HTTP-internal DNS is reserved separately.
+    /// Selects the DNS inflight budget shared by public Resolver operations (when compiled) and
+    /// hostname TCP connects. HTTP-internal DNS is reserved separately.
     ///
-    /// The budget is capped so public work cannot consume the native DNS transaction-ID band
+    /// The budget is capped so standalone capability work cannot consume the transaction-ID band
     /// reserved for HTTP-internal lookups.
     #[must_use]
     pub fn with_max_inflight_resolutions(mut self, resolutions: NonZeroUsize) -> Self {
@@ -291,10 +291,10 @@ impl EngineConfig {
         self
     }
 
-    /// Selects the Engine ceiling for addresses returned by one public resolution.
+    /// Selects the Engine ceiling for addresses retained by one standalone DNS operation.
     ///
-    /// Per-request [`ResolveRequest`](crate::ResolveRequest) caps may reduce this value, never
-    /// exceed it.
+    /// Public Resolver requests may select a lower per-request cap when that feature is compiled.
+    /// Hostname TCP uses this ceiling for its serial address-attempt list.
     #[must_use]
     pub fn with_max_resolve_results(mut self, results: NonZeroUsize) -> Self {
         self.max_resolve_results = results;
@@ -412,7 +412,8 @@ impl EngineConfig {
         self.idle_connection_timeout
     }
 
-    /// Returns the public-resolver inflight budget.
+    /// Returns the DNS inflight budget shared by public Resolver operations (when compiled) and
+    /// hostname TCP connects.
     #[must_use]
     pub fn max_inflight_resolutions(&self) -> NonZeroUsize {
         self.max_inflight_resolutions
@@ -1036,9 +1037,9 @@ pub enum TimeoutKind {
     Inactivity,
     /// The total operation deadline expired.
     ///
-    /// Public DNS [`ResolveRequest::total_timeout`](crate::ResolveRequest::total_timeout) uses this
-    /// category. The DNS facade already identifies the operation; timeout classification stays
-    /// independent of [`DnsFailure`].
+    /// Public DNS uses this category when the default-on `resolver` feature is compiled. The DNS
+    /// facade already identifies the operation; timeout classification stays independent of
+    /// [`DnsFailure`].
     Total,
     /// The backend reported a timeout but did not provide enough stage evidence to classify it.
     Unknown,

@@ -240,6 +240,49 @@ fn verification_steps(stress_repetitions: usize) -> Vec<Step> {
             &["check", "--no-default-features"],
         ),
         Step::cargo(
+            "minimal-feature warning-denied lint",
+            &[
+                "clippy",
+                "--no-default-features",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ),
+        Step::cargo(
+            "native-only/all-target compilation",
+            &[
+                "check",
+                "--no-default-features",
+                "--features",
+                "native",
+                "--all-targets",
+            ],
+        ),
+        Step::cargo(
+            "native-only warning-denied lint",
+            &[
+                "clippy",
+                "--no-default-features",
+                "--features",
+                "native,test-support",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ),
+        Step::cargo(
+            "native-only tests",
+            &[
+                "test",
+                "--no-default-features",
+                "--features",
+                "native,test-support",
+            ],
+        ),
+        Step::cargo(
             "all-feature/all-target compilation",
             &["check", "--all-features", "--all-targets"],
         ),
@@ -329,13 +372,22 @@ mod tests {
     #[test]
     fn verification_plan_covers_the_frozen_gate() {
         let steps = verification_steps(2);
-        assert_eq!(steps.len(), 23);
+        assert_eq!(steps.len(), 27);
         assert!(steps.iter().any(|step| step.args == ["test"]));
         assert!(
             steps
                 .iter()
                 .any(|step| { step.args == ["test", "--features", "native,test-support"] })
         );
+        assert!(steps.iter().any(|step| {
+            step.args
+                == [
+                    "test",
+                    "--no-default-features",
+                    "--features",
+                    "native,test-support",
+                ]
+        }));
         assert!(
             steps
                 .iter()

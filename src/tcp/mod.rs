@@ -2,7 +2,7 @@
 //!
 //! [`TcpConnector`] is an Engine-issued capability ticket. Native Engines accept literal-address
 //! connections on their existing reactor owner and exact hostname connections through their
-//! existing public-resolver owner. Engines without the required native owner fail
+//! existing native resolver owner. Engines without the required native owner fail
 //! [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before admission.
 
 pub(crate) mod io;
@@ -1191,7 +1191,7 @@ mod tests {
         engine.shutdown().expect("serial-connect Engine must stop");
     }
 
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "resolver"))]
     #[test]
     fn cached_hostname_deadline_stops_between_serial_attempts() {
         use crate::backend::native_dns_wire::test_support::RecordType;

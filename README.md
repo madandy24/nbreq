@@ -48,6 +48,18 @@ runtime is installed globally.
 See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
 streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.
 
+The default feature set includes both the native network stack and the public `Resolver` API.
+HTTP-only consumers can omit the public Resolver and Windows search-suffix registry reader while
+retaining native HTTP plus exact-name DNS for HTTP and hostname `TcpConnector`:
+
+```toml
+[dependencies]
+nbreq = { version = "0.1", default-features = false, features = ["native"] }
+```
+
+The `resolver` feature implies `native`; disabling it never selects a blocking OS resolver or a
+second network owner.
+
 Security issues should be reported privately as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
 
@@ -77,11 +89,12 @@ reactor bookkeeping.
 
 ## Native backend status
 
-The default `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
-readiness and notification, `httparse` for response-head parsing, a bounded Engine-owned DNS wire
-codec and resolver, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
-async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
-joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
+The default features build NBReq's nonblocking HTTP/1.1 stack and public Resolver using `mio` for
+portable OS readiness and notification, `httparse` for response-head parsing, a bounded
+Engine-owned DNS wire codec and resolver, and rustls for owner-driven TLS. None is an executor and
+NBReq adopts no async runtime. The backend owns bounded socket and stream queues, all timeout
+clocks, cancellation, joined shutdown, conservative pooling, redirects, and direct
+`ResponseReader` delivery. Windows
 and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, including bounded
 fixed/chunked `UploadBody` pumping. The Windows build also passes live GDS traffic and shutdown on
 Ubuntu 20.04's stock Wine 5. Native Windows keeps Mio; only a first-registration missing-AFD error

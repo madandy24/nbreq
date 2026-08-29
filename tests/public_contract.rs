@@ -4,10 +4,12 @@ use std::time::Instant;
 use nbreq::EngineBuilder;
 use nbreq::{
     Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
-    PendingRequest, PendingResolve, PendingTcpConnect, RequestHandle, Resolver, ResourceMetrics,
-    ResponseReader, StreamRequest, TcpConnection, TcpConnector, TcpFinishStatus, TcpReader,
-    TcpWriter, UploadBody, UploadSender,
+    PendingRequest, PendingTcpConnect, RequestHandle, ResourceMetrics, ResponseReader,
+    StreamRequest, TcpConnection, TcpConnector, TcpFinishStatus, TcpReader, TcpWriter, UploadBody,
+    UploadSender,
 };
+#[cfg(feature = "resolver")]
+use nbreq::{PendingResolve, Resolver};
 
 fn assert_send<T: Send>() {}
 fn assert_send_sync<T: Send + Sync>() {}
@@ -25,8 +27,10 @@ fn public_thread_traits_match_the_contract() {
     assert_send::<ResponseReader>();
     assert_send_sync::<EngineMetrics>();
     assert_send_sync::<ResourceMetrics>();
+    #[cfg(feature = "resolver")]
     assert_send_sync::<Resolver>();
     assert_send_sync::<TcpConnector>();
+    #[cfg(feature = "resolver")]
     assert_send::<PendingResolve>();
     assert_send::<PendingTcpConnect>();
     assert_send::<TcpConnection>();
@@ -140,6 +144,7 @@ fn drive_http(
     engine.drive_until(pending)
 }
 
+#[cfg(feature = "resolver")]
 fn drive_resolve(
     engine: &mut Engine,
     pending: PendingResolve,
@@ -165,8 +170,11 @@ fn drive_with_public_bound<T: nbreq::WaiterTarget>(
 fn generic_drive_until_returns_each_terminal_type() {
     let _http: fn(&mut Engine, PendingRequest) -> Result<nbreq::Completion, nbreq::Error> =
         drive_http;
-    let _dns: fn(&mut Engine, PendingResolve) -> Result<nbreq::ResolveCompletion, nbreq::Error> =
-        drive_resolve;
+    #[cfg(feature = "resolver")]
+    let _dns: fn(
+        &mut Engine,
+        PendingResolve,
+    ) -> Result<nbreq::ResolveCompletion, nbreq::Error> = drive_resolve;
     let _tcp: fn(
         &mut Engine,
         PendingTcpConnect,
@@ -177,8 +185,11 @@ fn generic_drive_until_returns_each_terminal_type() {
 fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
     let _http: fn(&mut Engine, PendingRequest) -> Result<nbreq::Completion, nbreq::Error> =
         drive_with_public_bound;
-    let _dns: fn(&mut Engine, PendingResolve) -> Result<nbreq::ResolveCompletion, nbreq::Error> =
-        drive_with_public_bound;
+    #[cfg(feature = "resolver")]
+    let _dns: fn(
+        &mut Engine,
+        PendingResolve,
+    ) -> Result<nbreq::ResolveCompletion, nbreq::Error> = drive_with_public_bound;
     let _tcp: fn(
         &mut Engine,
         PendingTcpConnect,
@@ -186,7 +197,7 @@ fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
 }
 
 #[test]
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "resolver"))]
 fn resolver_and_tcp_tickets_share_the_native_engine() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let resolver = engine.resolver();

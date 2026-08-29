@@ -1,12 +1,12 @@
 # Using NBReq
 
-NBReq is built around one explicit owner. An `Engine` owns network state, pools, resolver work,
-callback workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a
-Client neither owns nor extends the Engine's lifetime. Keep the Engine in the service or module that
-is responsible for stopping HTTP.
+NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
+workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client
+neither owns nor extends the Engine's lifetime. Keep the Engine in the service or module that is
+responsible for stopping HTTP.
 
-The default Cargo feature is `native`. It provides NBReq's Rust-native HTTP/1.1, DNS, TCP, and
-rustls implementation without Tokio or another async runtime.
+The default Cargo features are `native` and `resolver`. They provide NBReq's Rust-native HTTP/1.1,
+DNS, TCP, public Resolver, and rustls implementation without Tokio or another async runtime.
 
 Add the released crate with the native backend enabled by default:
 
@@ -14,6 +14,17 @@ Add the released crate with the native backend enabled by default:
 [dependencies]
 nbreq = "0.1"
 ```
+
+An HTTP-only consumer can omit the public Resolver API and its Windows search-suffix registry
+reader while retaining native HTTP and exact-name DNS for HTTP and hostname `TcpConnector`:
+
+```toml
+[dependencies]
+nbreq = { version = "0.1", default-features = false, features = ["native"] }
+```
+
+The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
+not create a different DNS owner; it only removes the public Resolver surface and search expansion.
 
 ## Spawned mode and blocking requests
 

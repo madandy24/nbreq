@@ -4806,7 +4806,7 @@ impl Backend for NativeHttpBackend {
                 if self.resolver.is_none() {
                     sink.fail(Error::new(
                         ErrorKind::Unsupported,
-                        "hostname TCP connections require the native public resolver owner",
+                        "hostname TCP connections require the native resolver owner",
                     ));
                     return;
                 }

@@ -35,12 +35,11 @@ members = ["support/winpoll"]
 resolver = "2"
 
 [features]
-default = ["native"]
+default = ["native", "resolver"]
 native = [
     "dep:getrandom",
     "dep:httparse",
     "dep:ipconfig",
-    "dep:windows-registry",
     "dep:mio",
     "dep:nbreq-winpoll",
     "dep:resolv-conf",
@@ -48,6 +47,7 @@ native = [
     "dep:rustls-platform-verifier",
     "dep:url",
 ]
+resolver = ["native", "dep:windows-registry"]
 test-support = []
 
 [dependencies]

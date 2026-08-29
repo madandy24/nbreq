@@ -234,7 +234,7 @@ pub(crate) fn native_http_backend_with_nameserver_and_failed_standalone_addresse
         .into_backend_with_failed_standalone_addresses(count)
 }
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(all(test, feature = "native", feature = "resolver"))]
 pub(crate) fn native_http_backend_with_nameserver_and_delayed_failed_standalone_address(
     config: &crate::EngineConfig,
     nameserver: std::net::SocketAddr,

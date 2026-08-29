@@ -1,10 +1,12 @@
-//! Supported-platform discovery of recursive DNS servers and search suffixes.
+//! Supported-platform discovery of recursive DNS servers and optional public-resolver search
+//! suffixes.
 //!
 //! This module reads configuration only. The NBReq-owned resolver remains responsible for every
 //! query socket, retry, deadline, cancellation, shutdown join, and FQ-10 candidate algorithm.
-//! Ordinary system discovery is Windows and Linux only. macOS and other Unix targets fail closed
-//! rather than inheriting Linux `/etc/resolv.conf` semantics. Injected nameserver and suffix
-//! fixtures remain usable on every target.
+//! Ordinary system discovery is Windows and Linux only. The default-on `resolver` feature adds
+//! public search-suffix discovery; native-only builds retain nameserver discovery for exact HTTP
+//! and TCP lookups. macOS and other Unix targets fail closed rather than inheriting Linux
+//! `/etc/resolv.conf` semantics. Injected nameserver and suffix fixtures remain usable everywhere.
 
 use std::collections::HashSet;
 #[cfg(any(windows, target_os = "linux"))]
@@ -59,7 +61,7 @@ pub(super) fn normalize_search_suffixes(
 
 /// FQ-10 Windows suffix policy: a filtered computer `SearchList` is complete; otherwise adapter
 /// suffixes in nameserver rank, then computer `Domain`. No devolution.
-#[cfg(any(windows, test))]
+#[cfg(any(test, all(windows, feature = "resolver")))]
 fn assemble_windows_search_suffixes(
     search_list: impl IntoIterator<Item = impl AsRef<str>>,
     adapter_suffixes: impl IntoIterator<Item = impl AsRef<str>>,
@@ -108,10 +110,12 @@ fn finish(
 #[cfg(windows)]
 mod platform {
     use ipconfig::OperStatus;
+    #[cfg(feature = "resolver")]
     use windows_registry::LOCAL_MACHINE;
 
     use super::*;
 
+    #[cfg(feature = "resolver")]
     struct RankedAdapter {
         metric: u32,
         adapter_order: usize,
@@ -132,12 +136,14 @@ mod platform {
                 format!("Windows DNS adapter discovery failed: {error}"),
             )
         })?;
+        #[cfg(feature = "resolver")]
         let mut ranked_adapters = Vec::new();
         let mut ranked_servers = Vec::new();
         for (adapter_order, adapter) in adapters.into_iter().enumerate() {
             if adapter.oper_status() != OperStatus::IfOperStatusUp {
                 continue;
             }
+            #[cfg(feature = "resolver")]
             ranked_adapters.push(RankedAdapter {
                 metric: adapter.ipv4_metric().min(adapter.ipv6_metric()),
                 adapter_order,
@@ -171,15 +177,21 @@ mod platform {
         }
         ranked_servers
             .sort_by_key(|server| (server.metric, server.adapter_order, server.server_order));
+        #[cfg(feature = "resolver")]
         ranked_adapters.sort_by_key(|adapter| (adapter.metric, adapter.adapter_order));
+        #[cfg(feature = "resolver")]
+        let search_suffixes = windows_search_suffixes(&ranked_adapters);
+        #[cfg(not(feature = "resolver"))]
+        let search_suffixes = std::iter::empty::<&'static str>();
         finish(
             ranked_servers.into_iter().map(|server| server.address),
-            windows_search_suffixes(&ranked_adapters),
+            search_suffixes,
             DEFAULT_ATTEMPT_TIMEOUT,
             DEFAULT_ATTEMPTS,
         )
     }
 
+    #[cfg(feature = "resolver")]
     fn windows_search_suffixes(adapters: &[RankedAdapter]) -> Vec<String> {
         let parameters = LOCAL_MACHINE
             .open(r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters")
@@ -201,6 +213,7 @@ mod platform {
         )
     }
 
+    #[cfg(feature = "resolver")]
     fn interface_dns_suffix(adapter_name: &str) -> Option<String> {
         let key = LOCAL_MACHINE
             .open(format!(
@@ -210,6 +223,7 @@ mod platform {
         registry_nonempty(&key, "Domain").or_else(|| registry_nonempty(&key, "DhcpDomain"))
     }
 
+    #[cfg(feature = "resolver")]
     fn registry_nonempty(key: &windows_registry::Key, name: &str) -> Option<String> {
         key.get_string(name).ok().and_then(|value| {
             let trimmed = value.trim();
@@ -245,10 +259,13 @@ mod platform {
                 format!("system DNS configuration could not be parsed: {error}"),
             )
         })?;
+        #[cfg(feature = "resolver")]
         let search_suffixes = config
             .get_last_search_or_domain()
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
+        #[cfg(not(feature = "resolver"))]
+        let search_suffixes = std::iter::empty::<&'static str>();
         let nameservers = config
             .nameservers
             .into_iter()
@@ -429,6 +446,13 @@ mod tests {
         assert!(discovered.search_suffixes.len() <= MAX_SEARCH_SUFFIXES);
     }
 
+    #[test]
+    #[cfg(all(not(feature = "resolver"), any(windows, target_os = "linux")))]
+    fn native_only_system_discovery_omits_public_search_suffixes() {
+        let discovered = discover().expect("this supported test host must have system DNS");
+        assert!(discovered.search_suffixes.is_empty());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_ordinary_system_discovery_is_unsupported() {
@@ -449,7 +473,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "resolver"))]
     #[test]
     fn linux_resolv_conf_uses_the_last_search_or_domain_directive() {
         let parsed = platform::suffixes_and_nameservers_from_resolv_bytes(
@@ -464,6 +488,20 @@ mod tests {
             parsed.search_suffixes,
             vec!["corp.test".to_owned(), "lab.test".to_owned()]
         );
+    }
+
+    #[cfg(all(target_os = "linux", not(feature = "resolver")))]
+    #[test]
+    fn linux_resolv_conf_native_only_keeps_nameservers_and_omits_suffixes() {
+        let parsed = platform::suffixes_and_nameservers_from_resolv_bytes(
+            b"nameserver 192.0.2.53\ndomain ignored.test\nsearch Corp.TEST lab.test\n",
+        )
+        .expect("fixture resolv.conf must parse");
+        assert_eq!(
+            parsed.nameservers,
+            vec!["192.0.2.53:53".parse().expect("fixture nameserver")]
+        );
+        assert!(parsed.search_suffixes.is_empty());
     }
 
     #[cfg(any(windows, target_os = "linux"))]

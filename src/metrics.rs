@@ -43,8 +43,8 @@ impl ResourceMetrics {
         self.reserved_stream_queue_bytes
     }
 
-    /// Returns public-resolution capacity borrowed by Resolver operations and hostname TCP
-    /// connects that are still in their DNS phase.
+    /// Returns DNS capacity borrowed by public Resolver operations (when compiled) and hostname
+    /// TCP connects that are still in their DNS phase.
     pub fn inflight_resolutions(&self) -> usize {
         self.inflight_resolutions
     }
@@ -273,6 +273,7 @@ impl Metrics {
         }
     }
 
+    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
     pub(crate) fn resolution_accepted(&self, inflight: usize) {
         saturating_increment(&self.resolutions_accepted);
         update_max(&self.high_inflight_resolutions, inflight);

@@ -1,8 +1,15 @@
+#![cfg_attr(not(feature = "resolver"), allow(dead_code))]
+
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, UdpSocket};
+#[cfg(feature = "resolver")]
+use std::net::IpAddr;
+use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
+#[cfg(feature = "resolver")]
 use std::num::NonZeroUsize;
+#[cfg(feature = "resolver")]
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -10,7 +17,9 @@ use crate::backend::native_dns_wire::test_support::{
     A, AAAA, CNAME, Message, MessageType, Name, RData, Record, RecordType, ResponseCode, SOA,
 };
 
+#[cfg(feature = "resolver")]
 use crate::testing;
+#[cfg(feature = "resolver")]
 use crate::{
     AddressFamily, AddressOrder, CacheMode, DnsFailure, Engine, EngineConfig, ErrorKind,
     ExecuteError, Request, ResolveCompletion, ResolveRequest, ResolveStatus, ResolveWaitOutcome,
@@ -471,6 +480,7 @@ fn cname_chain(request: &Message, hop_names: &[&str], address: Option<Ipv4Addr>)
     response
 }
 
+#[cfg(feature = "resolver")]
 fn ipv4_request(name: &str) -> ResolveRequest {
     ResolveRequest::hostname(name)
         .address_family(AddressFamily::Ipv4)
@@ -478,6 +488,7 @@ fn ipv4_request(name: &str) -> ResolveRequest {
         .expect("IPv4 resolve request must build")
 }
 
+#[cfg(feature = "resolver")]
 fn search_ipv4(name: &str) -> ResolveRequest {
     ResolveRequest::hostname(name)
         .address_family(AddressFamily::Ipv4)
@@ -486,6 +497,7 @@ fn search_ipv4(name: &str) -> ResolveRequest {
         .expect("search IPv4 resolve request must build")
 }
 
+#[cfg(feature = "resolver")]
 fn public_dns_failure(engine: &Engine, name: &str) -> crate::Error {
     match engine.resolver().execute(ipv4_request(name)) {
         Err(ExecuteError::Failed(error)) => error,
@@ -493,6 +505,7 @@ fn public_dns_failure(engine: &Engine, name: &str) -> crate::Error {
     }
 }
 
+#[cfg(feature = "resolver")]
 fn http_dns_error(engine: &Engine, host: &str) -> crate::Error {
     match engine.client().execute(
         Request::get(format!("http://{host}/"))
@@ -506,6 +519,7 @@ fn http_dns_error(engine: &Engine, host: &str) -> crate::Error {
     }
 }
 
+#[cfg(feature = "resolver")]
 fn many_a(request: &Message, count: u16) -> Message {
     let query = request.query().expect("cap query").clone();
     let mut response = Message::new();
@@ -523,11 +537,13 @@ fn many_a(request: &Message, count: u16) -> Message {
     response
 }
 
+#[cfg(feature = "resolver")]
 fn spawned_engine(dns: &DualStackDns) -> Engine {
     testing::native_http_engine_with_nameserver(EngineConfig::spawned(), dns.address)
         .expect("native resolver Engine must construct")
 }
 
+#[cfg(feature = "resolver")]
 fn spawned_engine_with_search(dns: &DualStackDns, suffixes: &[&str]) -> Engine {
     testing::native_http_engine_with_nameserver_and_search_suffixes(
         EngineConfig::spawned(),
@@ -537,6 +553,7 @@ fn spawned_engine_with_search(dns: &DualStackDns, suffixes: &[&str]) -> Engine {
     .expect("native resolver Engine with search suffixes must construct")
 }
 
+#[cfg(feature = "resolver")]
 fn completed(engine: &Engine, request: ResolveRequest) -> crate::ResolveResponse {
     match engine.resolver().execute(request) {
         Ok(response) => response,
@@ -545,6 +562,7 @@ fn completed(engine: &Engine, request: ResolveRequest) -> crate::ResolveResponse
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn ipv4_ipv6_and_both_collect_from_local_fixture() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -610,6 +628,7 @@ fn ipv4_ipv6_and_both_collect_from_local_fixture() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn combined_family_order_is_applied_after_preserving_family_order() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -639,6 +658,7 @@ fn combined_family_order_is_applied_after_preserving_family_order() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn nxdomain_and_nodata_are_completed_semantic_results() {
     let nx = DualStackDns::with_handler(|request| Some(nxdomain(&request)));
     let engine = spawned_engine(&nx);
@@ -669,6 +689,7 @@ fn nxdomain_and_nodata_are_completed_semantic_results() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn operational_failures_are_failed_with_payload_free_categories() {
     let servfail =
         DualStackDns::with_handler(|request| Some(rcode(&request, ResponseCode::ServFail)));
@@ -714,6 +735,7 @@ fn operational_failures_are_failed_with_payload_free_categories() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn dns_over_tcp_connect_failure_is_classified_io() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("truncated query").clone();
@@ -748,6 +770,7 @@ fn dns_over_tcp_connect_failure_is_classified_io() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn formerr_and_malformed_are_failed_malformed_without_caching() {
     let formerr =
         DualStackDns::with_handler(|request| Some(rcode(&request, ResponseCode::FormErr)));
@@ -782,6 +805,7 @@ fn formerr_and_malformed_are_failed_malformed_without_caching() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn public_tcp_fallback_completes_and_classifies_bad_tcp_replies() {
     let success = TcpAwareDns::with_tcp(|request| {
         TcpPayload::Message(a_record(&request, Ipv4Addr::new(127, 0, 0, 21)))
@@ -838,6 +862,7 @@ fn public_tcp_fallback_completes_and_classifies_bad_tcp_replies() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn public_tcp_fallback_cancel_wins() {
     let held = TcpAwareDns::with_tcp(|_| TcpPayload::Hold);
     let engine = testing::native_http_engine_with_nameserver(EngineConfig::spawned(), held.address)
@@ -854,6 +879,7 @@ fn public_tcp_fallback_cancel_wins() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn public_cname_chains_are_bounded_and_cache_hop_zero() {
     let in_message = DualStackDns::with_handler(|request| {
         Some(in_message_cname(
@@ -1033,6 +1059,7 @@ fn public_cname_chains_are_bounded_and_cache_hop_zero() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn result_cap_is_enforced_before_unbounded_growth() {
     let dns = DualStackDns::with_handler(|request| Some(many_a(&request, 8)));
     let engine = spawned_engine(&dns);
@@ -1049,6 +1076,7 @@ fn result_cap_is_enforced_before_unbounded_growth() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn cache_use_refresh_and_bypass_are_honest() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -1101,6 +1129,7 @@ fn cache_use_refresh_and_bypass_are_honest() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn ipv4_refresh_replaces_the_http_shared_cache_view() {
     let answer = Arc::new(Mutex::new(Ipv4Addr::LOCALHOST));
     let dns = DualStackDns::with_handler({
@@ -1197,6 +1226,7 @@ fn ipv4_refresh_replaces_the_http_shared_cache_view() {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(feature = "resolver")]
 enum Ipv6PublicReply {
     Answer,
     NoData,
@@ -1204,6 +1234,7 @@ enum Ipv6PublicReply {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn ipv6_only_public_resolution_does_not_mutate_the_http_shared_cache_view() {
     for reply in [
         Ipv6PublicReply::Answer,
@@ -1214,6 +1245,7 @@ fn ipv6_only_public_resolution_does_not_mutate_the_http_shared_cache_view() {
     }
 }
 
+#[cfg(feature = "resolver")]
 fn ipv6_only_public_leaves_primed_http_a_view(ipv6_reply: Ipv6PublicReply) {
     let a_answer = Arc::new(Mutex::new(Ipv4Addr::LOCALHOST));
     let a_queries = Arc::new(AtomicUsize::new(0));
@@ -1347,6 +1379,7 @@ fn ipv6_only_public_leaves_primed_http_a_view(ipv6_reply: Ipv6PublicReply) {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn both_refresh_replaces_the_http_shared_cache_view() {
     let answer = Arc::new(Mutex::new(Ipv4Addr::LOCALHOST));
     let dns = DualStackDns::with_handler({
@@ -1454,6 +1487,7 @@ fn both_refresh_replaces_the_http_shared_cache_view() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn total_timeout_is_classified_from_acceptance() {
     let silent = UdpSocket::bind("127.0.0.1:0").expect("silent DNS must bind");
     let address = silent.local_addr().expect("silent DNS address");
@@ -1481,6 +1515,7 @@ fn total_timeout_is_classified_from_acceptance() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn expired_total_deadline_wins_over_cache_hit() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -1516,6 +1551,7 @@ fn expired_total_deadline_wins_over_cache_hit() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn expired_total_deadline_wins_over_queued_cache_hit() {
     let dns = DualStackDns::new();
     let mut engine =
@@ -1564,6 +1600,7 @@ fn expired_total_deadline_wins_over_queued_cache_hit() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn cancel_cancel_all_shutdown_and_exactly_one_terminal() {
     let silent = UdpSocket::bind("127.0.0.1:0").expect("cancel DNS must bind");
     silent
@@ -1654,6 +1691,7 @@ fn cancel_cancel_all_shutdown_and_exactly_one_terminal() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn waiter_local_timeout_leaves_the_operation_live() {
     let silent = UdpSocket::bind("127.0.0.1:0").expect("waiter DNS must bind");
     let address = silent.local_addr().expect("waiter DNS address");
@@ -1683,6 +1721,7 @@ fn waiter_local_timeout_leaves_the_operation_live() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn callbacks_are_isolated_and_panic_is_contained() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -1739,6 +1778,7 @@ fn callbacks_are_isolated_and_panic_is_contained() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn manual_drive_until_pending_resolve_and_wrong_engine_reject() {
     let dns = DualStackDns::new();
     let mut engine =
@@ -1797,6 +1837,7 @@ fn manual_drive_until_pending_resolve_and_wrong_engine_reject() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn wrong_engine_cancel_fails_closed() {
     let dns = DualStackDns::new();
     let first = spawned_engine(&dns);
@@ -1821,6 +1862,7 @@ fn wrong_engine_cancel_fails_closed() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn public_saturation_does_not_starve_http_internal_dns() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fairness listener");
     let port = listener.local_addr().expect("HTTP fairness port").port();
@@ -1893,6 +1935,7 @@ fn public_saturation_does_not_starve_http_internal_dns() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn detached_resolver_returns_engine_stopped() {
     let dns = DualStackDns::new();
     let engine = spawned_engine(&dns);
@@ -1909,6 +1952,7 @@ fn detached_resolver_returns_engine_stopped() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_suffixes_follow_fq10_candidate_order_and_isolation() {
     let empty = DualStackDns::new();
     let engine = spawned_engine(&empty);
@@ -1985,6 +2029,7 @@ fn search_suffixes_follow_fq10_candidate_order_and_isolation() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_continues_through_nodata_and_stops_on_operational_failure() {
     let mixed = DualStackDns::with_handler(|request| {
         let query = request.query().expect("search query").clone();
@@ -2042,6 +2087,7 @@ fn search_continues_through_nodata_and_stops_on_operational_failure() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_cache_keys_follow_the_winning_candidate_and_from_cache_is_whole_search() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("search query").clone();
@@ -2076,6 +2122,7 @@ fn search_cache_keys_follow_the_winning_candidate_and_from_cache_is_whole_search
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_does_not_expand_http_lookups() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("isolation query").clone();
@@ -2103,6 +2150,7 @@ fn search_does_not_expand_http_lookups() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_cancel_during_a_later_candidate_does_not_promote_a_negative() {
     let hold = Arc::new(Barrier::new(2));
     let gate = Arc::clone(&hold);
@@ -2130,6 +2178,7 @@ fn search_cancel_during_a_later_candidate_does_not_promote_a_negative() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_exhausted_nxdomain_is_name_not_found() {
     let dns = DualStackDns::with_handler(|request| Some(nxdomain(&request)));
     let engine = spawned_engine_with_search(&dns, &["corp.test", "lab.test"]);
@@ -2146,6 +2195,7 @@ fn search_exhausted_nxdomain_is_name_not_found() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_skips_oversized_suffixes_and_keeps_valid_candidates() {
     let long = "a".repeat(250);
     let dns = DualStackDns::with_handler(|request| {
@@ -2166,6 +2216,7 @@ fn search_skips_oversized_suffixes_and_keeps_valid_candidates() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_refresh_and_bypass_requery_candidates() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("search query").clone();
@@ -2216,6 +2267,7 @@ fn search_refresh_and_bypass_requery_candidates() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_from_cache_is_false_when_any_candidate_uses_the_network() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("search query").clone();
@@ -2241,6 +2293,7 @@ fn search_from_cache_is_false_when_any_candidate_uses_the_network() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn search_total_timeout_during_a_later_candidate_does_not_promote_a_negative() {
     let dns = DualStackDns::with_handler(|request| {
         let query = request.query().expect("search query").clone();
@@ -2278,6 +2331,7 @@ fn search_total_timeout_during_a_later_candidate_does_not_promote_a_negative() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn http_unknown_host_remains_transport_dns_without_dns_failure() {
     let nx = DualStackDns::with_handler(|request| Some(nxdomain(&request)));
     let engine = spawned_engine(&nx);
@@ -2306,6 +2360,7 @@ fn http_unknown_host_remains_transport_dns_without_dns_failure() {
 }
 
 #[test]
+#[cfg(feature = "resolver")]
 fn curl_less_scaffold_and_native_without_dns_stay_unsupported() {
     let engine = Engine::with_backend(EngineConfig::spawned(), crate::backend::scaffold())
         .expect("scaffold Engine");

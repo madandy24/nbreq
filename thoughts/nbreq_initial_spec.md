@@ -1188,7 +1188,8 @@ bounded packet codec now owns A/AAAA question encoding, DNS name identity, compr
 and the accepted A/AAAA/CNAME/SOA/OPT response subset. Hickory and its transitive graph, notices,
 lock entries, and advisory exceptions are removed without moving sockets, retry, cache, search,
 TCP fallback, cancellation, or lifecycle out of `native_dns`. Exact-source Windows and Ubuntu
-verification, parser campaigns, package rehearsal, and the RustSec gate passed. F4 remains unopened.
+verification, parser campaigns, package rehearsal, and the RustSec gate passed. F4 remained
+unopened at F3 acceptance; F4.1 subsequently opened as the separate feature-boundary slice below.
 
 Post-F3 packaging freeze: F4 introduces a default-on Cargo feature named `resolver` for the
 user-facing Resolver capability. The feature name does not mean “DNS exists.” A build using
@@ -1205,6 +1206,34 @@ search-suffix discovery. Windows `windows-registry` is therefore a dependency of
 already-existing nameserver path. Default builds keep all accepted F1/F2 APIs and behaviour. The
 feature boundary lands after F3 so bounded wire replacement and conditional-compilation extraction
 remain separate reviewable changes. F2 is not reopened.
+
+F4.1 first lands only that Cargo/API/dependency boundary: `default = ["native", "resolver"]`, with
+`resolver` implying `native` and the target-specific `windows-registry` dependency. The shared DNS
+owner, hostname-TCP lookup path, capacity/metrics shape, and large module layout remain unchanged.
+Resolver-only registry/reactor/callback cleanup follows as a separate behaviour-preserving slice;
+mechanical DNS/HTTP module movement remains separate again. Native-only verification must use
+`--no-default-features --features native` explicitly rather than accidentally inheriting the
+default Resolver feature.
+
+F4.1 Windows checkpoint (2026-08-29): the boundary above is implemented without moving the shared
+owner or large modules. The final complete verifier passed 24/24 in 77.330s. Native-only passed 273
+library, 16 adversarial, 9 public-contract, and 17 compile-fail doctests; the default build passed
+313 library, 16 adversarial, and 10 public-contract tests. Target-specific dependency inspection
+proved `windows-registry` absent from native-only and present with the default `resolver` feature;
+the 45-file crate verified offline.
+
+F4.1 exact-source Ubuntu checkpoint (2026-08-29): tracked-source archive SHA-256
+`BEEF28B499A2D2957B475BB3CE5E2EBCD4CF95D391D5D0CBCDE7472D5FAF08E8` was verified on
+`gds-client-01i linode` with rustc/cargo 1.85.0. A first pass found a test-honesty mismatch rather
+than a production fault: native-only correctly omitted search suffixes, while one Linux fixture
+still expected them. The corrected split keeps that fixture Resolver-only and adds native-only proof
+that nameservers remain while suffixes are empty. The final archive passed the focused regression
+and the complete offline verifier 24/24 in 334.085s. Native-only passed 271 library, 16 adversarial,
+9 public-contract, and 23 doctests; default passed 311 library, 16 adversarial, and 10 public-contract
+tests. The 44-file crate packaged and verified offline. The 273/271 and 313/311 Windows/Linux library
+splits are target-specific coverage. Final review accepted F4.1 as the Cargo/API/dependency boundary;
+later registry/reactor cleanup and module movement remain separate, and all of F4 is not accepted
+here.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the

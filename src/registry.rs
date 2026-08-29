@@ -235,6 +235,7 @@ impl fmt::Debug for ResolveState {
     }
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolveState {
     fn new(
         id: RequestId,
@@ -608,6 +609,7 @@ pub(crate) enum Submission {
         response: ResponseSink,
         accepted_at: Instant,
     },
+    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
     Resolve {
         request: ResolveRequest,
         state: Arc<ResolveState>,
@@ -759,6 +761,7 @@ pub(crate) struct AcceptedRequest {
     pub(crate) state: Arc<RequestState>,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 pub(crate) struct AcceptedResolve {
     pub(crate) state: Arc<ResolveState>,
 }
@@ -1089,7 +1092,7 @@ impl Shared {
         if hostname && !self.public_resolver_supported() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "hostname TCP connections require the native public resolver owner",
+                "hostname TCP connections require the native resolver owner",
             ));
         }
         let send_window = request
@@ -1245,6 +1248,7 @@ impl Shared {
         Ok(AcceptedTcpConnect { state })
     }
 
+    #[cfg_attr(not(feature = "resolver"), allow(dead_code))]
     pub(crate) fn accept_resolve(
         self: &Arc<Self>,
         request: ResolveRequest,
@@ -2093,6 +2097,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "resolver")]
     fn full_resolution_capacity_rejects_hostname_before_tcp_acceptance_but_not_literal() {
         let config = EngineConfig::manual().with_max_inflight_resolutions(
             std::num::NonZeroUsize::new(1).expect("nonzero resolution capacity"),

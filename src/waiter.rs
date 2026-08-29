@@ -1,9 +1,8 @@
 //! Sealed waiter targets for [`Engine::drive_until`](crate::Engine::drive_until).
 
-use crate::{
-    Completion, PendingRequest, PendingResolve, PendingTcpConnect, ResolveCompletion,
-    TcpConnectCompletion,
-};
+use crate::{Completion, PendingRequest, PendingTcpConnect, TcpConnectCompletion};
+#[cfg(feature = "resolver")]
+use crate::{PendingResolve, ResolveCompletion};
 
 pub(crate) mod sealed {
     /// Crate-private polling and Engine identity.
@@ -55,10 +54,12 @@ impl sealed::Sealed for PendingRequest {
     }
 }
 
+#[cfg(feature = "resolver")]
 impl WaiterTarget for PendingResolve {
     type Output = ResolveCompletion;
 }
 
+#[cfg(feature = "resolver")]
 impl sealed::Sealed for PendingResolve {
     fn try_output(this: &Self) -> Option<ResolveCompletion> {
         this.try_completion()

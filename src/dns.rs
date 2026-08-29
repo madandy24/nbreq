@@ -20,6 +20,7 @@ const MAX_DNS_NAME_LEN: usize = 253;
 const MAX_DNS_LABEL_LEN: usize = 63;
 
 /// Selects which address families a public resolution collects.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum AddressFamily {
@@ -40,6 +41,7 @@ pub enum AddressFamily {
 ///
 /// Order within each family is preserved. Combined IPv4/IPv6 ordering does not promise parallel
 /// queries or Happy Eyeballs.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum AddressOrder {
@@ -55,6 +57,7 @@ pub enum AddressOrder {
 /// Public resolutions share the Engine-owned DNS cache with HTTP lookups. A public
 /// [`CacheMode::Refresh`] can therefore replace an entry later observed by HTTP on that Engine.
 /// Search-suffix policy never affects HTTP.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CacheMode {
@@ -68,6 +71,7 @@ pub enum CacheMode {
 }
 
 /// Outcome of a completed DNS exchange, including valid negative answers.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ResolveStatus {
@@ -85,6 +89,7 @@ pub struct ResolvedAddress {
     address: IpAddr,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolvedAddress {
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(address: IpAddr) -> Self {
@@ -109,6 +114,7 @@ pub struct ResolveResponse {
     candidate_name: Option<String>,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolveResponse {
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn new(
@@ -179,12 +185,14 @@ impl ResolveResponse {
     /// For search expansion this is true only when every candidate used to reach the terminal
     /// was served from cache. A cached negative followed by a network answer is not from cache.
     #[must_use]
+    #[cfg_attr(not(feature = "resolver"), allow(clippy::wrong_self_convention))]
     pub fn from_cache(&self) -> bool {
         self.from_cache
     }
 }
 
 /// Canonical terminal outcome of an accepted public resolution.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ResolveCompletion {
@@ -197,6 +205,7 @@ pub enum ResolveCompletion {
 }
 
 /// Result of a waiter-local public-resolution timeout.
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ResolveWaitOutcome {
@@ -219,6 +228,7 @@ pub struct ResolveRequest {
     total_timeout: Option<Duration>,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolveRequest {
     /// Starts a resolution builder for an exact ASCII or punycode hostname.
     #[must_use]
@@ -302,6 +312,7 @@ impl ResolveRequest {
 }
 
 /// Builder for an owned [`ResolveRequest`].
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct ResolveRequestBuilder {
     name: String,
@@ -313,6 +324,7 @@ pub struct ResolveRequestBuilder {
     total_timeout: Option<Duration>,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolveRequestBuilder {
     /// Selects which address families to collect.
     #[must_use]
@@ -393,11 +405,13 @@ impl ResolveRequestBuilder {
 /// let _ = nbreq::Resolver::new();
 /// ```
 #[derive(Clone, Debug)]
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 pub struct Resolver {
     shared: Arc<Shared>,
     max_resolve_results: NonZeroUsize,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl Resolver {
     pub(crate) fn new(shared: Arc<Shared>, max_resolve_results: NonZeroUsize) -> Self {
         Self {
@@ -456,11 +470,13 @@ impl Resolver {
 
 /// Engine-bound control handle for one accepted public resolution.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 pub struct ResolveHandle {
     resolver: Resolver,
     id: RequestId,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl ResolveHandle {
     pub(crate) fn new(resolver: Resolver, id: RequestId) -> Self {
         Self { resolver, id }
@@ -480,11 +496,13 @@ impl ResolveHandle {
 
 /// Accepted public resolution plus a direct terminal-state waiter.
 #[derive(Debug)]
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 pub struct PendingResolve {
     handle: ResolveHandle,
     state: Arc<ResolveState>,
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 impl PendingResolve {
     pub(crate) fn new(handle: ResolveHandle, state: Arc<ResolveState>) -> Self {
         Self { handle, state }
@@ -526,6 +544,7 @@ impl PendingResolve {
     }
 }
 
+#[cfg_attr(not(feature = "resolver"), allow(dead_code))]
 pub(crate) struct NormalizedDnsName {
     pub(crate) identity: String,
     pub(crate) absolute: bool,
@@ -593,9 +612,12 @@ fn invalid_dns_name(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "resolver")]
     use crate::{Engine, EngineConfig, LimitKind};
     use std::net::Ipv4Addr;
+    #[cfg(feature = "resolver")]
     use std::sync::Arc as StdArc;
+    #[cfg(feature = "resolver")]
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
     fn built(name: &str) -> ResolveRequest {
@@ -715,6 +737,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "resolver")]
     fn unavailable_operations_reject_before_admission_and_do_not_run_callbacks() {
         let engine = Engine::with_backend(EngineConfig::spawned(), crate::backend::scaffold())
             .expect("scaffold Engine must construct");
@@ -754,6 +777,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "resolver")]
     fn per_request_max_results_cannot_exceed_the_engine_ceiling() {
         let ceiling = NonZeroUsize::new(2).expect("two is non-zero");
         let engine = Engine::with_backend(
@@ -776,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "resolver")]
     fn detached_resolver_rejects_with_engine_stopped() {
         let engine = Engine::with_backend(EngineConfig::spawned(), crate::backend::scaffold())
             .expect("scaffold Engine must construct");
