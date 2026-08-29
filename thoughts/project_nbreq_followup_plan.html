@@ -71,7 +71,7 @@
   Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
   Original tracker: <a href="completed/project_nbreq_plan.html"><span class="mono">thoughts/completed/project_nbreq_plan.html</span></a> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4.1 accepted; later F4 unopened</span>
+  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4.1–F4.3 accepted; F4.4 unopened</span>
 </div>
 
 <div class="panel">
@@ -680,7 +680,13 @@ impl TcpWriter {
 <p><strong>Acceptance:</strong> all HTTP, Resolver, and TCP-hostname conformance tests pass unchanged on Windows and Ubuntu; focused DNS parser/state campaigns produce no unclassified panic, unbounded growth, or semantic drift; <span class="mono">cargo tree</span>, RustSec, licenses, package rehearsal, and an external consumer are clean.</p>
 
 <h3>F4 — Maintainability extraction</h3>
-<p><span class="status status-progress">In progress — F4.1 accepted; later cleanup and module moves unopened</span></p>
+<p><span class="status status-progress">In progress — F4.1–F4.3 accepted and committed; F4.4 unopened</span></p>
+<ul>
+  <li><strong>F4.1 — accepted, commit <span class="mono">54b9a04</span>:</strong> default-on public Resolver feature boundary, dependency split, suffix-discovery gate, consumer docs, and permanent feature-matrix lanes.</li>
+  <li><strong>F4.2 — accepted, commit <span class="mono">9f27773</span>:</strong> compile the public Resolver lifecycle out of native-only builds while retaining the shared DNS owner used by HTTP and hostname TCP.</li>
+  <li><strong>F4.3 — accepted, commit <span class="mono">693de4f</span>:</strong> move only the native HTTP and DNS test modules into child files, with production bodies and test identities unchanged.</li>
+  <li><strong>F4.4 — unopened:</strong> review and freeze the first production extraction boundary before moving code. HTTP wire/framing and further DNS decomposition remain candidates, not authorized work.</li>
+</ul>
 <div class="callout">
   <strong>F4.1 implementation boundary (accepted 2026-08-29):</strong> first land only the default-on <span class="mono">resolver</span> Cargo/API boundary, target dependency split, suffix-discovery gate, explicit native-only verifier lanes, and consumer documentation. Use <span class="mono">default = ["native", "resolver"]</span> and make <span class="mono">resolver</span> imply <span class="mono">native</span> plus the Windows-only <span class="mono">windows-registry</span> dependency. Keep the shared DNS owner, wire/cache/lifecycle state, hostname-TCP lookup path, capacity/metrics shape, and large module layout unchanged in this slice. Resolver-only registry/reactor/callback cleanup is a later behaviour-preserving F4 slice; mechanical DNS/HTTP file moves are later separate commits again.
 </div>
@@ -706,7 +712,7 @@ impl TcpWriter {
   <strong>F4.3 Windows checkpoint (2026-08-30):</strong> before formatting, both moved bodies compared exactly with <span class="mono">HEAD</span> after de-indenting and normalizing only the corpus path depth. Their normalized SHA-256 values were <span class="mono">E826BF40…B5A8322</span> (HTTP) and <span class="mono">6E45EC95…806A3</span> (DNS). All 63 HTTP and 39 DNS <span class="mono">#[test]</span> names and module paths are unchanged; the focused suites passed 63/63 and 39/39. A first complete-gate attempt had two existing DNS-over-TCP fixtures fail before NBReq execution because Windows could not reserve a shared UDP/TCP numeric port. Both passed immediately in isolation and together for 25/25 repetitions. The unchanged tree then passed the complete offline verifier 24/24 in 63.242s with 268 native-only and 313 default/all-feature library tests. Formatting, warning-denied feature lanes, doctests, documentation, and pressure cases are green. Exact-source Ubuntu remains before acceptance.
 </div>
 <div class="callout">
-  <strong>F4.3 exact-source Ubuntu checkpoint (2026-08-30):</strong> archive SHA-256 <span class="mono">5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE92A72</span> was verified on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The focused moved-module suites passed 63/63 HTTP and 39/39 DNS tests under their unchanged <span class="mono">backend::native_http::tests</span> and <span class="mono">backend::native_dns::tests</span> paths. The complete offline verifier passed 24/24 in 317.631s with the unchanged 266 native-only and 311 default/all-feature library counts, 16 adversarial tests, 9/10 public-contract tests, and 22/23 doctests. F4.3 is a dual-platform acceptance candidate; no production extraction, owner change, or F4.4 work is included.
+  <strong>F4.3 exact-source Ubuntu checkpoint (2026-08-30):</strong> archive SHA-256 <span class="mono">5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE92A72</span> was verified on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The focused moved-module suites passed 63/63 HTTP and 39/39 DNS tests under their unchanged <span class="mono">backend::native_http::tests</span> and <span class="mono">backend::native_dns::tests</span> paths. The complete offline verifier passed 24/24 in 317.631s with the unchanged 266 native-only and 311 default/all-feature library counts, 16 adversarial tests, 9/10 public-contract tests, and 22/23 doctests. Final review accepted F4.3 and it was committed as <span class="mono">693de4f</span>; no production extraction, owner change, or F4.4 work is included.
 </div>
 <ul>
   <li>Extract the large native HTTP and DNS modules only along proven owner/framing/pool/stream/wire/policy/cache seams.</li>
@@ -898,6 +904,7 @@ impl TcpWriter {
 <tr><td class="nowrap">2026-08-30</td><td>F4.2 committed as <span class="mono">9f27773</span>. F4.3 opens as test isolation only.</td><td>Move the two inline native HTTP/DNS test bodies into child files without changing production or test identity. Relative corpus paths change for file depth; rustfmt may reflow expressions after the outer indentation disappears. Prove the pre-format bodies against <span class="mono">HEAD</span>, then run test-name inventory plus the complete feature matrix. Keep HTTP wire extraction and all owner refactoring closed.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.3 Windows checkpoint is green and remains uncommitted. The inline test bodies now live in child files; production bodies and module/test identities are unchanged.</td><td>Pre-format bodies matched <span class="mono">HEAD</span> after path-depth normalization; 63 HTTP and 39 DNS test names are unchanged and their focused suites pass. The existing UDP/TCP fixture bind pair passed 25/25 after one pre-product environmental miss. Final complete verifier 24/24 in 63.242s with unchanged 268/313 library counts. Exact-source Ubuntu remains.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.3 exact-source Ubuntu gate passed; the test-isolation slice is a dual-platform acceptance candidate.</td><td>Archive SHA-256 <span class="mono">5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE92A72</span>, rustc/cargo 1.85.0, focused HTTP 63/63 and DNS 39/39, complete offline verifier 24/24 in 317.631s. Native-only/default library counts remain 266/311. Await final review; do not commit or begin F4.4 production extraction yet.</td></tr>
+<tr><td class="nowrap">2026-08-30</td><td>F4.3 accepted and committed as <span class="mono">693de4f</span>.</td><td>The test-only extraction preserves both production bodies, module paths, and all 63 HTTP / 39 DNS test names. F4.4 remains unopened pending a separately reviewed production-extraction boundary.</td></tr>
 </table>
 
 </body>

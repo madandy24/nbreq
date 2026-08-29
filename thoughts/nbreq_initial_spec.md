@@ -1266,8 +1266,9 @@ unchanged 63 HTTP and 39 DNS tests. The complete offline verifier passed 24/24 o
 63.242s on Windows and 317.631s on the exact-source Ubuntu archive. Linux retained 266 native-only
 and 311 default/all-feature library tests; Windows retained 268 and 313 respectively. The Ubuntu
 archive SHA-256 was `5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE92A72`
-and was verified on `gds-client-01i linode` with rustc/cargo 1.85.0. This remains a test-isolation
-acceptance candidate only; production module extraction is not opened by this evidence.
+and was verified on `gds-client-01i linode` with rustc/cargo 1.85.0. Final review accepted the
+test-isolation slice and it was committed as `693de4f`. F4.4 remains unopened: production HTTP
+wire/framing extraction and further DNS decomposition require their own reviewed boundaries.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
