@@ -187,7 +187,7 @@ fn generic_drive_until_accepts_exactly_the_public_waiter_bound() {
 
 #[test]
 #[cfg(feature = "native")]
-fn resolver_is_native_while_hostname_tcp_stays_unwired() {
+fn resolver_and_tcp_tickets_share_the_native_engine() {
     let engine = Engine::new(EngineConfig::spawned()).expect("Engine must construct");
     let resolver = engine.resolver();
     let tcp = engine.tcp_connector();
@@ -202,10 +202,12 @@ fn resolver_is_native_while_hostname_tcp_stays_unwired() {
     let connect = nbreq::TcpConnectRequest::hostname("example.com", 9)
         .build()
         .expect("connect request must build");
-    let connect_error = tcp
-        .submit(connect)
-        .expect_err("hostname TCP must reject before admission");
-    assert_eq!(connect_error.kind(), ErrorKind::Unsupported);
+    assert!(matches!(
+        connect.target(),
+        nbreq::TcpConnectTarget::Hostname { name, port }
+            if name == "example.com" && *port == 9
+    ));
+    drop(tcp);
 
     let after = engine.metrics();
     assert_eq!(before, after);

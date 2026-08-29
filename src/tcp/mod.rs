@@ -1,8 +1,8 @@
 //! Public cleartext TCP connector contract.
 //!
 //! [`TcpConnector`] is an Engine-issued capability ticket. Native Engines accept literal-address
-//! connections on their existing reactor owner. Hostname connections remain unavailable until
-//! their exact resolver-to-connect policy is wired. Engines without the native owner fail
+//! connections on their existing reactor owner and exact hostname connections through their
+//! existing public-resolver owner. Engines without the required native owner fail
 //! [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before admission.
 
 pub(crate) mod io;
@@ -1055,6 +1055,665 @@ mod tests {
         drop(connection);
         server.join().expect("fixture must join");
         engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_hostname_connect_uses_the_existing_resolver_and_reactor() {
+        use hickory_proto::rr::RecordType;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            let query_type = request.query().expect("fixture query").query_type();
+            Some(match query_type {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => crate::dns_wiring_tests::nodata(&request),
+                other => panic!("unexpected hostname-connect query type: {other:?}"),
+            })
+        });
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind hostname-connect fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept hostname TCP");
+            let mut byte = [0_u8; 1];
+            socket.read_exact(&mut byte).expect("read hostname byte");
+            socket.write_all(&byte).expect("echo hostname byte");
+        });
+
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("native hostname Engine must construct");
+        let mut connection = engine
+            .tcp_connector()
+            .execute(
+                TcpConnectRequest::hostname("tcp.test", port)
+                    .connect_timeout(Duration::from_secs(2))
+                    .send_queue_bytes(8)
+                    .receive_queue_bytes(8)
+                    .build()
+                    .expect("hostname request must build"),
+            )
+            .expect("hostname connect must complete");
+        connection.send(vec![9]).expect("hostname byte must send");
+        let mut byte = [0_u8; 1];
+        assert_eq!(connection.read(&mut byte).expect("hostname echo"), Some(1));
+        assert_eq!(byte, [9]);
+        assert_eq!(engine.metrics().resolutions_accepted(), 0);
+        assert_eq!(engine.metrics().tcp_connects_accepted(), 1);
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        drop(connection);
+        server.join().expect("hostname fixture must join");
+        engine.shutdown().expect("native Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_hostname_connect_tries_resolved_addresses_serially() {
+        use hickory_proto::rr::RecordType;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(match request.query().expect("fixture query").query_type() {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => {
+                    crate::dns_wiring_tests::aaaa_record(&request, Ipv6Addr::LOCALHOST)
+                }
+                other => panic!("unexpected serial-connect query type: {other:?}"),
+            })
+        });
+        let listener =
+            TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).expect("bind serial-connect fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().expect("accept second address");
+            drop(socket);
+        });
+        let config = EngineConfig::manual();
+        let backend =
+            crate::backend::native_http_backend_with_nameserver_and_failed_standalone_addresses(
+                &config,
+                dns.address(),
+                1,
+            )
+            .expect("serial-connect backend must construct");
+        let mut engine =
+            Engine::with_backend(config, backend).expect("serial-connect Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("serial.test", port)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("serial request must build"),
+            )
+            .expect("serial connect must submit");
+        let connection = match engine
+            .drive_until(pending)
+            .expect("serial connect must drive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("second resolved address must connect: {other:?}"),
+        };
+        assert_eq!(
+            connection.peer_addr().expect("peer address").ip(),
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        );
+        drop(connection);
+        server.join().expect("serial fixture must join");
+        engine.shutdown().expect("serial-connect Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn cached_hostname_deadline_stops_between_serial_attempts() {
+        use hickory_proto::rr::RecordType;
+        use std::io;
+        use std::net::TcpListener;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(match request.query().expect("fixture query").query_type() {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => {
+                    crate::dns_wiring_tests::aaaa_record(&request, Ipv6Addr::LOCALHOST)
+                }
+                other => panic!("unexpected cached-connect query type: {other:?}"),
+            })
+        });
+        let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))
+            .expect("bind cached serial-connect fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("make cached serial listener nonblocking");
+        let port = listener.local_addr().expect("fixture address").port();
+        let config = EngineConfig::spawned();
+        let backend = crate::backend::native_http_backend_with_nameserver_and_delayed_failed_standalone_address(
+            &config,
+            dns.address(),
+            Duration::from_millis(50),
+        )
+        .expect("cached-deadline backend must construct");
+        let engine =
+            Engine::with_backend(config, backend).expect("cached-deadline Engine must construct");
+
+        let response = engine
+            .resolver()
+            .execute(
+                crate::ResolveRequest::hostname("cached-deadline.test")
+                    .build()
+                    .expect("cache-prime request must build"),
+            )
+            .expect("cache-prime resolution must complete");
+        assert_eq!(response.status(), crate::ResolveStatus::Answer);
+        let queries_after_prime = dns.queries();
+
+        let error = match engine.tcp_connector().execute(
+            TcpConnectRequest::hostname("cached-deadline.test", port)
+                .connect_timeout(Duration::from_millis(20))
+                .build()
+                .expect("cached-deadline connect must build"),
+        ) {
+            Err(ExecuteError::Failed(error)) => error,
+            other => panic!("deadline must stop before the second address: {other:?}"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(error.timeout_kind(), Some(TimeoutKind::Connect));
+        assert_eq!(
+            dns.queries(),
+            queries_after_prime,
+            "hostname connect must consume the shared cached answer"
+        );
+        match listener.accept() {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Ok((_socket, _peer)) => panic!("expired connect must not try the second address"),
+            Err(error) => panic!("cached serial listener failed: {error}"),
+        }
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine.shutdown().expect("cached-deadline Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn native_hostname_connect_fails_once_after_every_address_fails() {
+        use hickory_proto::rr::RecordType;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(match request.query().expect("fixture query").query_type() {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => {
+                    crate::dns_wiring_tests::aaaa_record(&request, Ipv6Addr::LOCALHOST)
+                }
+                other => panic!("unexpected all-fail query type: {other:?}"),
+            })
+        });
+        let config = EngineConfig::manual();
+        let backend =
+            crate::backend::native_http_backend_with_nameserver_and_failed_standalone_addresses(
+                &config,
+                dns.address(),
+                2,
+            )
+            .expect("all-fail backend must construct");
+        let mut engine =
+            Engine::with_backend(config, backend).expect("all-fail Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("all-fail.test", 9)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("all-fail request must build"),
+            )
+            .expect("all-fail request must submit");
+        let error = match engine
+            .drive_until(pending)
+            .expect("all-fail connect must drive")
+        {
+            TcpConnectCompletion::Failed(error) => error,
+            other => panic!("all addresses must fail one connect: {other:?}"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(
+            error.transport_stage(),
+            Some(crate::TransportStage::Connect)
+        );
+        assert_eq!(engine.metrics().tcp_connects_failed(), 1);
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine.shutdown().expect("all-fail Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_dns_negatives_and_operational_failures_keep_their_contract() {
+        use hickory_proto::op::ResponseCode;
+
+        for (label, handler) in [
+            (
+                "NXDOMAIN",
+                crate::dns_wiring_tests::nxdomain
+                    as fn(&hickory_proto::op::Message) -> hickory_proto::op::Message,
+            ),
+            ("NoData", crate::dns_wiring_tests::nodata),
+        ] {
+            let dns = crate::dns_wiring_tests::DualStackDns::with_handler(move |request| {
+                Some(handler(&request))
+            });
+            let engine = crate::testing::native_http_engine_with_nameserver(
+                EngineConfig::spawned(),
+                dns.address(),
+            )
+            .expect("negative DNS Engine must construct");
+            let error = match engine.tcp_connector().execute(
+                TcpConnectRequest::hostname("negative.test", 9)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("negative request must build"),
+            ) {
+                Err(ExecuteError::Failed(error)) => error,
+                other => panic!("{label} hostname connect must fail: {other:?}"),
+            };
+            assert_eq!(error.kind(), ErrorKind::Transport, "{label}");
+            assert_eq!(
+                error.transport_stage(),
+                Some(crate::TransportStage::Dns),
+                "{label}"
+            );
+            assert_eq!(error.dns_failure(), None, "{label}");
+            engine.shutdown().expect("negative DNS Engine must stop");
+        }
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(crate::dns_wiring_tests::rcode(
+                &request,
+                ResponseCode::ServFail,
+            ))
+        });
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("SERVFAIL Engine must construct");
+        let error = match engine.tcp_connector().execute(
+            TcpConnectRequest::hostname("servfail.test", 9)
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .expect("SERVFAIL request must build"),
+        ) {
+            Err(ExecuteError::Failed(error)) => error,
+            other => panic!("SERVFAIL hostname connect must fail: {other:?}"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert_eq!(error.transport_stage(), Some(crate::TransportStage::Dns));
+        assert_eq!(error.dns_failure(), Some(crate::DnsFailure::ServerFailure));
+        engine.shutdown().expect("SERVFAIL Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_cancel_during_dns_releases_both_admission_budgets() {
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("cancel-during-DNS Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("cancel.test", 9)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cancel request must build"),
+            )
+            .expect("cancel request must submit");
+        let query_deadline = Instant::now() + Duration::from_secs(1);
+        while dns.queries() == 0 {
+            assert!(
+                Instant::now() < query_deadline,
+                "hostname DNS query did not start"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        pending
+            .handle()
+            .cancel()
+            .expect("DNS-phase cancel must win");
+        assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        let release_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let metrics = engine.metrics();
+            if metrics.current().inflight_resolutions() == 0
+                && metrics.current().standalone_tcp_connections() == 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < release_deadline,
+                "DNS-phase cancellation did not release admission"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(engine.metrics().tcp_connects_cancelled(), 1);
+        assert_eq!(engine.metrics().resolutions_cancelled(), 0);
+        engine
+            .shutdown()
+            .expect("cancel-during-DNS Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_cancel_at_dns_handoff_cannot_publish_or_leak_a_socket() {
+        use hickory_proto::rr::RecordType;
+        use std::io;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(match request.query().expect("fixture query").query_type() {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => crate::dns_wiring_tests::nodata(&request),
+                other => panic!("unexpected handoff query type: {other:?}"),
+            })
+        });
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind handoff-cancel fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("make handoff listener nonblocking");
+        let port = listener.local_addr().expect("fixture address").port();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let config = EngineConfig::manual();
+        let backend =
+            crate::backend::native_http_backend_with_nameserver_and_standalone_dns_handoff_gate(
+                &config,
+                dns.address(),
+                entered_tx,
+                release_rx,
+            )
+            .expect("handoff-gated backend must construct");
+        let mut engine =
+            Engine::with_backend(config, backend).expect("handoff-gated Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("handoff.test", port)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("handoff request must build"),
+            )
+            .expect("handoff request must submit");
+        let handle = pending.handle();
+        let driver = thread::spawn(move || {
+            engine
+                .drive(Instant::now() + Duration::from_secs(2))
+                .expect("handoff Engine must drive");
+            engine
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("DNS handoff must pause");
+        handle.cancel().expect("handoff cancellation must win");
+        release_tx.send(()).expect("release DNS handoff");
+        assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        let engine = driver.join().expect("handoff driver must join");
+        match listener.accept() {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Ok((_socket, _peer)) => panic!("cancelled handoff must not create a TCP connection"),
+            Err(error) => panic!("handoff listener failed: {error}"),
+        }
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine.shutdown().expect("handoff Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_connect_timeout_covers_the_dns_phase() {
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("DNS-timeout Engine must construct");
+        let error = match engine.tcp_connector().execute(
+            TcpConnectRequest::hostname("timeout.test", 9)
+                .connect_timeout(Duration::from_millis(60))
+                .build()
+                .expect("timeout request must build"),
+        ) {
+            Err(ExecuteError::Failed(error)) => error,
+            other => panic!("DNS-phase connect must time out: {other:?}"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(error.timeout_kind(), Some(TimeoutKind::Connect));
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine.shutdown().expect("DNS-timeout Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_terminal_publication_orders_metrics_before_late_callback_activation() {
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("publication-order Engine must construct");
+        let shared = engine.shared_for_testing();
+
+        let (activation_tx, activation_rx) = mpsc::channel();
+        let (activation_release_tx, activation_release_rx) = mpsc::channel();
+        shared.set_callback_activation_hook(move || {
+            activation_tx.send(()).expect("observe callback activation");
+            activation_release_rx
+                .recv()
+                .expect("release callback activation");
+        });
+        let (terminal_tx, terminal_rx) = mpsc::channel();
+        let (terminal_release_tx, terminal_release_rx) = mpsc::channel();
+        shared.set_tcp_terminal_commit_hook(move || {
+            terminal_tx.send(()).expect("observe terminal commit");
+            terminal_release_rx
+                .recv()
+                .expect("release terminal publication");
+        });
+
+        let connector = engine.tcp_connector();
+        let callback_shared = StdArc::clone(&shared);
+        let (callback_tx, callback_rx) = mpsc::channel();
+        let start_thread = std::thread::spawn(move || {
+            connector.start(
+                TcpConnectRequest::hostname("publication.test", 9)
+                    .connect_timeout(Duration::from_millis(60))
+                    .build()
+                    .expect("publication-order request must build"),
+                move |completion| {
+                    let metrics = callback_shared.metrics_snapshot();
+                    callback_tx
+                        .send((
+                            completion,
+                            metrics.current().inflight_resolutions(),
+                            metrics.current().standalone_tcp_connections(),
+                        ))
+                        .expect("send publication-order callback");
+                },
+            )
+        });
+
+        activation_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback activation must pause");
+        terminal_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal commit must pause before publication");
+        activation_release_tx
+            .send(())
+            .expect("release late callback activation");
+        let _handle = start_thread
+            .join()
+            .expect("callback start thread must join")
+            .expect("callback connect must be accepted");
+        assert!(
+            callback_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "callback must not observe the terminal before metrics publication"
+        );
+
+        terminal_release_tx
+            .send(())
+            .expect("release terminal publication");
+        let (completion, resolutions, connections) = callback_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("published terminal callback must arrive");
+        assert!(matches!(
+            completion,
+            TcpConnectCompletion::Failed(error)
+                if error.kind() == ErrorKind::Timeout
+                    && error.timeout_kind() == Some(TimeoutKind::Connect)
+        ));
+        assert_eq!(resolutions, 0);
+        assert_eq!(connections, 0);
+        engine
+            .shutdown()
+            .expect("publication-order Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_cancel_all_and_callback_delivery_share_the_existing_domains() {
+        use hickory_proto::rr::RecordType;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
+            Some(match request.query().expect("fixture query").query_type() {
+                RecordType::A => crate::dns_wiring_tests::a_record(&request, Ipv4Addr::LOCALHOST),
+                RecordType::AAAA => crate::dns_wiring_tests::nodata(&request),
+                other => panic!("unexpected callback query type: {other:?}"),
+            })
+        });
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind hostname callback fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().expect("accept hostname callback TCP");
+            drop(socket);
+        });
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("hostname callback Engine must construct");
+        let (callback_tx, callback_rx) = mpsc::channel();
+        let handle = engine
+            .tcp_connector()
+            .start(
+                TcpConnectRequest::hostname("callback.test", port)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("callback request must build"),
+                move |completion| {
+                    callback_tx
+                        .send(completion)
+                        .expect("send hostname callback completion");
+                },
+            )
+            .expect("hostname callback must start");
+        let connection = match callback_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("hostname callback must arrive")
+        {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("hostname callback connect failed: {other:?}"),
+        };
+        assert_eq!(connection.handle().id(), handle.id());
+        drop(connection);
+        server.join().expect("hostname callback fixture must join");
+        engine
+            .shutdown()
+            .expect("hostname callback Engine must stop");
+
+        let silent = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            silent.address(),
+        )
+        .expect("hostname cancel-all Engine must construct");
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("cancel-all.test", 9)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("cancel-all request must build"),
+            )
+            .expect("cancel-all request must submit");
+        let query_deadline = Instant::now() + Duration::from_secs(1);
+        while silent.queries() == 0 {
+            assert!(Instant::now() < query_deadline, "DNS query did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+        engine.cancel_all();
+        assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        assert_eq!(engine.metrics().current().inflight_resolutions(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine
+            .shutdown()
+            .expect("hostname cancel-all Engine must stop");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn hostname_shutdown_during_dns_delivers_engine_stopped_and_joins() {
+        use std::thread;
+
+        let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|_request| None);
+        let engine = crate::testing::native_http_engine_with_nameserver(
+            EngineConfig::spawned(),
+            dns.address(),
+        )
+        .expect("hostname shutdown Engine must construct");
+        let shared = engine.shared_for_testing();
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("shutdown.test", 9)
+                    .connect_timeout(Duration::from_secs(2))
+                    .build()
+                    .expect("shutdown request must build"),
+            )
+            .expect("shutdown request must submit");
+        let query_deadline = Instant::now() + Duration::from_secs(1);
+        while dns.queries() == 0 {
+            assert!(Instant::now() < query_deadline, "DNS query did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+        engine.shutdown().expect("hostname shutdown must join");
+        assert!(matches!(
+            pending.wait(),
+            TcpConnectCompletion::Failed(error) if error.kind() == ErrorKind::EngineStopped
+        ));
+        assert_eq!(
+            shared.metrics_snapshot().current().inflight_resolutions(),
+            0
+        );
+        assert_eq!(
+            shared
+                .metrics_snapshot()
+                .current()
+                .standalone_tcp_connections(),
+            0
+        );
     }
 
     #[cfg(feature = "native")]

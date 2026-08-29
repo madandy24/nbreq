@@ -25,10 +25,10 @@ use crate::stream::{ResponsePushError, ResponseSink, UploadBody, UploadFraming, 
 use crate::tcp::io::TcpIoOwner;
 use crate::types::{http_origin, redirected_request};
 use crate::{
-    Completion, EngineConfig, Error, ErrorKind, Header, LimitKind, Method, Request, RequestId,
-    ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress, Response, ResponseHead,
-    ShutdownError, StreamRequest, TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure,
-    TransportStage,
+    AddressFamily, AddressOrder, CacheMode, Completion, EngineConfig, Error, ErrorKind, Header,
+    LimitKind, Method, Request, RequestId, ResolveCompletion, ResolveRequest, ResolveResponse,
+    ResolveStatus, ResolvedAddress, Response, ResponseHead, ShutdownError, StreamRequest,
+    TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure, TransportStage,
 };
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
@@ -1583,6 +1583,41 @@ impl NativeHttpFactory {
         backend.reactor.limit_writes_for_test(bytes);
         Ok(Box::new(backend))
     }
+
+    #[cfg(test)]
+    pub(super) fn into_backend_with_failed_standalone_addresses(
+        self,
+        count: usize,
+    ) -> Result<Box<dyn Backend + Send>, Error> {
+        let mut backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.failed_standalone_addresses_remaining = count;
+        Ok(Box::new(backend))
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_backend_with_delayed_failed_standalone_address(
+        self,
+        delay: Duration,
+    ) -> Result<Box<dyn Backend + Send>, Error> {
+        let mut backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.failed_standalone_addresses_remaining = 1;
+        backend.failed_standalone_address_delay = Some(delay);
+        Ok(Box::new(backend))
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_backend_with_standalone_dns_handoff_gate(
+        self,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Result<Box<dyn Backend + Send>, Error> {
+        let mut backend =
+            NativeHttpBackend::new(self.limits, self.resolver, self.tls, self.connection_limits)?;
+        backend.standalone_dns_handoff_gate = Some((entered, release));
+        Ok(Box::new(backend))
+    }
 }
 
 impl BackendFactory for NativeHttpFactory {
@@ -1812,6 +1847,8 @@ struct NativeHttpBackend {
     request_to_public: HashMap<RequestId, ResolveKey>,
     public_lookups: HashMap<ResolveKey, PublicLookup>,
     pending_public: Vec<BackendResolveCompletion>,
+    standalone_request_to_resolve: HashMap<RequestId, ResolveKey>,
+    standalone_resolves: HashMap<ResolveKey, StandaloneResolve>,
     pending_http_from_dns: Vec<BackendCompletion>,
     next_resolve_key: u64,
     idle: HashMap<ConnectionKey, VecDeque<IdleConnection>>,
@@ -1823,8 +1860,49 @@ struct NativeHttpBackend {
     connection_limits: ConnectionLimits,
     metrics: Option<Arc<Metrics>>,
     standalone_request_to_slot: HashMap<RequestId, SlotId>,
-    standalone_pending: HashMap<SlotId, TcpConnectSink>,
+    standalone_pending: HashMap<SlotId, StandalonePending>,
     standalone_live: HashMap<SlotId, StandaloneTcp>,
+    #[cfg(test)]
+    failed_standalone_addresses_remaining: usize,
+    #[cfg(test)]
+    failed_standalone_address_delay: Option<Duration>,
+    #[cfg(test)]
+    standalone_dns_handoff_gate:
+        Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+}
+
+struct StandaloneResolve {
+    sink: TcpConnectSink,
+    port: u16,
+    connect_deadline: Option<Instant>,
+}
+
+struct StandalonePending {
+    sink: TcpConnectSink,
+    remaining: VecDeque<SocketAddr>,
+    connect_deadline: Option<Instant>,
+}
+
+impl StandalonePending {
+    fn id(&self) -> RequestId {
+        self.sink.id()
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.sink.is_terminal()
+    }
+
+    fn connected(&self, local: SocketAddr, peer: SocketAddr) -> Option<TcpIoOwner> {
+        self.sink.connected(local, peer)
+    }
+
+    fn read_inactivity_timeout(&self) -> Option<Duration> {
+        self.sink.read_inactivity_timeout()
+    }
+
+    fn write_inactivity_timeout(&self) -> Option<Duration> {
+        self.sink.write_inactivity_timeout()
+    }
 }
 
 struct StandaloneTcp {
@@ -2112,6 +2190,8 @@ impl NativeHttpBackend {
             request_to_public: HashMap::new(),
             public_lookups: HashMap::new(),
             pending_public: Vec::new(),
+            standalone_request_to_resolve: HashMap::new(),
+            standalone_resolves: HashMap::new(),
             pending_http_from_dns: Vec::new(),
             next_resolve_key: 1,
             idle: HashMap::new(),
@@ -2125,6 +2205,12 @@ impl NativeHttpBackend {
             standalone_request_to_slot: HashMap::new(),
             standalone_pending: HashMap::new(),
             standalone_live: HashMap::new(),
+            #[cfg(test)]
+            failed_standalone_addresses_remaining: 0,
+            #[cfg(test)]
+            failed_standalone_address_delay: None,
+            #[cfg(test)]
+            standalone_dns_handoff_gate: None,
         })
     }
 
@@ -2712,6 +2798,11 @@ impl NativeHttpBackend {
         let mut completions = Vec::new();
         for result in results {
             if let Some(public) = result.public {
+                if let Some(lookup) = self.standalone_resolves.remove(&result.key) {
+                    self.standalone_request_to_resolve.remove(&lookup.sink.id());
+                    self.finish_standalone_resolve(lookup, public);
+                    continue;
+                }
                 let Some(lookup) = self.public_lookups.remove(&result.key) else {
                     continue;
                 };
@@ -2790,6 +2881,65 @@ impl NativeHttpBackend {
         Ok(completions)
     }
 
+    fn finish_standalone_resolve(
+        &mut self,
+        lookup: StandaloneResolve,
+        outcome: PublicLookupOutcome,
+    ) {
+        if lookup
+            .connect_deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            lookup.sink.fail(standalone_connect_timeout());
+            return;
+        }
+        if !lookup.sink.release_dns_borrow() {
+            return;
+        }
+        #[cfg(test)]
+        if let Some((entered, release)) = self.standalone_dns_handoff_gate.take() {
+            entered.send(()).expect("observe standalone DNS handoff");
+            release.recv().expect("release standalone DNS handoff");
+        }
+        if lookup.sink.is_terminal() {
+            return;
+        }
+        match outcome {
+            PublicLookupOutcome::Completed {
+                status: ResolveStatus::Answer,
+                addresses,
+                ..
+            } if !addresses.is_empty() => {
+                let remaining = addresses
+                    .into_iter()
+                    .map(|address| SocketAddr::new(address, lookup.port))
+                    .collect();
+                self.start_standalone_attempt(StandalonePending {
+                    sink: lookup.sink,
+                    remaining,
+                    connect_deadline: lookup.connect_deadline,
+                });
+            }
+            PublicLookupOutcome::Completed { status, .. } => {
+                let message = match status {
+                    ResolveStatus::NameNotFound => "the standalone TCP hostname does not exist",
+                    ResolveStatus::NoData => {
+                        "the standalone TCP hostname has no usable address data"
+                    }
+                    ResolveStatus::Answer => {
+                        "the standalone TCP hostname resolved without a usable address"
+                    }
+                };
+                lookup
+                    .sink
+                    .fail(Error::transport(TransportStage::Dns, message));
+            }
+            PublicLookupOutcome::Failed(error) => {
+                lookup.sink.fail(error);
+            }
+        }
+    }
+
     fn expire_public_lookups(&mut self) -> Result<(), Error> {
         let now = Instant::now();
         let expired = self
@@ -2818,8 +2968,37 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn expire_standalone_resolves(&mut self) -> Result<(), Error> {
+        let now = Instant::now();
+        let finished = self
+            .standalone_resolves
+            .iter()
+            .filter_map(|(key, lookup)| {
+                (lookup.sink.is_terminal()
+                    || lookup
+                        .connect_deadline
+                        .is_some_and(|deadline| deadline <= now))
+                .then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        for key in finished {
+            let Some(lookup) = self.standalone_resolves.remove(&key) else {
+                continue;
+            };
+            self.standalone_request_to_resolve.remove(&lookup.sink.id());
+            if let Some(resolver) = &self.resolver {
+                resolver.cancel(key)?;
+            }
+            if !lookup.sink.is_terminal() {
+                lookup.sink.fail(standalone_connect_timeout());
+            }
+        }
+        Ok(())
+    }
+
     fn drain_dns(&mut self) -> Result<(), Error> {
         self.expire_public_lookups()?;
+        self.expire_standalone_resolves()?;
         let http = self.process_resolver_results()?;
         self.pending_http_from_dns.extend(http);
         Ok(())
@@ -2868,6 +3047,76 @@ impl NativeHttpBackend {
             )
         })?;
         Ok(key)
+    }
+
+    fn start_standalone_attempt(&mut self, mut pending: StandalonePending) {
+        loop {
+            if pending.is_terminal() {
+                return;
+            }
+            if pending
+                .connect_deadline
+                .is_some_and(|deadline| deadline <= Instant::now())
+            {
+                pending.sink.fail(standalone_connect_timeout());
+                return;
+            }
+            let Some(address) = pending.remaining.pop_front() else {
+                pending.sink.fail(Error::transport(
+                    TransportStage::Connect,
+                    "every resolved standalone TCP address failed to connect",
+                ));
+                return;
+            };
+            #[cfg(test)]
+            if self.failed_standalone_addresses_remaining != 0 {
+                self.failed_standalone_addresses_remaining -= 1;
+                if let Some(delay) = self.failed_standalone_address_delay.take() {
+                    std::thread::sleep(delay);
+                }
+                if pending.remaining.is_empty() {
+                    pending.sink.fail(Error::transport(
+                        TransportStage::Connect,
+                        "the injected standalone TCP address failed to connect",
+                    ));
+                    return;
+                }
+                continue;
+            }
+            let slot = match self.reactor.connect(
+                address,
+                pending.connect_deadline,
+                pending.sink.send_window(),
+                usize::MAX,
+            ) {
+                Ok(slot) => slot,
+                Err(failure)
+                    if failure.kind == NativeFailureKind::Connect
+                        && !pending.remaining.is_empty() =>
+                {
+                    continue;
+                }
+                Err(failure) => {
+                    pending.sink.fail(native_transport_error(failure));
+                    return;
+                }
+            };
+            if let Err(failure) = self
+                .reactor
+                .set_read_allowance(slot, Some(pending.sink.receive_window()))
+            {
+                self.reactor.cancel(slot);
+                pending.sink.fail(native_internal_error(failure));
+                return;
+            }
+            if pending.is_terminal() {
+                self.reactor.cancel(slot);
+                return;
+            }
+            self.standalone_request_to_slot.insert(pending.id(), slot);
+            self.standalone_pending.insert(slot, pending);
+            return;
+        }
     }
 
     fn start_reserved(&mut self, pending: PendingResolve) -> Option<Completion> {
@@ -4044,9 +4293,13 @@ impl NativeHttpBackend {
                 }
             }
             NativeEvent::Failed(slot, failure) => {
-                if let Some(sink) = self.standalone_pending.remove(slot) {
-                    self.standalone_request_to_slot.remove(&sink.id());
-                    sink.fail(native_transport_error(failure.clone()));
+                if let Some(pending) = self.standalone_pending.remove(slot) {
+                    self.standalone_request_to_slot.remove(&pending.id());
+                    if failure.kind == NativeFailureKind::Connect && !pending.remaining.is_empty() {
+                        self.start_standalone_attempt(pending);
+                    } else {
+                        pending.sink.fail(native_transport_error(failure.clone()));
+                    }
                 }
                 if let Some(mut live) = self.standalone_live.remove(slot) {
                     self.standalone_request_to_slot.remove(&live.request_id);
@@ -4061,12 +4314,9 @@ impl NativeHttpBackend {
                 if terminal_failure_in_batch {
                     return Ok(true);
                 }
-                if let Some(sink) = self.standalone_pending.remove(slot) {
-                    self.standalone_request_to_slot.remove(&sink.id());
-                    sink.fail(Error::timeout(
-                        TimeoutKind::Connect,
-                        "the standalone TCP connection-establishment timeout expired",
-                    ));
+                if let Some(pending) = self.standalone_pending.remove(slot) {
+                    self.standalone_request_to_slot.remove(&pending.id());
+                    pending.sink.fail(standalone_connect_timeout());
                     self.reactor.cancel(*slot);
                 }
                 if let Some(mut live) = self.standalone_live.remove(slot) {
@@ -4375,6 +4625,13 @@ impl Backend for NativeHttpBackend {
     }
 
     fn cancel(&mut self, id: RequestId) {
+        if let Some(key) = self.standalone_request_to_resolve.remove(&id) {
+            self.standalone_resolves.remove(&key);
+            if let Some(resolver) = &self.resolver {
+                let _cancel_result = resolver.cancel(key);
+            }
+            return;
+        }
         if let Some(slot) = self.standalone_request_to_slot.remove(&id) {
             self.standalone_pending.remove(&slot);
             if let Some(mut live) = self.standalone_live.remove(&slot) {
@@ -4451,6 +4708,8 @@ impl Backend for NativeHttpBackend {
         self.request_to_public.clear();
         self.public_lookups.clear();
         self.pending_public.clear();
+        self.standalone_request_to_resolve.clear();
+        self.standalone_resolves.clear();
         self.pending_http_from_dns.clear();
         self.idle.clear();
         self.idle_slots.clear();
@@ -4484,6 +4743,7 @@ impl Backend for NativeHttpBackend {
     fn wants_poll_without_requests(&self) -> bool {
         self.idle_count != 0
             || !self.public_lookups.is_empty()
+            || !self.standalone_resolves.is_empty()
             || !self.standalone_pending.is_empty()
             || !self.standalone_live.is_empty()
     }
@@ -4506,36 +4766,66 @@ impl Backend for NativeHttpBackend {
         sink: TcpConnectSink,
         accepted_at: Instant,
     ) {
-        let TcpConnectTarget::Literal(address) = *request.target() else {
-            sink.fail(Error::new(
-                ErrorKind::Unsupported,
-                "hostname TCP connections are not wired yet; use a literal SocketAddr",
-            ));
-            return;
-        };
         let deadline = request
             .connect_timeout()
             .and_then(|timeout| accepted_at.checked_add(timeout));
-        let slot = match self
-            .reactor
-            .connect(address, deadline, sink.send_window(), usize::MAX)
-        {
-            Ok(slot) => slot,
-            Err(failure) => {
-                sink.fail(native_transport_error(failure));
-                return;
+        match request.target() {
+            TcpConnectTarget::Literal(address) => {
+                self.start_standalone_attempt(StandalonePending {
+                    sink,
+                    remaining: VecDeque::from([*address]),
+                    connect_deadline: deadline,
+                });
             }
-        };
-        if let Err(failure) = self
-            .reactor
-            .set_read_allowance(slot, Some(sink.receive_window()))
-        {
-            self.reactor.cancel(slot);
-            sink.fail(native_internal_error(failure));
-            return;
+            TcpConnectTarget::Hostname { name, port } => {
+                if self.resolver.is_none() {
+                    sink.fail(Error::new(
+                        ErrorKind::Unsupported,
+                        "hostname TCP connections require the native public resolver owner",
+                    ));
+                    return;
+                }
+                if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+                    sink.fail(standalone_connect_timeout());
+                    return;
+                }
+                let key = match self.next_resolve_key() {
+                    Ok(key) => key,
+                    Err(error) => {
+                        sink.fail(error);
+                        return;
+                    }
+                };
+                if let Err(error) = self
+                    .resolver
+                    .as_ref()
+                    .expect("resolver presence checked")
+                    .public_resolve(
+                        key,
+                        PublicResolveSpec {
+                            host: name.clone(),
+                            family: AddressFamily::Both,
+                            order: AddressOrder::Ipv4ThenIpv6,
+                            cache_mode: CacheMode::Use,
+                            max_results: sink.max_resolve_results(),
+                            expand_search: false,
+                        },
+                    )
+                {
+                    sink.fail(error);
+                    return;
+                }
+                self.standalone_request_to_resolve.insert(sink.id(), key);
+                self.standalone_resolves.insert(
+                    key,
+                    StandaloneResolve {
+                        sink,
+                        port: *port,
+                        connect_deadline: deadline,
+                    },
+                );
+            }
         }
-        self.standalone_request_to_slot.insert(sink.id(), slot);
-        self.standalone_pending.insert(slot, sink);
     }
 
     fn submit_resolve(
@@ -4604,6 +4894,13 @@ fn public_total_timeout() -> ResolveCompletion {
         TimeoutKind::Total,
         "the public resolution total timeout expired",
     ))
+}
+
+fn standalone_connect_timeout() -> Error {
+    Error::timeout(
+        TimeoutKind::Connect,
+        "the standalone TCP connection-establishment timeout expired",
+    )
 }
 
 fn native_internal_error(failure: NativeFailure) -> Error {

@@ -212,6 +212,37 @@ pub(crate) fn native_http_backend_with_nameserver(
     native_http::NativeHttpFactory::new_with_nameserver(config, nameserver).into_backend()
 }
 
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn native_http_backend_with_nameserver_and_failed_standalone_addresses(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    count: usize,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_nameserver(config, nameserver)
+        .into_backend_with_failed_standalone_addresses(count)
+}
+
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn native_http_backend_with_nameserver_and_delayed_failed_standalone_address(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    delay: std::time::Duration,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_nameserver(config, nameserver)
+        .into_backend_with_delayed_failed_standalone_address(delay)
+}
+
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn native_http_backend_with_nameserver_and_standalone_dns_handoff_gate(
+    config: &crate::EngineConfig,
+    nameserver: std::net::SocketAddr,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) -> Result<Box<dyn Backend + Send>, Error> {
+    native_http::NativeHttpFactory::new_with_nameserver(config, nameserver)
+        .into_backend_with_standalone_dns_handoff_gate(entered, release)
+}
+
 #[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn native_http_factory_with_system_dns(
     config: &crate::EngineConfig,

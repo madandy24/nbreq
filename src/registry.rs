@@ -349,11 +349,13 @@ impl ResolveState {
 struct TcpConnectInner {
     completion: Option<TcpConnectCompletion>,
     terminal: bool,
+    delivery_ready: bool,
     callback: Option<TcpConnectCallback>,
     callback_active: bool,
     occupancy_permit: Option<AdmissionPermit>,
     queued_bytes_permit: Option<BytePermit>,
     metric_bytes_permit: Option<BytePermit>,
+    dns_borrow: Option<AdmissionPermit>,
     callback_permit: Option<AdmissionPermit>,
 }
 
@@ -369,6 +371,8 @@ pub(crate) struct TcpConnectState {
     read_inactivity_timeout: Option<Duration>,
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     write_inactivity_timeout: Option<Duration>,
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    max_resolve_results: usize,
     inner: Mutex<TcpConnectInner>,
     changed: Condvar,
     metrics: Arc<Metrics>,
@@ -380,10 +384,12 @@ struct TcpConnectAdmission {
     receive_window: usize,
     read_inactivity_timeout: Option<Duration>,
     write_inactivity_timeout: Option<Duration>,
+    max_resolve_results: usize,
     callback: Option<TcpConnectCallback>,
     occupancy_permit: AdmissionPermit,
     queued_bytes_permit: BytePermit,
     metric_bytes_permit: BytePermit,
+    dns_borrow: Option<AdmissionPermit>,
     callback_permit: Option<AdmissionPermit>,
     metrics: Arc<Metrics>,
 }
@@ -407,14 +413,17 @@ impl TcpConnectState {
             receive_window: admission.receive_window,
             read_inactivity_timeout: admission.read_inactivity_timeout,
             write_inactivity_timeout: admission.write_inactivity_timeout,
+            max_resolve_results: admission.max_resolve_results,
             inner: Mutex::new(TcpConnectInner {
                 completion: None,
                 terminal: false,
+                delivery_ready: false,
                 callback: admission.callback,
                 callback_active: false,
                 occupancy_permit: Some(admission.occupancy_permit),
                 queued_bytes_permit: Some(admission.queued_bytes_permit),
                 metric_bytes_permit: Some(admission.metric_bytes_permit),
+                dns_borrow: admission.dns_borrow,
                 callback_permit: admission.callback_permit,
             }),
             changed: Condvar::new(),
@@ -431,7 +440,11 @@ impl TcpConnectState {
     }
 
     pub(crate) fn try_completion(&self) -> Option<TcpConnectCompletion> {
-        lock_unpoisoned(&self.inner).completion.take()
+        let mut inner = lock_unpoisoned(&self.inner);
+        inner
+            .delivery_ready
+            .then(|| inner.completion.take())
+            .flatten()
     }
 
     pub(crate) fn wait(&self) -> TcpConnectCompletion {
@@ -442,7 +455,7 @@ impl TcpConnectState {
         let inner = lock_unpoisoned(&self.inner);
         let mut inner = self
             .changed
-            .wait_while(inner, |inner| !inner.terminal)
+            .wait_while(inner, |inner| !inner.delivery_ready)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner
             .completion
@@ -458,9 +471,9 @@ impl TcpConnectState {
         let inner = lock_unpoisoned(&self.inner);
         let (mut inner, _timeout) = self
             .changed
-            .wait_timeout_while(inner, duration, |inner| !inner.terminal)
+            .wait_timeout_while(inner, duration, |inner| !inner.delivery_ready)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if inner.terminal {
+        if inner.delivery_ready {
             Some(
                 inner
                     .completion
@@ -472,10 +485,10 @@ impl TcpConnectState {
         }
     }
 
-    fn commit_terminal(&self, completion: TcpConnectCompletion) -> (bool, Option<CallbackJob>) {
+    fn commit_terminal(&self, completion: TcpConnectCompletion) -> bool {
         let mut inner = lock_unpoisoned(&self.inner);
         if inner.terminal {
-            return (false, None);
+            return false;
         }
         self.metrics.tcp_connect_terminal(&completion);
         inner.terminal = true;
@@ -483,9 +496,24 @@ impl TcpConnectState {
         drop(inner.occupancy_permit.take());
         drop(inner.queued_bytes_permit.take());
         drop(inner.metric_bytes_permit.take());
-        self.changed.notify_all();
+        drop(inner.dns_borrow.take());
+        true
+    }
+
+    fn publish_terminal(&self) -> Option<CallbackJob> {
+        let mut inner = lock_unpoisoned(&self.inner);
+        debug_assert!(
+            inner.terminal,
+            "only a terminal TCP connect can be published"
+        );
+        debug_assert!(
+            !inner.delivery_ready,
+            "a TCP connect terminal must be published exactly once"
+        );
+        inner.delivery_ready = true;
         let job = Self::take_terminal_job(self.id, &mut inner);
-        (true, job)
+        self.changed.notify_all();
+        job
     }
 
     fn activate_callback(&self) -> Option<CallbackJob> {
@@ -495,7 +523,7 @@ impl TcpConnectState {
     }
 
     fn take_terminal_job(id: RequestId, inner: &mut TcpConnectInner) -> Option<CallbackJob> {
-        if !inner.callback_active || !inner.terminal {
+        if !inner.callback_active || !inner.delivery_ready {
             return None;
         }
         let callback = inner.callback.take()?;
@@ -777,6 +805,22 @@ impl TcpConnectSink {
         self.state.write_inactivity_timeout
     }
 
+    pub(crate) fn max_resolve_results(&self) -> usize {
+        self.state.max_resolve_results
+    }
+
+    pub(crate) fn release_dns_borrow(&self) -> bool {
+        let mut inner = lock_unpoisoned(&self.state.inner);
+        if inner.terminal {
+            return false;
+        }
+        let Some(permit) = inner.dns_borrow.take() else {
+            return false;
+        };
+        drop(permit);
+        true
+    }
+
     pub(crate) fn connected(
         &self,
         local: std::net::SocketAddr,
@@ -822,6 +866,7 @@ pub(crate) struct Shared {
     tcp_queued_bytes: Arc<AtomicUsize>,
     tcp_connection_limit: usize,
     max_tcp_queue_bytes_per_connection: usize,
+    max_resolve_results: usize,
     max_header_bytes: usize,
     max_header_count: usize,
     callback_activations: Mutex<usize>,
@@ -899,6 +944,7 @@ impl Shared {
             tcp_queued_bytes: Arc::new(AtomicUsize::new(0)),
             tcp_connection_limit: config.max_standalone_tcp_connections().get(),
             max_tcp_queue_bytes_per_connection: config.max_tcp_queue_bytes_per_connection(),
+            max_resolve_results: config.max_resolve_results().get(),
             max_header_bytes: config.max_header_bytes(),
             max_header_count: config.max_header_count(),
             callback_activations: Mutex::new(0),
@@ -1039,10 +1085,11 @@ impl Shared {
                 "standalone TCP connections are not available on this Engine",
             ));
         }
-        if matches!(request.target(), crate::TcpConnectTarget::Hostname { .. }) {
+        let hostname = matches!(request.target(), crate::TcpConnectTarget::Hostname { .. });
+        if hostname && !self.public_resolver_supported() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "hostname TCP connections are not wired yet; use a literal SocketAddr",
+                "hostname TCP connections require the native public resolver owner",
             ));
         }
         let send_window = request
@@ -1107,6 +1154,22 @@ impl Shared {
         let metric_bytes_permit =
             BytePermit::try_acquire(&self.tcp_queued_bytes, usize::MAX, reserved_bytes)
                 .expect("accepted TCP reservation already fits usize");
+        let dns_borrow = if hostname {
+            Some(
+                AdmissionPermit::try_acquire(
+                    &self.resolution_inflight,
+                    self.resolution_inflight_limit,
+                )
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::QueueFull,
+                        "the Engine's accepted/inflight public-resolution capacity is full",
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         let callback_permit = if has_callback {
             Some(
                 AdmissionPermit::try_acquire(&self.callback_inflight, self.callback_inflight_limit)
@@ -1133,10 +1196,12 @@ impl Shared {
                 receive_window,
                 read_inactivity_timeout,
                 write_inactivity_timeout,
+                max_resolve_results: self.max_resolve_results,
                 callback,
                 occupancy_permit,
                 queued_bytes_permit,
                 metric_bytes_permit,
+                dns_borrow,
                 callback_permit,
                 metrics: Arc::clone(&self.metrics),
             },
@@ -1158,6 +1223,10 @@ impl Shared {
             self.tcp_connections.load(Ordering::Acquire),
             self.tcp_queued_bytes.load(Ordering::Acquire),
         );
+        if hostname {
+            self.metrics
+                .resolution_borrowed(self.resolution_inflight.load(Ordering::Acquire));
+        }
         let activation = if has_callback {
             *lock_unpoisoned(&self.callback_activations) += 1;
             Some(CallbackActivation { shared: self })
@@ -1430,10 +1499,10 @@ impl Shared {
                 "request ID belongs to another Engine",
             ));
         }
-        let (state, stream_state, resolve_state, tcp_won, tcp_job, live_tcp) = {
+        let (state, stream_state, resolve_state, tcp_terminal, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let connect_state = core.connects.get(&request_id).cloned();
-            let (tcp_won, tcp_job) = connect_state.as_ref().map_or((false, None), |state| {
+            let tcp_won = connect_state.as_ref().is_some_and(|state| {
                 self.complete_tcp_state_locked(&mut core, state, TcpConnectCompletion::Cancelled)
             });
             let live_tcp = if tcp_won {
@@ -1445,14 +1514,13 @@ impl Shared {
                 core.requests.get(&request_id).cloned(),
                 core.stream_requests.get(&request_id).cloned(),
                 core.resolutions.get(&request_id).cloned(),
-                tcp_won,
-                tcp_job,
+                tcp_won.then_some(connect_state).flatten(),
                 live_tcp,
             )
         };
-        if tcp_won {
+        if let Some(tcp_state) = tcp_terminal {
             self.refresh_tcp_resource_metrics();
-            if let Some(job) = tcp_job {
+            if let Some(job) = tcp_state.publish_terminal() {
                 let _queued = self.callback_domain.enqueue_terminal(job);
             }
         } else if let Some(io) = live_tcp {
@@ -1469,7 +1537,7 @@ impl Shared {
     }
 
     pub(crate) fn cancel_all(&self) {
-        let (requests, stream_requests, resolutions, tcp_jobs, tcp_changed, live_tcp) = {
+        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let barrier = core.next_sequence.saturating_sub(1);
             let connects = core
@@ -1478,16 +1546,16 @@ impl Shared {
                 .filter(|(id, _state)| id.sequence <= barrier)
                 .map(|(_id, state)| Arc::clone(state))
                 .collect::<Vec<_>>();
-            let mut tcp_jobs = Vec::new();
-            let mut tcp_changed = false;
+            let mut tcp_terminals = Vec::new();
             for state in connects {
-                let (won, job) = self.complete_tcp_state_locked(
+                let won = self.complete_tcp_state_locked(
                     &mut core,
                     &state,
                     TcpConnectCompletion::Cancelled,
                 );
-                tcp_changed |= won;
-                tcp_jobs.extend(job);
+                if won {
+                    tcp_terminals.push(state);
+                }
             }
             (
                 core.requests
@@ -1505,8 +1573,7 @@ impl Shared {
                     .filter(|(id, _state)| id.sequence <= barrier)
                     .map(|(_id, state)| Arc::clone(state))
                     .collect::<Vec<_>>(),
-                tcp_jobs,
-                tcp_changed,
+                tcp_terminals,
                 core.live_tcp
                     .iter()
                     .filter(|(id, _state)| id.sequence <= barrier)
@@ -1523,9 +1590,13 @@ impl Shared {
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
-        if tcp_changed {
+        if !tcp_terminals.is_empty() {
             self.refresh_tcp_resource_metrics();
         }
+        let tcp_jobs = tcp_terminals
+            .into_iter()
+            .filter_map(|state| state.publish_terminal())
+            .collect::<Vec<_>>();
         for job in tcp_jobs {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
@@ -1536,17 +1607,16 @@ impl Shared {
     }
 
     pub(crate) fn begin_shutdown(&self) {
-        let (requests, stream_requests, resolutions, tcp_jobs, tcp_changed, live_tcp) = {
+        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             if core.lifecycle == LifecycleState::Running {
                 core.lifecycle = LifecycleState::ShuttingDown;
             }
             self.stopped.store(true, Ordering::Release);
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
-            let mut tcp_jobs = Vec::new();
-            let mut tcp_changed = false;
+            let mut tcp_terminals = Vec::new();
             for state in connects {
-                let (won, job) = self.complete_tcp_state_locked(
+                let won = self.complete_tcp_state_locked(
                     &mut core,
                     &state,
                     TcpConnectCompletion::Failed(Error::new(
@@ -1554,15 +1624,15 @@ impl Shared {
                         "the owning Engine stopped during TCP connection establishment",
                     )),
                 );
-                tcp_changed |= won;
-                tcp_jobs.extend(job);
+                if won {
+                    tcp_terminals.push(state);
+                }
             }
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
                 core.resolutions.values().cloned().collect::<Vec<_>>(),
-                tcp_jobs,
-                tcp_changed,
+                tcp_terminals,
                 core.live_tcp.values().cloned().collect::<Vec<_>>(),
             )
         };
@@ -1575,9 +1645,13 @@ impl Shared {
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
         }
-        if tcp_changed {
+        if !tcp_terminals.is_empty() {
             self.refresh_tcp_resource_metrics();
         }
+        let tcp_jobs = tcp_terminals
+            .into_iter()
+            .filter_map(|state| state.publish_terminal())
+            .collect::<Vec<_>>();
         for job in tcp_jobs {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
@@ -1696,6 +1770,10 @@ impl Shared {
             .metric_bytes_permit
             .take()
             .expect("accepted TCP connect owns its metric queue permit");
+        debug_assert!(
+            inner.dns_borrow.is_none(),
+            "hostname DNS capacity must be released before socket establishment"
+        );
         let weak = Arc::downgrade(self);
         let id = state.id();
         let release = Box::new(move || {
@@ -1730,6 +1808,7 @@ impl Shared {
         state.metrics.tcp_connect_terminal(&completion);
         inner.terminal = true;
         inner.completion = Some(completion);
+        inner.delivery_ready = true;
         state.changed.notify_all();
         let job = TcpConnectState::take_terminal_job(id, &mut inner);
         core.connects.remove(&id);
@@ -1748,13 +1827,13 @@ impl Shared {
         completion: TcpConnectCompletion,
     ) -> bool {
         let mut core = lock_unpoisoned(&self.core);
-        let (won, job) = self.complete_tcp_state_locked(&mut core, state, completion);
+        let won = self.complete_tcp_state_locked(&mut core, state, completion);
         drop(core);
         if !won {
             return false;
         }
         self.refresh_tcp_resource_metrics();
-        if let Some(job) = job {
+        if let Some(job) = state.publish_terminal() {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
         true
@@ -1765,22 +1844,22 @@ impl Shared {
         core: &mut CoreState,
         state: &Arc<TcpConnectState>,
         completion: TcpConnectCompletion,
-    ) -> (bool, Option<CallbackJob>) {
+    ) -> bool {
         if !core
             .connects
             .get(&state.id())
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
-            return (false, None);
+            return false;
         }
-        let (won, job) = state.commit_terminal(completion);
+        let won = state.commit_terminal(completion);
         if !won {
-            return (false, None);
+            return false;
         }
         #[cfg(test)]
         self.run_tcp_terminal_commit_hook();
         core.connects.remove(&state.id());
-        (true, job)
+        true
     }
 
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
@@ -1827,26 +1906,25 @@ impl Shared {
     }
 
     pub(crate) fn fail_all(&self, error: Error) {
-        let (requests, stream_requests, resolutions, tcp_jobs, tcp_changed, live_tcp) = {
+        let (requests, stream_requests, resolutions, tcp_terminals, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
-            let mut tcp_jobs = Vec::new();
-            let mut tcp_changed = false;
+            let mut tcp_terminals = Vec::new();
             for state in connects {
-                let (won, job) = self.complete_tcp_state_locked(
+                let won = self.complete_tcp_state_locked(
                     &mut core,
                     &state,
                     TcpConnectCompletion::Failed(error.clone()),
                 );
-                tcp_changed |= won;
-                tcp_jobs.extend(job);
+                if won {
+                    tcp_terminals.push(state);
+                }
             }
             (
                 core.requests.values().cloned().collect::<Vec<_>>(),
                 core.stream_requests.values().cloned().collect::<Vec<_>>(),
                 core.resolutions.values().cloned().collect::<Vec<_>>(),
-                tcp_jobs,
-                tcp_changed,
+                tcp_terminals,
                 core.live_tcp.values().cloned().collect::<Vec<_>>(),
             )
         };
@@ -1861,9 +1939,13 @@ impl Shared {
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Failed(error.clone()));
         }
-        if tcp_changed {
+        if !tcp_terminals.is_empty() {
             self.refresh_tcp_resource_metrics();
         }
+        let tcp_jobs = tcp_terminals
+            .into_iter()
+            .filter_map(|state| state.publish_terminal())
+            .collect::<Vec<_>>();
         for job in tcp_jobs {
             let _queued = self.callback_domain.enqueue_terminal(job);
         }
@@ -1976,6 +2058,93 @@ mod tests {
     use std::time::Duration;
 
     use crate::{Completion, EngineConfig, Error, ErrorKind, Request, TcpConnectRequest};
+
+    #[test]
+    fn hostname_tcp_borrows_resolution_capacity_without_counting_a_resolver_operation() {
+        let config = EngineConfig::manual().with_max_inflight_resolutions(
+            std::num::NonZeroUsize::new(1).expect("nonzero resolution capacity"),
+        );
+        let (engine, _controller) = crate::testing::engine(config).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_public_resolver_supported(true);
+        shared.set_standalone_tcp_supported(true);
+
+        let pending = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("host.test", 1234)
+                    .build()
+                    .expect("hostname request must build"),
+            )
+            .expect("hostname connect must be admitted");
+        let metrics = engine.metrics();
+        assert_eq!(metrics.tcp_connects_accepted(), 1);
+        assert_eq!(metrics.resolutions_accepted(), 0);
+        assert_eq!(metrics.current().inflight_resolutions(), 1);
+        assert_eq!(metrics.high_water().inflight_resolutions(), 1);
+
+        pending.handle().cancel().expect("connect cancel must win");
+        assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        let released = engine.metrics();
+        assert_eq!(released.current().inflight_resolutions(), 0);
+        assert_eq!(released.current().standalone_tcp_connections(), 0);
+        assert_eq!(released.resolutions_cancelled(), 0);
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn full_resolution_capacity_rejects_hostname_before_tcp_acceptance_but_not_literal() {
+        let config = EngineConfig::manual().with_max_inflight_resolutions(
+            std::num::NonZeroUsize::new(1).expect("nonzero resolution capacity"),
+        );
+        let (engine, _controller) = crate::testing::engine(config).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_public_resolver_supported(true);
+        shared.set_standalone_tcp_supported(true);
+
+        let resolve = engine
+            .resolver()
+            .submit(
+                crate::ResolveRequest::hostname("held.test")
+                    .build()
+                    .expect("resolve request must build"),
+            )
+            .expect("public resolve must occupy the only permit");
+        let before = engine.metrics();
+        let error = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::hostname("host.test", 1234)
+                    .build()
+                    .expect("hostname request must build"),
+            )
+            .expect_err("hostname connect must respect public DNS capacity");
+        assert_eq!(error.kind(), ErrorKind::QueueFull);
+        let after = engine.metrics();
+        assert_eq!(
+            after.tcp_connects_accepted(),
+            before.tcp_connects_accepted()
+        );
+        assert_eq!(after.current().standalone_tcp_connections(), 0);
+        assert_eq!(after.current().reserved_tcp_queue_bytes(), 0);
+
+        let literal = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("literal request must build"),
+            )
+            .expect("literal connect must not consume DNS capacity");
+        literal.handle().cancel().expect("literal cancel must win");
+        assert!(matches!(literal.wait(), TcpConnectCompletion::Cancelled));
+        resolve.handle().cancel().expect("resolve cancel must win");
+        assert!(matches!(
+            resolve.wait(),
+            crate::ResolveCompletion::Cancelled
+        ));
+        engine.shutdown().expect("Engine must stop");
+    }
 
     #[test]
     fn tcp_cancel_holds_the_registry_transition_until_terminal_commit_is_complete() {

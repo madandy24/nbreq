@@ -89,7 +89,7 @@ impl ResolverConfig {
             search_suffixes: Vec::new(),
             // This fixture must prove rotation, not make OS scheduling part of DNS policy. Leave
             // enough room for a loaded CI host to schedule the answering server after failover.
-            attempt_timeout: Duration::from_millis(250),
+            attempt_timeout: Duration::from_secs(1),
             attempts: 1,
         }
     }
@@ -2999,21 +2999,43 @@ mod tests {
     }
 
     fn bind_dns_tcp_udp_pair(context: &str) -> (TcpListener, StdUdpSocket, SocketAddr) {
-        for _ in 0..64 {
-            // Windows may refuse a UDP bind to a numeric port already selected by a TCP
-            // listener, while accepting the reverse reservation order. Claim UDP first and retry
-            // if another parallel fixture owns the matching TCP number.
-            let udp = StdUdpSocket::bind("127.0.0.1:0")
-                .unwrap_or_else(|error| panic!("{context}: UDP bind failed: {error}"));
-            let address = udp
-                .local_addr()
-                .unwrap_or_else(|error| panic!("{context}: UDP address failed: {error}"));
-            match TcpListener::bind(address) {
-                Ok(listener) => return (listener, udp, address),
-                Err(_) => continue,
+        for attempt in 0..1024 {
+            // The Windows TCP and UDP ephemeral allocators are independent. Under a parallel test
+            // run either protocol can repeatedly choose a number that the other protocol already
+            // owns. Try both reservation orders and yield periodically; the test needs one shared
+            // numeric port, not a particular ephemeral allocation policy.
+            if attempt % 2 == 0 {
+                let udp = StdUdpSocket::bind("127.0.0.1:0")
+                    .unwrap_or_else(|error| panic!("{context}: UDP bind failed: {error}"));
+                let address = udp
+                    .local_addr()
+                    .unwrap_or_else(|error| panic!("{context}: UDP address failed: {error}"));
+                match TcpListener::bind(address) {
+                    Ok(listener) => return (listener, udp, address),
+                    Err(error) if attempt == 1023 => panic!(
+                        "{context}: could not reserve one numeric port for both TCP and UDP; last TCP bind error: {error}"
+                    ),
+                    Err(_) => {}
+                }
+            } else {
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .unwrap_or_else(|error| panic!("{context}: TCP bind failed: {error}"));
+                let address = listener
+                    .local_addr()
+                    .unwrap_or_else(|error| panic!("{context}: TCP address failed: {error}"));
+                match StdUdpSocket::bind(address) {
+                    Ok(udp) => return (listener, udp, address),
+                    Err(error) if attempt == 1023 => panic!(
+                        "{context}: could not reserve one numeric port for both TCP and UDP; last UDP bind error: {error}"
+                    ),
+                    Err(_) => {}
+                }
+            }
+            if attempt % 32 == 31 {
+                thread::sleep(Duration::from_millis(1));
             }
         }
-        panic!("{context}: could not reserve one numeric port for both TCP and UDP");
+        unreachable!("the final reservation attempt either returns or panics")
     }
 
     #[test]
@@ -3296,9 +3318,19 @@ mod tests {
         resolver
             .resolve(ResolveKey(80), "rotate.test".to_owned())
             .expect("multi-server resolution must submit");
-        let answer = wait_for_resolution(&mut owner, &resolver)
-            .result
-            .expect("second DNS server must resolve");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let answer = loop {
+            if let Some(result) = resolver
+                .drain()
+                .expect("resolver results must remain live")
+                .into_iter()
+                .next()
+            {
+                break result.result.expect("second DNS server must resolve");
+            }
+            assert!(Instant::now() < deadline, "multi-server rotation timed out");
+            owner.poll(deadline).expect("owner wake poll must succeed");
+        };
         assert_eq!(
             answer.addresses,
             vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 31))]

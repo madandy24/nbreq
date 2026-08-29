@@ -986,10 +986,10 @@ Decisions already accepted in principle:
 
 This section records the accepted, compile-checked post-`0.1.0` public DNS/TCP surface. F0 froze
 the consumer contract. F1 is accepted: `Resolver` is wired onto the existing
-Engine-owned native DNS service, including FQ-10 search-suffix expansion. F2.2 has an uncommitted
-Windows checkpoint: native literal-address `TcpConnector` operations use the existing reactor;
-hostname operations and Engines without that owner still fail `Unsupported` before ID allocation,
-admission permits, callback reservation, or command queuing. HTTP unknown-host remains
+Engine-owned native DNS service, including FQ-10 search-suffix expansion. F2.3 and F2.4 are
+accepted: native literal-address and exact-hostname `TcpConnector` operations use
+the existing resolver and reactor. Engines without that owner still fail `Unsupported` before ID
+allocation, admission permits, callback reservation, or command queuing. HTTP unknown-host remains
 `Failed(ErrorKind::Transport, TransportStage::Dns)` with no `DnsFailure` payload. `HttpBackend` remains HTTP-only.
 
 Capability tickets:
@@ -1088,7 +1088,7 @@ completed public resolver results but fail a hostname connect because no address
 future per-connect DNS policy is expressed through new builder options rather than silently copying
 HTTP's private A/AAAA fallback.
 
-The proposed F2.4 owner seam keeps hostname connect as one TCP operation rather than adapting a
+Accepted F2.4 keeps hostname connect as one TCP operation rather than adapting a
 public `ResolveCompletion`. Admission borrows one `max_inflight_resolutions` permit before ID or
 command enqueue and stores it on the connect state. DNS terminal releases that permit before the
 first socket attempt. The shared `inflight_resolutions` occupancy gauge/high-water includes these
@@ -1098,7 +1098,10 @@ borrow DNS capacity. One absolute `TimeoutKind::Connect` deadline covers queued 
 serial address attempt. Only connect-stage socket failure advances to the next address; internal
 reactor/registration failure and deadline expiry fail immediately. Semantic DNS negatives become a
 DNS-stage TCP failure without inventing `DnsFailure`; operational resolver failures retain their
-payload-free DNS classification. This is a reviewed checkpoint, not implemented hostname wiring.
+payload-free DNS classification. Exact-source Windows and Ubuntu gates pass. Failed-connect
+terminal publication is one barrier: permits are
+released and exported TCP resource gauges refreshed before `try_completion`, blocking waiters, or
+callbacks can observe that terminal, including a callback activated concurrently with completion.
 
 `TcpFinishError` distinguishes already-closed write half, reset, Engine stop, manual-mode
 rejection, transport failure, cancellation, and `Unsupported` on Engines without the native TCP
@@ -1144,8 +1147,9 @@ F2.1 wired isolated live queue/drop/finish state without sockets. Its `finish_wi
 lifecycle, reserves the callback-event permit, and increments callback activation atomically under
 the registry core lock. A deterministic overlapping-shutdown regression proves shutdown waits for
 that activation and the accepted callback receives `EngineStopped`. The repair passed focused,
-repeated, and complete Windows verification, and F2.1 is accepted. F2.2 has now opened literal
-native sockets on the existing reactor; hostname connects remain unwired.
+repeated, and complete Windows verification, and F2.1 is accepted. F2.2 opened literal native
+sockets on the existing reactor; F2.4 accepts exact hostname resolution
+through the existing DNS owner and serial attempts on that same reactor.
 Accepted resolver-generation repair `cbafb84` was synchronized separately after the F2.1 commit as
 main-line commit `b5811ae`. F2.2 therefore started from the combined lineage rather than rediscovering
 or burying that network-generation rule in socket wiring. The Windows checkpoint proves literal
@@ -1161,21 +1165,27 @@ and exact-once release through timeout/cancel/drop races. A same-batch review ho
 when useful standalone progress and a terminal socket failure arrive in one reactor batch, progress
 is retained but the removed slot is not re-armed and the terminal Reset/Failed result wins without
 an Engine-wide Internal poll failure. The corrected exact working tree passed focused and repeated
-TCP coverage plus the complete Windows and exact-source Ubuntu gates. F2.3 is accepted. Hostname
-resolution and the remaining platform gates remain.
+TCP coverage plus the complete Windows and exact-source Ubuntu gates. F2.3 is accepted. F2.4's
+hostname implementation has passed focused and complete Windows and exact-source Ubuntu gates. Its
+tracked-files archive SHA-256 is
+`BC627D915117C36311A41E9F686ECD9950449287AFB1F073A16404EDB3544062`; Ubuntu passed the 53-test
+focused TCP suite, 25 repetitions of the four serial/handoff/deadline/publication regressions, and
+the 20-step offline verifier in 262.585 seconds with 301 library and 10 public-contract tests.
+F2.4 is accepted and remains uncommitted; the remaining platform gates stay in F2.5.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
 accepted standalone connect once. The `inflight_resolutions` occupancy gauge covers public Resolver
-operations and, once F2.4 is wired, hostname-connect DNS borrowers because both consume the same
+operations and hostname-connect DNS borrowers because both consume the same
 bounded admission resource; this does not inflate the public operation counters. Other occupancy
 gauges are `standalone_tcp_connections` and `reserved_tcp_queue_bytes`. Live TCP lifetime/capacity
 is `standalone_tcp_connections`, not the attempt counters.
 
 `Engine::cancel_all` is documented as engine-wide (HTTP, public DNS, pending connects, live
 standalone TCP). Public resolutions accepted on a native Engine with the DNS owner participate in
-that barrier. Literal native TCP connects and their live state now participate too; hostname TCP
-remains pre-admission `Unsupported`.
+that barrier. Literal and hostname native TCP connects, including DNS-pending hostname state, and
+their live state now participate too. Engines without the native owner remain pre-admission
+`Unsupported`.
 
 F1 is accepted: `Resolver` is wired onto
 the existing Engine-owned DNS service. Applied

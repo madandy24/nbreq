@@ -71,7 +71,7 @@
   Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
   Original tracker: <a href="completed/project_nbreq_plan.html"><span class="mono">thoughts/completed/project_nbreq_plan.html</span></a> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">F1.1 D0–D7 and F2.1–F2.3 accepted; F2.4 next</span>
+  Overall status: <span class="status status-progress">F1.1 D0–D7 and F2.1–F2.4 accepted; accepted F2.4 tree remains uncommitted and F2.5 unopened</span>
 </div>
 
 <div class="panel">
@@ -198,7 +198,7 @@
 
 <h2 id="shape">4. Proposed API Shape</h2>
 
-<p>F0 compiled the consumer shape below. Operations currently return <span class="mono">Unsupported</span> before admission; they are not connected to the private resolver or reactor.</p>
+<p>F0 compiled the consumer shape below. At that checkpoint operations returned <span class="mono">Unsupported</span> before admission; the F1 and F2 implementation sections record the current resolver and TCP capability.</p>
 
 <pre><code>let engine = Engine::new(config)?;
 
@@ -382,7 +382,7 @@ TcpWriter::finish_with&lt;F&gt;(&amp;mut self, F) -&gt; Result&lt;(), Error&gt;<
 <p><strong>Acceptance:</strong> Windows and exact-source Ubuntu prove positive/negative answers, ordering, cache modes/expiry, DNS server errors, malformed/truncated replies, bounds, cancellation races, manual drive, callback isolation, public-vs-HTTP fairness, and joined shutdown. Existing HTTP unknown-host tests remain byte-for-byte equivalent at the public error layer.</p>
 
 <h3>F2 — Expose TcpConnector and bounded live streams</h3>
-<p><span class="status status-progress">F2.0–F2.3 accepted; F2.4 next</span></p>
+<p><span class="status status-progress">F2.0–F2.4 accepted; accepted F2.4 tree remains uncommitted and F2.5 unopened</span></p>
 <ul>
   <li>Add finite hostname/literal connect requests on the existing resolver and reactor owners, with one Engine-scoped ID space and canonical connect terminal.</li>
   <li>Reject port zero and unspecified literal destination addresses at <span class="mono">TcpConnectRequest::build()</span>, before admission or DNS/socket work. Zero TCP queue windows remain rejected at build.</li>
@@ -560,7 +560,7 @@ impl TcpWriter {
 </div>
 
 <h4 id="f2-4">F2.4 hostname DNS-borrow checkpoint</h4>
-<p><span class="status status-progress">Proposed 2026-08-29; no hostname wiring yet</span></p>
+<p><span class="status status-done">Accepted 2026-08-29 after Windows and exact-source Ubuntu gates</span></p>
 <p>F2.4 reuses the accepted public-resolver owner and standalone reactor without adapting <span class="mono">ResolveCompletion</span>, issuing a second public operation, or creating another poller. One accepted hostname connect remains one finite TCP operation with one <span class="mono">RequestId</span> and one canonical <span class="mono">TcpConnectCompletion</span>.</p>
 
 <h4>Borrowed DNS capacity and metrics</h4>
@@ -570,6 +570,18 @@ impl TcpWriter {
   <li>The <span class="mono">inflight_resolutions</span> occupancy gauge and its high-water mark include public Resolver operations plus hostname-connect DNS borrowers because both consume the same bounded resource. The <span class="mono">resolutions_accepted/completed/failed/cancelled</span> counters remain public <span class="mono">Resolver</span> operation counters and do not move for hostname connect. The <span class="mono">tcp_connects_*</span> counters move exactly once for the enclosing connect.</li>
   <li>Literal connects do not inspect or consume DNS capacity and remain admissible when the public-resolution budget is full.</li>
 </ul>
+
+<div class="callout">
+  <strong>F2.4 Windows checkpoint (2026-08-29):</strong> exact hostname connects now borrow public-DNS capacity at admission, use the existing resolver with Both/IPv4-first/Use/no-search policy, release the borrow before socket establishment, and try resolved addresses serially on the existing standalone reactor under one absolute connect deadline and one TCP terminal. Focused fixtures cover literal independence from DNS pressure, shared occupancy without resolver-counter inflation, success and semantic/operational DNS failure, first-address failure then success, all-address failure, DNS/handoff cancellation, timeout, callback/cancel-all, and shutdown. A deterministic handoff pause proves cancellation cannot publish or leak a socket. Review of the first complete gate found that failed-connect permits were dropped before the waiter woke but their exported TCP gauges were refreshed afterwards; terminal publication now refreshes those gauges before exposing the result to <span class="mono">try_completion</span>, blocking waiters, or callbacks. A second deterministic overlap holds both callback activation and terminal commit, proving a late callback cannot observe the unpublished terminal; it passed 50/50 repetitions. A shared-cache fixture proves a cached hostname answer is reused and the same absolute deadline stops before a second serial attempt. The all-feature suite also exposed scheduler sensitivity in the existing local DNS rotation and DNS-over-TCP dual-protocol-port fixtures. Their test-only clocks/reservation retries were made tolerant of a loaded parallel Windows host without changing production retry policy; native-DNS fixture stress passed 20/20. Focused TCP passed 53/53, warning-denied clippy passed, and the final complete Windows verifier passed 20/20 in 71.123s with 303 library tests and 10 public-contract tests. At this checkpoint F2.4 still awaited the exact-source Ubuntu serial-attempt, handoff, pressure, and complete gates recorded below.
+</div>
+
+<div class="callout">
+  <strong>F2.4 exact-source Ubuntu gate (2026-08-29):</strong> tracked-files-only archive SHA-256 <span class="mono">BC627D915117C36311A41E9F686ECD9950449287AFB1F073A16404EDB3544062</span> was verified on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The focused TCP suite passed 53/53. The serial first-failure/second-success, DNS-handoff cancellation, cached-answer deadline-between-attempts, and terminal-publication/late-callback overlap set passed 25/25 repetitions. The script's inherited milestone label said “triples,” but every iteration executed all four named regressions; the local helper label is corrected for future runs. The complete offline verifier passed 20/20 in 262.585s with 301 library tests and 10 public-contract tests. The 303/301 Windows/Linux library split is target-specific coverage. Temporary source and target directories were removed and the verifier process exited. F2.4 is an uncommitted dual-platform acceptance candidate; F2.5 remains unopened pending final review.
+</div>
+
+<div class="callout">
+  <strong>F2.4 final acceptance (2026-08-29):</strong> final review accepted the hostname connect ownership, admission, resolver policy, serial-attempt, absolute-deadline, DNS classification, terminal-publication, cancellation, and HTTP-isolation contracts against the dual-platform evidence above. The accepted tree remains uncommitted. F2.5 remains unopened.
+</div>
 
 <h4>Resolver handoff and serial address attempts</h4>
 <ul>
@@ -586,7 +598,7 @@ impl TcpWriter {
   <li>Backend cancellation removes either the DNS key or current socket slot for the same connect ID. Registry cancellation remains the canonical terminal winner under <span class="mono">core</span>; backend teardown does not commit a second terminal. The DNS-release handoff rechecks the finite state before and after socket creation. A deterministic pause at that seam must prove cancellation cannot publish live state, leak a slot, or produce a second terminal; a transient connect start that loses the race is immediately torn down.</li>
   <li><span class="mono">cancel_all</span>, shutdown, owner failure, and panic cleanup cover DNS-pending, serial-attempt, and live phases. <span class="mono">wants_poll_without_requests</span> remains true while any hostname lookup or standalone attempt is owned.</li>
   <li>Focused fixtures must prove: pre-admission Unsupported and QueueFull honesty; literal independence from DNS pressure; borrowed-gauge/counter semantics; exact Both/IPv4-first/Use policy; cache hit and expired-deadline precedence; NXDOMAIN/NoData and classified operational errors; first-fail/second-success and all-fail ordering; cancel at DNS, handoff, and socket phases; timeout between attempts; manual/spawned/callback delivery; shutdown/fail-all; and one-terminal/once-only permit release.</li>
-  <li>Windows focused and complete gates come first. Exact-source Ubuntu repeats serial failure/success, handoff cancellation, pressure, and the complete offline verifier before F2.4 acceptance. F2.5 and Wine remain closed during this slice.</li>
+  <li>Windows focused and complete gates passed first. Exact-source Ubuntu then repeated serial failure/success, handoff cancellation, deadline/publication pressure, and the complete offline verifier before final F2.4 acceptance. F2.5 and Wine remained closed during this slice.</li>
 </ul>
 
 <h4>Curl / scaffold / owner rule</h4>
@@ -602,12 +614,12 @@ impl TcpWriter {
   <li><strong>F2.1</strong> <span class="status status-done">Accepted</span> isolated <span class="mono">TcpIoShared</span> queue/drop/wakeup seam, including pump-occupancy accounting, FQ-12 <span class="mono">finish_with</span>, and atomic callback admission/activation against shutdown; no public capability flip; no sockets.</li>
   <li><strong>F2.2</strong> <span class="status status-done">Accepted</span> registry/reactor connect submission, occupancy + parent reservation, native literal loopback duplex, and the minimum real <span class="mono">shutdown_write</span> needed for an honest capability flip.</li>
   <li><strong>F2.3</strong> <span class="status status-done">Accepted</span> inactivity, partial-write/reset handling, connected-phase pressure, and same-batch terminal precedence. Split halves and spawned blocking <span class="mono">finish</span> already exist on the F2.1 seam; real write shutdown was pulled into F2.2.</li>
-  <li><strong>F2.4</strong> exact hostname resolution, admission-time DNS borrow, serial address attempts.</li>
+  <li><strong>F2.4</strong> <span class="status status-done">Accepted</span> exact hostname resolution, admission-time DNS borrow, serial address attempts, terminal-publication ordering, and exact-source Windows/Ubuntu gates.</li>
   <li><strong>F2.5</strong> cancel/shutdown/WrongEngine/platform gates, including focused Wine lifecycle.</li>
 </ol>
 
 <h4>Remaining human questions</h4>
-<p>F2.0–F2.3 questions are closed. <strong>FQ-12</strong> is accepted as a public contract and implementation seam: write-side <span class="mono">finish_with</span> is the callback observer for request-once finish, and callback admission/activation is atomic against shutdown. The accepted DNS recovery commit is synchronized separately. F2.4 may now open as the separate hostname-DNS-borrow slice.</p>
+<p>F2.0–F2.4 questions are closed. <strong>FQ-12</strong> is accepted as a public contract and implementation seam: write-side <span class="mono">finish_with</span> is the callback observer for request-once finish, and callback admission/activation is atomic against shutdown. The accepted DNS recovery commit is synchronized separately. The accepted F2.4 tree remains uncommitted; F2.5 remains unopened.</p>
 
 <h3>F3 — Remove the wire-only Hickory dependency</h3>
 <p><span class="status status-deferred">After F1 and F2 acceptance</span></p>
@@ -786,6 +798,9 @@ impl TcpWriter {
 <tr><td class="nowrap">2026-08-29</td><td>F2.3 same-batch review hold closed. A deterministic standalone write-progress-then-reset regression failed before the repair because progress re-armed an already-removed slot and promoted one session failure into an Engine-wide Internal poll error. Standalone event handling now retains useful progress but suppresses publication, expiry, and re-arm when that batch contains a terminal socket failure.</td><td>Windows complete verification passed 20/20 in 67.903s with 290 library and 10 public-contract tests. Superseding Ubuntu archive SHA-256 <span class="mono">8ECFADBDC9D7C11C4AC29E59EA36EBA8EE40E1F19A68F45C16872683086C0D8B</span>: both same-batch regressions green, standalone regression 50/50, complete offline verifier 20/20 in 237.502s with 288 library and 10 public-contract tests. This is the final acceptance evidence for F2.3.</td></tr>
 <tr><td class="nowrap">2026-08-29</td><td>F2.3 accepted after final dual-platform review.</td><td>Connected inactivity, pressure/reset semantics, same-batch terminal precedence, and once-only resource release now form one accepted slice. Hostname TCP remains pre-admission <span class="mono">Unsupported</span>; F2.4 is the next separate slice.</td></tr>
 <tr><td class="nowrap">2026-08-29</td><td>F2.4 hostname DNS-borrow audit recorded; implementation remains unopened.</td><td>Freeze one TCP terminal/ID, admission-time public-DNS capacity borrow, resolver occupancy without public-operation counter inflation, exact Both/IPv4-first/Use lookup, one absolute connect deadline, serial connect-stage retries, and distinct DNS/handoff/socket cancellation ownership. Stop for review before wiring.</td></tr>
+<tr><td class="nowrap">2026-08-29</td><td>F2.4 uncommitted Windows checkpoint: exact hostname connect now borrows the public-DNS admission resource, resolves through the existing owner, and tries addresses serially on the existing reactor under one deadline/ID/terminal. DNS, handoff, socket, callback, cancel-all, and shutdown paths are covered. A first full-gate run exposed and repaired stale TCP resource gauges being observable immediately after a failed connect waiter woke; follow-up audit added one publication barrier shared by passive polling, waiters, and callbacks.</td><td>The deterministic late-activation/publication regression passed 50/50; a cache/deadline fixture proves no second address begins after expiry; native-DNS fixture stress passed 20/20 after test-only scheduler/reservation hardening; focused TCP passed 53/53; clippy was warning-clean; final complete Windows verification passed 20/20 in 71.123s with 303 library and 10 public-contract tests. Freeze this exact tree for Ubuntu; do not accept F2.4, commit, or open F2.5 yet.</td></tr>
+<tr><td class="nowrap">2026-08-29</td><td>F2.4 final exact-source Ubuntu gate passed on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. Frozen tracked-files archive SHA-256 <span class="mono">BC627D915117C36311A41E9F686ECD9950449287AFB1F073A16404EDB3544062</span>.</td><td>Focused TCP passed 53/53; the four serial/handoff/deadline/publication regressions passed 25/25 batches; complete offline verification passed 20/20 in 262.585s with 301 library and 10 public-contract tests. Temporary build state and verifier PID cleaned up. F2.4 is an uncommitted dual-platform acceptance candidate; do not commit or open F2.5 until final review.</td></tr>
+<tr><td class="nowrap">2026-08-29</td><td>F2.4 accepted after final dual-platform review.</td><td>Hostname connect remains one TCP operation on the existing resolver/reactor with admission-time DNS borrowing, exact Both/IPv4-first/Use/no-search policy, serial connect-stage retries, one absolute deadline, classified DNS failures, terminal-publication ordering, and unchanged HTTP A-first semantics. The accepted tree remains uncommitted; do not open F2.5 yet.</td></tr>
 </table>
 
 </body>

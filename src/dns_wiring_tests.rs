@@ -19,7 +19,7 @@ use crate::{
 
 const DNS_PACKET_LIMIT: usize = 4096;
 
-struct DualStackDns {
+pub(crate) struct DualStackDns {
     address: std::net::SocketAddr,
     stop: mpsc::Sender<()>,
     queries: Arc<AtomicUsize>,
@@ -28,11 +28,13 @@ struct DualStackDns {
 }
 
 impl DualStackDns {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_handler(move |request| Some(answer_dual_stack(&request)))
     }
 
-    fn with_handler(mut handler: impl FnMut(Message) -> Option<Message> + Send + 'static) -> Self {
+    pub(crate) fn with_handler(
+        mut handler: impl FnMut(Message) -> Option<Message> + Send + 'static,
+    ) -> Self {
         Self::with_bytes(move |request| {
             handler(request).map(|response| {
                 response
@@ -101,6 +103,14 @@ impl DualStackDns {
 
     fn qnames(&self) -> Vec<String> {
         self.qnames.lock().expect("qname log").clone()
+    }
+
+    pub(crate) fn address(&self) -> std::net::SocketAddr {
+        self.address
+    }
+
+    pub(crate) fn queries(&self) -> usize {
+        self.queries.load(Ordering::SeqCst)
     }
 }
 
@@ -310,7 +320,7 @@ fn answer_dual_stack(request: &Message) -> Message {
     response
 }
 
-fn nxdomain(request: &Message) -> Message {
+pub(crate) fn nxdomain(request: &Message) -> Message {
     let query = request.query().expect("NXDOMAIN query").clone();
     let mut response = Message::new();
     response
@@ -334,7 +344,7 @@ fn nxdomain(request: &Message) -> Message {
     response
 }
 
-fn nodata(request: &Message) -> Message {
+pub(crate) fn nodata(request: &Message) -> Message {
     let query = request.query().expect("NoData query").clone();
     let mut response = Message::new();
     response
@@ -357,7 +367,7 @@ fn nodata(request: &Message) -> Message {
     response
 }
 
-fn rcode(request: &Message, code: ResponseCode) -> Message {
+pub(crate) fn rcode(request: &Message, code: ResponseCode) -> Message {
     let query = request.query().expect("rcode query").clone();
     let mut response = Message::new();
     response
@@ -376,7 +386,7 @@ fn malformed_wire(request: &Message) -> Vec<u8> {
     wire
 }
 
-fn a_record(request: &Message, ip: Ipv4Addr) -> Message {
+pub(crate) fn a_record(request: &Message, ip: Ipv4Addr) -> Message {
     let query = request.query().expect("A query").clone();
     let mut response = Message::new();
     response
@@ -387,6 +397,21 @@ fn a_record(request: &Message, ip: Ipv4Addr) -> Message {
             query.name().clone(),
             60,
             RData::A(A(ip)),
+        ));
+    response
+}
+
+pub(crate) fn aaaa_record(request: &Message, address: std::net::Ipv6Addr) -> Message {
+    let query = request.query().expect("AAAA query").clone();
+    let mut response = Message::new();
+    response
+        .set_id(request.id())
+        .set_message_type(MessageType::Response)
+        .add_query(query.clone())
+        .add_answer(Record::from_rdata(
+            query.name().clone(),
+            60,
+            RData::AAAA(AAAA(address)),
         ));
     response
 }
