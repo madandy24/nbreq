@@ -1183,7 +1183,12 @@ tests, then removed its source/target state. A public-API i686 probe on stock Wi
 run plus 25/25 repetitions through the automatic missing-AFD fallback, including send/read,
 finish/half-close, live cancel, later connection, callback finish, zero final gauges, joined shutdown,
 and no remaining process. Final review accepted F2.5 without a production-owner or public-contract
-change. F2 is closed; F3 remains a separate unopened dependency-extraction project.
+change. F2 is closed. F3 is accepted as a separate dependency-extraction project: NBReq's private
+bounded packet codec now owns A/AAAA question encoding, DNS name identity, compression decoding,
+and the accepted A/AAAA/CNAME/SOA/OPT response subset. Hickory and its transitive graph, notices,
+lock entries, and advisory exceptions are removed without moving sockets, retry, cache, search,
+TCP fallback, cancellation, or lifecycle out of `native_dns`. Exact-source Windows and Ubuntu
+verification, parser campaigns, package rehearsal, and the RustSec gate passed. F4 remains unopened.
 
 Post-F3 packaging freeze: F4 introduces a default-on Cargo feature named `resolver` for the
 user-facing Resolver capability. The feature name does not mean “DNS exists.” A build using

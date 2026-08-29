@@ -52,8 +52,8 @@ therefore also prevents undocumented public API from entering the release surfac
 
 The public-repository CI runs that same complete verifier on current stable Rust for Windows and
 Ubuntu, and on Rust 1.85 for Ubuntu. Each job fetches the exact lock graph first and then executes
-the verifier offline. A separate stable-Ubuntu job runs `cargo-audit 0.22.2`; the three reviewed
-exceptions in `.cargo/audit.toml` are justified in `SECURITY.md` and must not be expanded without a
+the verifier offline. A separate stable-Ubuntu job runs `cargo-audit 0.22.2`; the reviewed
+exception in `.cargo/audit.toml` is justified in `SECURITY.md` and must not be expanded without a
 source-level reachability review.
 
 The checked-in component and dependency license report is generated with pinned `cargo-about

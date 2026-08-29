@@ -1082,7 +1082,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn native_hostname_connect_uses_the_existing_resolver_and_reactor() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
@@ -1136,7 +1136,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn native_hostname_connect_tries_resolved_addresses_serially() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
         use std::net::TcpListener;
         use std::thread;
 
@@ -1194,7 +1194,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn cached_hostname_deadline_stops_between_serial_attempts() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
         use std::io;
         use std::net::TcpListener;
 
@@ -1263,7 +1263,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn native_hostname_connect_fails_once_after_every_address_fails() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
 
         let dns = crate::dns_wiring_tests::DualStackDns::with_handler(|request| {
             Some(match request.query().expect("fixture query").query_type() {
@@ -1314,13 +1314,12 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn hostname_dns_negatives_and_operational_failures_keep_their_contract() {
-        use hickory_proto::op::ResponseCode;
+        use crate::backend::native_dns_wire::test_support::{Message, ResponseCode};
 
         for (label, handler) in [
             (
                 "NXDOMAIN",
-                crate::dns_wiring_tests::nxdomain
-                    as fn(&hickory_proto::op::Message) -> hickory_proto::op::Message,
+                crate::dns_wiring_tests::nxdomain as fn(&Message) -> Message,
             ),
             ("NoData", crate::dns_wiring_tests::nodata),
         ] {
@@ -1434,7 +1433,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn hostname_cancel_at_dns_handoff_cannot_publish_or_leak_a_socket() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
         use std::io;
         use std::net::TcpListener;
         use std::thread;
@@ -1613,7 +1612,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn hostname_cancel_all_and_callback_delivery_share_the_existing_domains() {
-        use hickory_proto::rr::RecordType;
+        use crate::backend::native_dns_wire::test_support::RecordType;
         use std::net::TcpListener;
         use std::thread;
 

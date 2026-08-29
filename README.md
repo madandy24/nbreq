@@ -78,8 +78,8 @@ reactor bookkeeping.
 ## Native backend status
 
 The default `native` feature builds NBReq's nonblocking HTTP/1.1 stack using `mio` for portable OS
-readiness and notification, `httparse` for response-head parsing, Hickory's wire types for an
-Engine-owned DNS service, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
+readiness and notification, `httparse` for response-head parsing, a bounded Engine-owned DNS wire
+codec and resolver, and rustls for owner-driven TLS. None is an executor and NBReq adopts no
 async runtime. The backend owns bounded socket and stream queues, all timeout clocks, cancellation,
 joined shutdown, conservative pooling, redirects, and direct `ResponseReader` delivery. Windows
 and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, including bounded

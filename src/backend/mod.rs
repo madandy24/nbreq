@@ -19,6 +19,8 @@ mod native_dns;
 #[cfg(feature = "native")]
 mod native_dns_config;
 #[cfg(feature = "native")]
+pub(crate) mod native_dns_wire;
+#[cfg(feature = "native")]
 mod native_http;
 #[cfg(feature = "native")]
 mod native_poll;

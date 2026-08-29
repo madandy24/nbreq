@@ -6,9 +6,9 @@ use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use hickory_proto::op::{Message, MessageType, ResponseCode};
-use hickory_proto::rr::rdata::{A, AAAA, CNAME, SOA};
-use hickory_proto::rr::{Name, RData, Record, RecordType};
+use crate::backend::native_dns_wire::test_support::{
+    A, AAAA, CNAME, Message, MessageType, Name, RData, Record, RecordType, ResponseCode, SOA,
+};
 
 use crate::testing;
 use crate::{

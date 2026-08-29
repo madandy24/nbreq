@@ -42,16 +42,7 @@ NBReq's Rust 1.85 MSRV and does not enter the library's runtime dependency graph
 reassessed if fixture generation starts parsing untrusted time values or the test-certificate
 machinery changes.
 
-The Rust-1.85 release graph currently pins `hickory-proto` 0.25.2 for DNS wire types. Two RustSec
-advisories match that package version but their affected paths are not reachable through NBReq:
-
-- `RUSTSEC-2026-0118` affects `DnssecDnsHandle` when a DNSSEC feature is enabled. NBReq disables all
-  Hickory DNSSEC features and implements its own resolver owner.
-- `RUSTSEC-2026-0119` affects encoding attacker-shaped messages containing many records. NBReq's
-  production encoder constructs exactly one bounded A or AAAA question and zero records; untrusted
-  DNS responses are decoded, never re-encoded. A regression test locks down that encoder shape.
-
-The fixed Hickory 0.26.1 release requires Rust 1.88 and therefore cannot replace this pin while
-NBReq promises Rust 1.85. Removing the wire-only dependency is scheduled as early follow-up work.
-The advisory exceptions must be reassessed whenever Hickory usage, features, MSRV, or DNS encoding
-changes.
+NBReq owns its bounded DNS question encoder and response decoder. The runtime dependency graph does
+not include a general DNS message implementation or DNSSEC stack. Parser bounds, retained packet
+seeds, and adversarial campaigns are part of the release gate; changes to that private wire codec
+must preserve those checks.

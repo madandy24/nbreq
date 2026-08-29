@@ -2,8 +2,9 @@
 
 //! Private Engine-owned nonblocking DNS service.
 //!
-//! Hickory is used only for DNS wire encoding and decoding. NBReq owns the socket, poll loop,
-//! retry clock, command/result queues, cancellation, wakeup, and joined shutdown.
+//! The sibling `native_dns_wire` module owns bounded DNS question encoding and response decoding.
+//! This module owns the socket, poll loop, retry clock, resolver policy, command/result queues,
+//! cancellation, wakeup, and joined shutdown.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
@@ -14,12 +15,17 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use hickory_proto::op::{Message, MessageType, Query, ResponseCode};
-use hickory_proto::rr::{Name, RData, RecordType};
+#[cfg(test)]
+use super::native_dns_wire::test_support::{
+    Message, MessageType, Name, Query, RData, RecordType, ResponseCode,
+};
 use mio::net::{TcpStream, UdpSocket};
 use mio::{Interest, Token};
 
 use super::native::NATIVE_SAFETY_POLL;
+use super::native_dns_wire::{
+    self as dns_wire, Name as DnsName, RData as WireRData, RecordType as DnsRecordType,
+};
 use super::native_poll::{NativePoll, NativeWaker, PollTarget};
 use crate::types::{DNS_TRANSACTION_ID_SPACE, HTTP_DNS_TXID_RESERVE};
 use crate::{AddressFamily, AddressOrder, CacheMode, DnsFailure, Error, ErrorKind, ResolveStatus};
@@ -220,8 +226,8 @@ struct FamilyOutcome {
 
 struct PendingQuery {
     key: ResolveKey,
-    host: Name,
-    record_type: RecordType,
+    host: DnsName,
+    record_type: DnsRecordType,
     cname_hops: u8,
     wire: Vec<u8>,
     attempts_sent: u8,
@@ -280,8 +286,8 @@ enum CachedFamily {
 }
 
 struct DnsCache {
-    entries: HashMap<Name, CacheEntry>,
-    family_entries: HashMap<(Name, RecordType), FamilyCacheEntry>,
+    entries: HashMap<DnsName, CacheEntry>,
+    family_entries: HashMap<(DnsName, DnsRecordType), FamilyCacheEntry>,
     next_use: u64,
 }
 
@@ -294,7 +300,11 @@ impl DnsCache {
         }
     }
 
-    fn get(&mut self, name: &Name, now: Instant) -> Option<Result<ResolveAnswer, ResolveFailure>> {
+    fn get(
+        &mut self,
+        name: &DnsName,
+        now: Instant,
+    ) -> Option<Result<ResolveAnswer, ResolveFailure>> {
         if self.entries.get(name)?.expires <= now {
             self.entries.remove(name);
             return None;
@@ -308,7 +318,7 @@ impl DnsCache {
 
     fn insert(
         &mut self,
-        name: Name,
+        name: DnsName,
         result: Result<ResolveAnswer, ResolveFailure>,
         ttl: Duration,
         maximum_ttl: Duration,
@@ -346,8 +356,8 @@ impl DnsCache {
 
     fn get_family(
         &mut self,
-        name: &Name,
-        record_type: RecordType,
+        name: &DnsName,
+        record_type: DnsRecordType,
         now: Instant,
     ) -> Option<(CachedFamily, Instant)> {
         let key = (name.clone(), record_type);
@@ -364,8 +374,8 @@ impl DnsCache {
 
     fn insert_family(
         &mut self,
-        name: Name,
-        record_type: RecordType,
+        name: DnsName,
+        record_type: DnsRecordType,
         record: CachedFamily,
         ttl: Duration,
         maximum_ttl: Duration,
@@ -403,7 +413,7 @@ impl DnsCache {
         Some(expires)
     }
 
-    fn remove_http(&mut self, name: &Name) {
+    fn remove_http(&mut self, name: &DnsName) {
         self.entries.remove(name);
     }
 
@@ -608,7 +618,7 @@ fn resolver_main(
                     match prepare_name_query(
                         key,
                         name,
-                        RecordType::A,
+                        DnsRecordType::A,
                         0,
                         &state.pending,
                         &mut state.next_id,
@@ -720,12 +730,10 @@ fn resolver_main(
     }
 }
 
-fn parse_dns_name(host: &str) -> Result<Name, ResolveFailure> {
-    let mut name = Name::from_ascii(host).map_err(|_| {
+fn parse_dns_name(host: &str) -> Result<DnsName, ResolveFailure> {
+    DnsName::from_ascii(host).map_err(|_| {
         ResolveFailure::classified(DnsFailure::Protocol, "the DNS hostname is invalid")
-    })?;
-    name.set_fqdn(true);
-    Ok(name)
+    })
 }
 
 fn public_error(failure: ResolveFailure) -> Error {
@@ -775,12 +783,12 @@ fn cached_family_outcome(record: CachedFamily, expires: Instant) -> FamilyOutcom
     }
 }
 
-fn session_needs(session: &PublicSession) -> Option<RecordType> {
+fn session_needs(session: &PublicSession) -> Option<DnsRecordType> {
     match session.family {
-        AddressFamily::Ipv4 if session.ipv4.is_none() => Some(RecordType::A),
-        AddressFamily::Ipv6 if session.ipv6.is_none() => Some(RecordType::AAAA),
-        AddressFamily::Both if session.ipv4.is_none() => Some(RecordType::A),
-        AddressFamily::Both if session.ipv6.is_none() => Some(RecordType::AAAA),
+        AddressFamily::Ipv4 if session.ipv4.is_none() => Some(DnsRecordType::A),
+        AddressFamily::Ipv6 if session.ipv6.is_none() => Some(DnsRecordType::AAAA),
+        AddressFamily::Both if session.ipv4.is_none() => Some(DnsRecordType::A),
+        AddressFamily::Both if session.ipv6.is_none() => Some(DnsRecordType::AAAA),
         _ => None,
     }
 }
@@ -881,12 +889,13 @@ fn start_current_candidate(
     if cache_mode == CacheMode::Use {
         let now = Instant::now();
         if matches!(family, AddressFamily::Ipv4 | AddressFamily::Both) {
-            if let Some((record, expires)) = state.cache.get_family(&name, RecordType::A, now) {
+            if let Some((record, expires)) = state.cache.get_family(&name, DnsRecordType::A, now) {
                 session.ipv4 = Some(cached_family_outcome(record, expires));
             }
         }
         if matches!(family, AddressFamily::Ipv6 | AddressFamily::Both) {
-            if let Some((record, expires)) = state.cache.get_family(&name, RecordType::AAAA, now) {
+            if let Some((record, expires)) = state.cache.get_family(&name, DnsRecordType::AAAA, now)
+            {
                 session.ipv6 = Some(cached_family_outcome(record, expires));
             }
         }
@@ -1062,8 +1071,8 @@ fn min_valid_until(ipv4: Option<&FamilyOutcome>, ipv6: Option<&FamilyOutcome>) -
 
 fn prepare_name_query(
     key: ResolveKey,
-    name: Name,
-    record_type: RecordType,
+    name: DnsName,
+    record_type: DnsRecordType,
     cname_hops: u8,
     pending: &HashMap<u16, PendingQuery>,
     next_id: &mut u16,
@@ -1080,12 +1089,7 @@ fn prepare_name_query(
             },
         )
     })?;
-    let mut message = Message::new();
-    message
-        .set_id(id)
-        .set_recursion_desired(true)
-        .add_query(Query::query(name.clone(), record_type));
-    let wire = message.to_vec().map_err(|_| {
+    let wire = dns_wire::encode_query(id, &name, record_type).map_err(|_| {
         ResolveFailure::classified(DnsFailure::Protocol, "the DNS query could not be encoded")
     })?;
     Ok((
@@ -1408,7 +1412,7 @@ fn finish_answer(
 
 fn follow_canonical(
     query: PendingQuery,
-    target: Name,
+    target: DnsName,
     hops: u8,
     state: &mut ResolverState,
     results: &Sender<ResolveResult>,
@@ -1472,12 +1476,12 @@ fn finish_http_answer(
         Ok(ParsedAnswer::Canonical { target, hops }) => {
             follow_canonical(query, target, hops, state, results, result_waker);
         }
-        Ok(ParsedAnswer::NoRecords(negative_ttl)) if query.record_type == RecordType::A => {
+        Ok(ParsedAnswer::NoRecords(negative_ttl)) if query.record_type == DnsRecordType::A => {
             if query.cname_hops == 0 {
                 if let Some(ttl) = negative_ttl {
                     let _expires = state.cache.insert_family(
                         query.host.clone(),
-                        RecordType::A,
+                        DnsRecordType::A,
                         CachedFamily::NoData,
                         ttl,
                         MAX_NEGATIVE_CACHE_TTL,
@@ -1488,7 +1492,7 @@ fn finish_http_answer(
             match prepare_name_query(
                 query.key,
                 query.host.clone(),
-                RecordType::AAAA,
+                DnsRecordType::AAAA,
                 query.cname_hops,
                 &state.pending,
                 &mut state.next_id,
@@ -1546,7 +1550,7 @@ fn finish_http_answer(
                         MAX_NEGATIVE_CACHE_TTL,
                         now,
                     );
-                    for record_type in [RecordType::A, RecordType::AAAA] {
+                    for record_type in [DnsRecordType::A, DnsRecordType::AAAA] {
                         let _expires = state.cache.insert_family(
                             query.host.clone(),
                             record_type,
@@ -1658,7 +1662,7 @@ fn finish_public_answer(
                 if let Some(ttl) = negative_ttl {
                     let now = Instant::now();
                     if session.cache_mode != CacheMode::Bypass {
-                        for record_type in [RecordType::A, RecordType::AAAA] {
+                        for record_type in [DnsRecordType::A, DnsRecordType::AAAA] {
                             if let Some(expires) = state.cache.insert_family(
                                 query.host.clone(),
                                 record_type,
@@ -1693,7 +1697,7 @@ fn finish_public_answer(
 }
 
 struct PublicFamilyUpdate {
-    record_type: RecordType,
+    record_type: DnsRecordType,
     status: ResolveStatus,
     addresses: Vec<IpAddr>,
     ttl: Option<Duration>,
@@ -1703,7 +1707,7 @@ struct PublicFamilyUpdate {
 fn record_public_family(
     session: &mut PublicSession,
     update: PublicFamilyUpdate,
-    name: &Name,
+    name: &DnsName,
     cache: &mut DnsCache,
 ) {
     let cached = match update.status {
@@ -1736,9 +1740,8 @@ fn record_public_family(
         valid_until,
     };
     match update.record_type {
-        RecordType::A => session.ipv4 = Some(outcome),
-        RecordType::AAAA => session.ipv6 = Some(outcome),
-        _ => {}
+        DnsRecordType::A => session.ipv4 = Some(outcome),
+        DnsRecordType::AAAA => session.ipv6 = Some(outcome),
     }
 }
 
@@ -1786,7 +1789,7 @@ fn after_candidate_families_complete(
     key: ResolveKey,
     query: Option<PendingQuery>,
     mut session: PublicSession,
-    name: &Name,
+    name: &DnsName,
     state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
@@ -1846,7 +1849,7 @@ fn record_search_negative(
     });
 }
 
-fn publish_http_view(cache: &mut DnsCache, name: &Name, session: &PublicSession, now: Instant) {
+fn publish_http_view(cache: &mut DnsCache, name: &DnsName, session: &PublicSession, now: Instant) {
     match session.family {
         AddressFamily::Ipv6 => {
             // IPv6-only public completions update the public AAAA family cache but never
@@ -1915,7 +1918,12 @@ fn publish_http_view(cache: &mut DnsCache, name: &Name, session: &PublicSession,
     }
 }
 
-fn publish_http_family(cache: &mut DnsCache, name: &Name, outcome: &FamilyOutcome, now: Instant) {
+fn publish_http_family(
+    cache: &mut DnsCache,
+    name: &DnsName,
+    outcome: &FamilyOutcome,
+    now: Instant,
+) {
     match outcome.status {
         ResolveStatus::NoData => {
             cache.remove_http(name);
@@ -2181,7 +2189,7 @@ fn drive_tcp(
 #[derive(Debug, Eq, PartialEq)]
 enum ParsedAnswer {
     Answer(ResolveAnswer),
-    Canonical { target: Name, hops: u8 },
+    Canonical { target: DnsName, hops: u8 },
     NoRecords(Option<Duration>),
     Negative(ResolveFailure, Option<Duration>),
     Truncated,
@@ -2190,11 +2198,11 @@ enum ParsedAnswer {
 fn parse_answer(
     bytes: &[u8],
     expected_id: u16,
-    expected_name: &Name,
-    expected_type: RecordType,
+    expected_name: &DnsName,
+    expected_type: DnsRecordType,
     remaining_cname_hops: u8,
 ) -> Option<Result<ParsedAnswer, ResolveFailure>> {
-    let message = match Message::from_vec(bytes) {
+    let message = match dns_wire::parse_response(bytes) {
         Ok(message) => message,
         Err(_) => {
             return Some(Err(ResolveFailure::classified(
@@ -2203,67 +2211,73 @@ fn parse_answer(
             )));
         }
     };
-    if message.id() != expected_id || message.message_type() != MessageType::Response {
+    if message.id != expected_id || !message.is_response {
         return None;
     }
-    if message.queries().len() != 1
-        || message.queries()[0].name() != expected_name
-        || message.queries()[0].query_type() != expected_type
+    let expected_code = match expected_type {
+        DnsRecordType::A => 1,
+        DnsRecordType::AAAA => 28,
+    };
+    if message.questions.len() != 1
+        || message.questions[0].name != *expected_name
+        || message.questions[0].record_type != expected_code
     {
         return None;
     }
-    if message.truncated() {
+    if message.truncated {
         return Some(Ok(ParsedAnswer::Truncated));
     }
-    let negative_ttl = message.name_servers().iter().find_map(|record| {
-        let RData::SOA(soa) = record.data() else {
+    let negative_ttl = message.authorities.iter().find_map(|record| {
+        let WireRData::Soa { minimum } = record.data else {
             return None;
         };
-        Some(Duration::from_secs(u64::from(
-            record.ttl().min(soa.minimum()),
-        )))
+        Some(Duration::from_secs(u64::from(record.ttl.min(minimum))))
     });
-    if message.response_code() == ResponseCode::NXDomain {
+    if message.rcode == 3 {
         return Some(Ok(ParsedAnswer::Negative(
             ResolveFailure::new("the DNS server returned NXDomain"),
             negative_ttl,
         )));
     }
-    if message.response_code() != ResponseCode::NoError {
-        let class = match message.response_code() {
-            ResponseCode::ServFail => DnsFailure::ServerFailure,
-            ResponseCode::Refused => DnsFailure::Refused,
-            ResponseCode::FormErr => DnsFailure::Malformed,
+    if message.rcode != 0 {
+        let class = match message.rcode {
+            2 => DnsFailure::ServerFailure,
+            5 => DnsFailure::Refused,
+            1 => DnsFailure::Malformed,
             _ => DnsFailure::Unknown,
         };
         return Some(Err(ResolveFailure::classified(
             class,
-            format!("the DNS server returned {:?}", message.response_code()),
+            format!(
+                "the DNS server returned {}",
+                dns_response_code_debug(message.rcode)
+            ),
         )));
     }
+
     let mut accepted_names = HashSet::from([expected_name.clone()]);
     let mut canonical_target = None;
     let mut ttl = u32::MAX;
     let mut hops = 0_u8;
     loop {
         let mut next_target = None;
-        for answer in message.answers() {
-            if !accepted_names.contains(answer.name()) {
+        for answer in &message.answers {
+            if !accepted_names.contains(&answer.name) {
                 continue;
             }
-            let RData::CNAME(canonical) = answer.data() else {
+            let WireRData::Cname(canonical) = &answer.data else {
                 continue;
             };
-            if canonical.0.is_root() {
+            if canonical.is_root() {
                 return Some(Err(ResolveFailure::classified(
                     DnsFailure::Protocol,
                     "the DNS CNAME target is the root name",
                 )));
             }
-            if accepted_names.contains(&canonical.0) {
+            if accepted_names.contains(canonical) {
                 continue;
             }
-            next_target = Some((canonical.0.clone(), answer.ttl()));
+            next_target = Some((canonical.clone(), answer.ttl));
             break;
         }
         let Some((target, target_ttl)) = next_target else {
@@ -2280,17 +2294,22 @@ fn parse_answer(
         accepted_names.insert(target.clone());
         canonical_target = Some(target);
     }
+
     let mut addresses = Vec::new();
-    for answer in message.answers() {
-        if !accepted_names.contains(answer.name()) {
+    for answer in &message.answers {
+        if !accepted_names.contains(&answer.name) {
             continue;
         }
-        match (expected_type, answer.data()) {
-            (RecordType::A, RData::A(address)) => addresses.push(IpAddr::V4(address.0)),
-            (RecordType::AAAA, RData::AAAA(address)) => addresses.push(IpAddr::V6(address.0)),
+        match (expected_type, &answer.data) {
+            (DnsRecordType::A, WireRData::A(address)) => {
+                addresses.push(IpAddr::V4(*address));
+            }
+            (DnsRecordType::AAAA, WireRData::Aaaa(address)) => {
+                addresses.push(IpAddr::V6(*address));
+            }
             _ => continue,
         }
-        ttl = ttl.min(answer.ttl());
+        ttl = ttl.min(answer.ttl);
     }
     if addresses.is_empty() {
         if let Some(canonical) = canonical_target {
@@ -2305,6 +2324,31 @@ fn parse_answer(
         addresses,
         ttl: Duration::from_secs(u64::from(ttl)),
     })))
+}
+
+fn dns_response_code_debug(code: u16) -> String {
+    match code {
+        0 => "NoError".to_owned(),
+        1 => "FormErr".to_owned(),
+        2 => "ServFail".to_owned(),
+        3 => "NXDomain".to_owned(),
+        4 => "NotImp".to_owned(),
+        5 => "Refused".to_owned(),
+        6 => "YXDomain".to_owned(),
+        7 => "YXRRSet".to_owned(),
+        8 => "NXRRSet".to_owned(),
+        9 => "NotAuth".to_owned(),
+        10 => "NotZone".to_owned(),
+        16 => "BADVERS".to_owned(),
+        17 => "BADKEY".to_owned(),
+        18 => "BADTIME".to_owned(),
+        19 => "BADMODE".to_owned(),
+        20 => "BADNAME".to_owned(),
+        21 => "BADALG".to_owned(),
+        22 => "BADTRUNC".to_owned(),
+        23 => "BADCOOKIE".to_owned(),
+        other => format!("Unknown({other})"),
+    }
 }
 
 #[cfg(any(test, fuzzing))]
@@ -2333,7 +2377,7 @@ pub(crate) fn fuzz_dns_response(data: &[u8]) {
             assert!(!answer.addresses.is_empty());
             assert!(answer.addresses.iter().all(|address| matches!(
                 (expected_type, address),
-                (RecordType::A, IpAddr::V4(_)) | (RecordType::AAAA, IpAddr::V6(_))
+                (DnsRecordType::A, IpAddr::V4(_)) | (DnsRecordType::AAAA, IpAddr::V6(_))
             )));
             assert!(answer.ttl <= Duration::from_secs(u64::from(u32::MAX)));
         }
@@ -2354,15 +2398,20 @@ pub(crate) fn fuzz_dns_response(data: &[u8]) {
 }
 
 #[cfg(any(test, fuzzing))]
-fn fuzz_dns_input(data: &[u8]) -> Option<(Vec<u8>, u16, Name, RecordType)> {
-    const HEX_CASES: [(&[u8], u16, &str, RecordType); 3] = [
-        (b"HEX:A:expected:", 0x1234, "expected.test.", RecordType::A),
-        (b"HEX:AAAA:ipv6:", 0x1235, "ipv6.test.", RecordType::AAAA),
-        (b"HEX:A:alias:", 0x1236, "alias.test.", RecordType::A),
+fn fuzz_dns_input(data: &[u8]) -> Option<(Vec<u8>, u16, DnsName, DnsRecordType)> {
+    const HEX_CASES: [(&[u8], u16, &str, DnsRecordType); 3] = [
+        (
+            b"HEX:A:expected:",
+            0x1234,
+            "expected.test.",
+            DnsRecordType::A,
+        ),
+        (b"HEX:AAAA:ipv6:", 0x1235, "ipv6.test.", DnsRecordType::AAAA),
+        (b"HEX:A:alias:", 0x1236, "alias.test.", DnsRecordType::A),
     ];
     for (prefix, id, name, record_type) in HEX_CASES {
         if let Some(hex) = data.strip_prefix(prefix) {
-            let name = Name::from_ascii(name).ok()?;
+            let name = DnsName::from_ascii(name).ok()?;
             return Some((decode_dns_fuzz_hex(hex), id, name, record_type));
         }
     }
@@ -2371,9 +2420,9 @@ fn fuzz_dns_input(data: &[u8]) -> Option<(Vec<u8>, u16, Name, RecordType)> {
     }
     let expected_id = u16::from_be_bytes([data[0], data[1]]);
     let expected_type = if data[2] & 1 == 0 {
-        RecordType::A
+        DnsRecordType::A
     } else {
-        RecordType::AAAA
+        DnsRecordType::AAAA
     };
     let name = match data[3] % 3 {
         0 => "expected.test.",
@@ -2383,7 +2432,7 @@ fn fuzz_dns_input(data: &[u8]) -> Option<(Vec<u8>, u16, Name, RecordType)> {
     Some((
         data[4..].iter().copied().take(DNS_PACKET_LIMIT).collect(),
         expected_id,
-        Name::from_ascii(name).ok()?,
+        DnsName::from_ascii(name).ok()?,
         expected_type,
     ))
 }
@@ -2447,8 +2496,7 @@ mod tests {
     use std::net::UdpSocket as StdUdpSocket;
     use std::sync::mpsc as test_channel;
 
-    use hickory_proto::rr::rdata::{A, AAAA, CNAME, SOA};
-    use hickory_proto::rr::{RData, Record};
+    use super::dns_wire::test_support::{A, AAAA, CNAME, Record, SOA};
     use rcgen::{CertificateParams, KeyPair};
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use rustls::{ServerConfig, ServerConnection, StreamOwned};
@@ -2532,6 +2580,7 @@ mod tests {
             fuzz_dns_response(seed);
         }
     }
+
     use crate::{
         Completion, EngineConfig, ErrorKind, ExecuteError, LimitKind, Request, StreamRequest,
         TlsVerification, TransportStage, UploadBody,
@@ -2769,14 +2818,34 @@ mod tests {
         name
     }
 
+    fn dns_name(name: &str) -> DnsName {
+        DnsName::from_ascii(name).expect("fixture NBReq DNS name must parse")
+    }
+
+    fn parse_fixture_wire(
+        bytes: &[u8],
+        id: u16,
+        name: &Name,
+        record_type: RecordType,
+        remaining_cname_hops: u8,
+    ) -> Option<Result<ParsedAnswer, ResolveFailure>> {
+        let name = dns_name(&name.to_utf8());
+        let record_type = match record_type {
+            RecordType::A => DnsRecordType::A,
+            RecordType::AAAA => DnsRecordType::AAAA,
+            other => panic!("unsupported fixture record type {other:?}"),
+        };
+        parse_answer(bytes, id, &name, record_type, remaining_cname_hops)
+    }
+
     #[test]
     fn production_query_encoder_has_one_question_and_no_records() {
-        let name = fqdn("bounded-query.test");
+        let name = dns_name("bounded-query.test");
         let mut next_id = 41;
         let (id, query) = prepare_name_query(
             ResolveKey(9),
             name.clone(),
-            RecordType::A,
+            DnsRecordType::A,
             0,
             &HashMap::new(),
             &mut next_id,
@@ -2787,7 +2856,7 @@ mod tests {
 
         assert_eq!(message.id(), id);
         assert_eq!(message.queries().len(), 1);
-        assert_eq!(message.queries()[0].name(), &name);
+        assert_eq!(message.queries()[0].name().to_utf8(), name.to_ascii());
         assert_eq!(message.queries()[0].query_type(), RecordType::A);
         assert!(message.answers().is_empty());
         assert!(message.name_servers().is_empty());
@@ -2818,7 +2887,7 @@ mod tests {
         cname_response
             .set_id(41)
             .set_message_type(MessageType::Response)
-            .add_query(Query::query(alias.clone(), RecordType::A))
+            .add_query(Query::new(alias.clone(), RecordType::A))
             .add_answer(Record::from_rdata(
                 alias.clone(),
                 30,
@@ -2831,7 +2900,7 @@ mod tests {
             ));
         let cname_wire = cname_response.to_vec().expect("CNAME response must encode");
         let Some(Ok(ParsedAnswer::Answer(answer))) =
-            parse_answer(&cname_wire, 41, &alias, RecordType::A, MAX_CNAME_HOPS)
+            parse_fixture_wire(&cname_wire, 41, &alias, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("CNAME response must resolve");
         };
@@ -2847,7 +2916,7 @@ mod tests {
         aaaa_response
             .set_id(42)
             .set_message_type(MessageType::Response)
-            .add_query(Query::query(ipv6_name.clone(), RecordType::AAAA))
+            .add_query(Query::new(ipv6_name.clone(), RecordType::AAAA))
             .add_answer(Record::from_rdata(
                 ipv6_name.clone(),
                 60,
@@ -2855,7 +2924,7 @@ mod tests {
             ));
         let aaaa_wire = aaaa_response.to_vec().expect("AAAA response must encode");
         let Some(Ok(ParsedAnswer::Answer(answer))) =
-            parse_answer(&aaaa_wire, 42, &ipv6_name, RecordType::AAAA, MAX_CNAME_HOPS)
+            parse_fixture_wire(&aaaa_wire, 42, &ipv6_name, RecordType::AAAA, MAX_CNAME_HOPS)
         else {
             panic!("AAAA response must resolve");
         };
@@ -2869,7 +2938,7 @@ mod tests {
         response
             .set_id(43)
             .set_message_type(MessageType::Response)
-            .add_query(Query::query(alias.clone(), RecordType::A))
+            .add_query(Query::new(alias.clone(), RecordType::A))
             .add_answer(Record::from_rdata(
                 alias.clone(),
                 30,
@@ -2877,7 +2946,8 @@ mod tests {
             ));
         let wire = response.to_vec().expect("root-CNAME response must encode");
 
-        let Some(Err(failure)) = parse_answer(&wire, 43, &alias, RecordType::A, MAX_CNAME_HOPS)
+        let Some(Err(failure)) =
+            parse_fixture_wire(&wire, 43, &alias, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("a root CNAME target must fail before resolver follow-up");
         };
@@ -2889,7 +2959,7 @@ mod tests {
         response
             .set_id(id)
             .set_message_type(MessageType::Response)
-            .add_query(Query::query(start.clone(), RecordType::A));
+            .add_query(Query::new(start.clone(), RecordType::A));
         let mut current = start.clone();
         for index in 1..=hops {
             let next = fqdn(&format!("h{index}.limit.test"));
@@ -2910,7 +2980,8 @@ mod tests {
     fn parser_counts_in_message_cname_links_against_the_remaining_budget() {
         let start = fqdn("start.limit.test");
         let over = cname_chain_wire(61, &start, MAX_CNAME_HOPS + 1, None);
-        let Some(Err(failure)) = parse_answer(&over, 61, &start, RecordType::A, MAX_CNAME_HOPS)
+        let Some(Err(failure)) =
+            parse_fixture_wire(&over, 61, &start, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("nine in-message CNAME links must exceed the hop budget");
         };
@@ -2921,7 +2992,7 @@ mod tests {
 
         let exact = cname_chain_wire(62, &start, MAX_CNAME_HOPS, None);
         let Some(Ok(ParsedAnswer::Canonical { hops, .. })) =
-            parse_answer(&exact, 62, &start, RecordType::A, MAX_CNAME_HOPS)
+            parse_fixture_wire(&exact, 62, &start, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("eight in-message CNAME links must leave a follow-up target");
         };
@@ -2934,7 +3005,7 @@ mod tests {
             Some(Ipv4Addr::new(127, 0, 0, 63)),
         );
         let Some(Ok(ParsedAnswer::Answer(answer))) =
-            parse_answer(&answered, 63, &start, RecordType::A, MAX_CNAME_HOPS)
+            parse_fixture_wire(&answered, 63, &start, RecordType::A, MAX_CNAME_HOPS)
         else {
             panic!("eight in-message CNAME links plus an address must complete");
         };
@@ -2944,7 +3015,7 @@ mod tests {
         );
 
         let leftover = cname_chain_wire(64, &start, 3, None);
-        let Some(Err(failure)) = parse_answer(&leftover, 64, &start, RecordType::A, 2) else {
+        let Some(Err(failure)) = parse_fixture_wire(&leftover, 64, &start, RecordType::A, 2) else {
             panic!("three links must exceed a remaining budget of two");
         };
         assert_eq!(
@@ -2961,10 +3032,10 @@ mod tests {
             .set_id(51)
             .set_message_type(MessageType::Response)
             .set_truncated(true)
-            .add_query(Query::query(name.clone(), RecordType::A));
+            .add_query(Query::new(name.clone(), RecordType::A));
         let wire = truncated.to_vec().expect("truncated response must encode");
         assert!(matches!(
-            parse_answer(&wire, 51, &name, RecordType::A, MAX_CNAME_HOPS),
+            parse_fixture_wire(&wire, 51, &name, RecordType::A, MAX_CNAME_HOPS),
             Some(Ok(ParsedAnswer::Truncated))
         ));
 
@@ -2972,9 +3043,9 @@ mod tests {
         wrong
             .set_id(52)
             .set_message_type(MessageType::Response)
-            .add_query(Query::query(fqdn("other.test"), RecordType::A));
+            .add_query(Query::new(fqdn("other.test"), RecordType::A));
         let wire = wrong.to_vec().expect("wrong response must encode");
-        assert!(parse_answer(&wire, 52, &name, RecordType::A, MAX_CNAME_HOPS).is_none());
+        assert!(parse_fixture_wire(&wire, 52, &name, RecordType::A, MAX_CNAME_HOPS).is_none());
     }
 
     fn accept_before(listener: &TcpListener, deadline: Instant) -> std::net::TcpStream {
@@ -3606,14 +3677,14 @@ mod tests {
         };
         let mut cache = DnsCache::new();
         cache.insert(
-            fqdn("zero.test"),
+            dns_name("zero.test"),
             Ok(answer.clone()),
             Duration::ZERO,
             MAX_POSITIVE_CACHE_TTL,
             now,
         );
         assert!(cache.entries.is_empty());
-        let expiring = fqdn("expiring.test");
+        let expiring = dns_name("expiring.test");
         cache.insert(
             expiring.clone(),
             Ok(answer.clone()),
@@ -3632,7 +3703,7 @@ mod tests {
         );
         for index in 0..=DNS_CACHE_CAPACITY {
             cache.insert(
-                fqdn(&format!("entry-{index}.test")),
+                dns_name(&format!("entry-{index}.test")),
                 Ok(answer.clone()),
                 MAX_POSITIVE_CACHE_TTL + Duration::from_secs(1),
                 MAX_POSITIVE_CACHE_TTL,
@@ -3640,7 +3711,7 @@ mod tests {
             );
         }
         assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
-        assert!(!cache.entries.contains_key(&fqdn("entry-0.test")));
+        assert!(!cache.entries.contains_key(&dns_name("entry-0.test")));
         assert!(cache.entries.values().all(|entry| {
             entry.expires
                 <= now
