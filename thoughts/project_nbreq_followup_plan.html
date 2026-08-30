@@ -71,7 +71,7 @@
   Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
   Original tracker: <a href="completed/project_nbreq_plan.html"><span class="mono">thoughts/completed/project_nbreq_plan.html</span></a> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4.1–F4.4 accepted; later composition unopened</span>
+  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4 accepted; F5 next</span>
 </div>
 
 <div class="panel">
@@ -680,12 +680,12 @@ impl TcpWriter {
 <p><strong>Acceptance:</strong> all HTTP, Resolver, and TCP-hostname conformance tests pass unchanged on Windows and Ubuntu; focused DNS parser/state campaigns produce no unclassified panic, unbounded growth, or semantic drift; <span class="mono">cargo tree</span>, RustSec, licenses, package rehearsal, and an external consumer are clean.</p>
 
 <h3>F4 — Maintainability extraction</h3>
-<p><span class="status status-progress">In progress — F4.1–F4.4 accepted; later composition remains unopened</span></p>
+<p><span class="status status-done">Accepted — F4.1–F4.4 complete; later composition is evidence-led follow-up, not open work</span></p>
 <ul>
   <li><strong>F4.1 — accepted, commit <span class="mono">54b9a04</span>:</strong> default-on public Resolver feature boundary, dependency split, suffix-discovery gate, consumer docs, and permanent feature-matrix lanes.</li>
   <li><strong>F4.2 — accepted, commit <span class="mono">9f27773</span>:</strong> compile the public Resolver lifecycle out of native-only builds while retaining the shared DNS owner used by HTTP and hostname TCP.</li>
   <li><strong>F4.3 — accepted, commit <span class="mono">693de4f</span>:</strong> move only the native HTTP and DNS test modules into child files, with production bodies and test identities unchanged.</li>
-  <li><strong>F4.4 — accepted:</strong> HTTP/1.1 wire/framing now lives in <span class="mono">native_http/http1.rs</span> and its parser harness in <span class="mono">native_http/fuzz.rs</span>; the single owner is preserved and HTTP/2, protocol traits, pool composition, and further DNS decomposition remain unopened.</li>
+  <li><strong>F4.4 — accepted, commit <span class="mono">dcdc3b9</span>:</strong> HTTP/1.1 wire/framing now lives in <span class="mono">native_http/http1.rs</span> and its parser harness in <span class="mono">native_http/fuzz.rs</span>; the single owner is preserved and HTTP/2, protocol traits, pool composition, and further DNS decomposition remain unopened.</li>
 </ul>
 <div class="callout">
   <strong>F4.1 implementation boundary (accepted 2026-08-29):</strong> first land only the default-on <span class="mono">resolver</span> Cargo/API boundary, target dependency split, suffix-discovery gate, explicit native-only verifier lanes, and consumer documentation. Use <span class="mono">default = ["native", "resolver"]</span> and make <span class="mono">resolver</span> imply <span class="mono">native</span> plus the Windows-only <span class="mono">windows-registry</span> dependency. Keep the shared DNS owner, wire/cache/lifecycle state, hostname-TCP lookup path, capacity/metrics shape, and large module layout unchanged in this slice. Resolver-only registry/reactor/callback cleanup is a later behaviour-preserving F4 slice; mechanical DNS/HTTP file moves are later separate commits again.
@@ -722,6 +722,9 @@ impl TcpWriter {
 </div>
 <div class="callout">
   <strong>F4.4 exact-source Ubuntu checkpoint and acceptance (2026-08-30):</strong> archive SHA-256 <span class="mono">EEF505BA4CF66979565A09B9A66BAFF893950FD82D565CE165E9ECB0BA0EF5DC</span> was verified on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The unchanged HTTP suite passed 63/63 under <span class="mono">backend::native_http::tests</span>. The complete offline verifier passed 24/24 in 339.399s with unchanged 266 native-only and 311 default/all-feature library counts, 16 adversarial tests, 9/10 public-contract tests, and 22/23 doctests. The extracted non-git source rehearsed a 48-member package rather than the local 49 because Cargo could not synthesize <span class="mono">.cargo_vcs_info.json</span>; both new child modules are present. Temporary extraction and target directories were removed by the runner. Final review accepted this exact HTTP/1.1 extraction. HTTP/2, protocol abstraction, pool composition, and further DNS decomposition remain unopened; standalone DNS and TCP stay with the shared native owner.
+</div>
+<div class="callout">
+  <strong>F4 close-out and future-seam register (2026-08-30):</strong> stop restructuring here. The remaining owner is large because it coordinates shared transport state, not because another safe boundary is currently missing. Revisit these seams only when behaviour or evidence gives them a concrete purpose: move <span class="mono">NativeUpload</span> and its HTTP/1.1 chunk generation with the upload/backpressure loop when an HTTP/2 upload model exists; reshape connection pooling only after HTTP/2 stream identity, multiplexing, ALPN, and flow-control requirements are known; keep standalone DNS and TCP with the shared native owner unless a later composition change produces a real ownership boundary; separate DNS policy/cache state only when resolver work benefits from it; and move the small DNS campaign harness to its own file only as opportunistic housekeeping. The stale streaming-decoder “after its isolated framing gate” source comment may be corrected with the next relevant edit. None of these notes opens work or promises HTTP/2. F5 observation and profiling should decide whether any becomes worthwhile.
 </div>
 <ul>
   <li>Extract the large native HTTP and DNS modules only along proven owner/framing/pool/stream/wire/policy/cache seams.</li>
@@ -918,6 +921,7 @@ impl TcpWriter {
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 Windows checkpoint is green and remains uncommitted.</td><td>The 1,330-line HTTP/1.1 block and 255-line harness block matched <span class="mono">HEAD</span> mechanically before formatting. Focused HTTP tests passed 63/63; the clean complete verifier passed 24/24 in 81.868s with unchanged 268/313 library counts. The package rehearsal contains 49 members including both new modules. Exact-source Ubuntu remains.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 exact-source Ubuntu gate passed; the HTTP/1.1 extraction is a dual-platform acceptance candidate.</td><td>Archive SHA-256 <span class="mono">EEF505BA4CF66979565A09B9A66BAFF893950FD82D565CE165E9ECB0BA0EF5DC</span>, rustc/cargo 1.85.0, focused HTTP 63/63, complete offline verifier 24/24 in 339.399s with unchanged 266/311 library counts. The extracted archive rehearsed 48 package members; the local git tree rehearsed 49. Await final review; do not commit or open HTTP/2, protocol traits, pool composition, or further DNS extraction.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 accepted after final dual-platform review.</td><td>The HTTP/1.1 wire and harness extraction preserves the single native owner and unchanged tests. Redirect policy, DNS, standalone TCP, pooling, TLS, uploads, cancellation, and shutdown remain in the owner. Commit this exact tree; leave HTTP/2, protocol traits, pool composition, and further DNS extraction closed.</td></tr>
+<tr><td class="nowrap">2026-08-30</td><td>F4.4 committed as <span class="mono">dcdc3b9</span>; F4 closes as structurally sufficient.</td><td>Future candidates are recorded against F4 rather than opened: upload-loop extraction with a real HTTP/2 model, pool composition after multiplexing requirements, shared-owner DNS/TCP composition, evidence-led DNS policy/cache separation, and minor DNS harness/comment housekeeping. Proceed to F5 observation and profiling.</td></tr>
 </table>
 
 </body>
