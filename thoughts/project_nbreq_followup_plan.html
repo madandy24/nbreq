@@ -71,7 +71,7 @@
   Published baseline: <span class="mono">nbreq 0.1.1</span> &nbsp;|&nbsp;
   Original tracker: <a href="completed/project_nbreq_plan.html"><span class="mono">thoughts/completed/project_nbreq_plan.html</span></a> &nbsp;|&nbsp;
   Opened: 2026-08-25 &nbsp;|&nbsp;
-  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4 accepted; F5 next</span>
+  Overall status: <span class="status status-progress">F1.1 D0–D7, F2, F3, and F4 accepted; F6 Darwin work next, then F5</span>
 </div>
 
 <div class="panel">
@@ -724,7 +724,7 @@ impl TcpWriter {
   <strong>F4.4 exact-source Ubuntu checkpoint and acceptance (2026-08-30):</strong> archive SHA-256 <span class="mono">EEF505BA4CF66979565A09B9A66BAFF893950FD82D565CE165E9ECB0BA0EF5DC</span> was verified on <span class="mono">gds-client-01i linode</span> with rustc/cargo 1.85.0. The unchanged HTTP suite passed 63/63 under <span class="mono">backend::native_http::tests</span>. The complete offline verifier passed 24/24 in 339.399s with unchanged 266 native-only and 311 default/all-feature library counts, 16 adversarial tests, 9/10 public-contract tests, and 22/23 doctests. The extracted non-git source rehearsed a 48-member package rather than the local 49 because Cargo could not synthesize <span class="mono">.cargo_vcs_info.json</span>; both new child modules are present. Temporary extraction and target directories were removed by the runner. Final review accepted this exact HTTP/1.1 extraction. HTTP/2, protocol abstraction, pool composition, and further DNS decomposition remain unopened; standalone DNS and TCP stay with the shared native owner.
 </div>
 <div class="callout">
-  <strong>F4 close-out and future-seam register (2026-08-30):</strong> stop restructuring here. The remaining owner is large because it coordinates shared transport state, not because another safe boundary is currently missing. Revisit these seams only when behaviour or evidence gives them a concrete purpose: move <span class="mono">NativeUpload</span> and its HTTP/1.1 chunk generation with the upload/backpressure loop when an HTTP/2 upload model exists; reshape connection pooling only after HTTP/2 stream identity, multiplexing, ALPN, and flow-control requirements are known; keep standalone DNS and TCP with the shared native owner unless a later composition change produces a real ownership boundary; separate DNS policy/cache state only when resolver work benefits from it; and move the small DNS campaign harness to its own file only as opportunistic housekeeping. The stale streaming-decoder “after its isolated framing gate” source comment may be corrected with the next relevant edit. None of these notes opens work or promises HTTP/2. F5 observation and profiling should decide whether any becomes worthwhile.
+  <strong>F4 close-out and future-seam register (2026-08-30):</strong> stop restructuring here. The remaining owner is large because it coordinates shared transport state, not because another safe boundary is currently missing. Revisit these seams only when behaviour or evidence gives them a concrete purpose: move <span class="mono">NativeUpload</span> and its HTTP/1.1 chunk generation with the upload/backpressure loop when an HTTP/2 upload model exists; reshape connection pooling only after HTTP/2 stream identity, multiplexing, ALPN, and flow-control requirements are known; keep standalone DNS and TCP with the shared native owner unless a later composition change produces a real ownership boundary; separate DNS policy/cache state only when resolver work benefits from it; and move the small DNS campaign harness to its own file only as opportunistic housekeeping. The stale streaming-decoder “after its isolated framing gate” source comment may be corrected with the next relevant edit. None of these notes opens work or promises HTTP/2. F6 should establish the final supported platform shape; later F5 observation and profiling should decide whether any structural candidate becomes worthwhile.
 </div>
 <ul>
   <li>Extract the large native HTTP and DNS modules only along proven owner/framing/pool/stream/wire/policy/cache seams.</li>
@@ -738,25 +738,27 @@ impl TcpWriter {
 </ul>
 <p><strong>Acceptance:</strong> default/all-feature, native-only, and no-default-feature builds have compile-checked public surfaces; default Resolver behaviour and all F1/F2 gates are unchanged; native-only HTTP and hostname TCP pass exact-name DNS tests; Windows dependency inspection proves <span class="mono">windows-registry</span> is absent from native-only; package/docs examples show the opt-out spelling; and no conditional branch creates a second DNS/reactor owner.</p>
 
-<h3>F5 — Observation and profiled improvements</h3>
-<p><span class="status status-deferred">Continuous after functional gates</span></p>
-<ul>
-  <li>Continue realistic Windows/Linux/Wine interruption, restart, and multi-hour lifecycle runs while retaining HTTP rollback during early observation.</li>
-  <li>Profile bulk body-span decoding, owned-chunk movement, bounded fixed-body growth, rustls batching, request maps/serialization, whole-process memory, and idle CPU.</li>
-  <li>Prefer removal of unreasonable retention and fixed cost over synthetic throughput ranking.</li>
-  <li>Do not weaken memory ceilings, framing, lost-wake recovery, cancellation, contamination safety, or joined shutdown for performance.</li>
-</ul>
-
 <h3>F6 — macOS/Darwin platform honesty</h3>
-<p><span class="status status-deferred">After F1–F5; not an F1 blocker</span></p>
-<p>macOS is planned and unverified. It is not covered by “Unix,” and F1 acceptance remains Windows plus exact-source Ubuntu/Linux. Portable reactor, DNS wire/state, HTTP, and TLS work should avoid gratuitous Darwin incompatibility, but ordinary system DNS discovery currently fails closed rather than reading Linux <span class="mono">/etc/resolv.conf</span>. Linux/Windows helper tests verify that fail-closed error contract; the target-selected macOS discovery test is reserved for F6/on-Mac execution. No macOS support claim is made.</p>
+<p><span class="status status-progress">Next — physical Intel development gate, then Apple Silicon confirmation; complete before in-depth F5 work</span></p>
+<p>macOS is planned and unverified. It is not covered by “Unix,” and F1 acceptance remains Windows plus exact-source Ubuntu/Linux. F6 moves ahead of F5 so any Darwin-driven portability changes are included in the final observation, profiling, and soak shape. Portable reactor, DNS wire/state, HTTP, and TLS layers should remain shared; ordinary system DNS discovery currently fails closed rather than reading Linux <span class="mono">/etc/resolv.conf</span>. No macOS support claim is made until the applicable physical gates pass.</p>
 <ul>
-  <li>Investigate System Configuration and scoped/supplemental resolver routing rather than flattening everything into one global nameserver list.</li>
-  <li>Do not clone glibc <span class="mono">ndots</span>, Windows devolution, or a single stub <span class="mono">resolv.conf</span> as Darwin policy.</li>
-  <li>The initial physical gate may use the available Intel Mac. Apple Silicon may initially receive CI compile coverage only. Neither architecture is promised until its applicable gate passes.</li>
-  <li>Provisional gate: full build/tests/clippy/doctests; Mio/kqueue wake, cancel, and joined shutdown; local UDP/TCP DNS fixtures; HTTP cleartext and TLS; verified Keychain TLS; ordinary system DNS discovery; a scoped/split-DNS experiment; repeated Engine lifecycle; and a longer run.</li>
+  <li><strong>F6.0 — unchanged-tree reconnaissance:</strong> through an owner-controlled PuTTY bridge on the physical Intel Mac, record architecture, macOS/Xcode/SDK, Rust stable and 1.85 availability, target feature graphs, current compile/test failures, <span class="mono">scutil --dns</span> observations, Keychain/trust behaviour, and kqueue lifecycle results. This is read-only evidence; do not weaken the existing fail-closed discovery path merely to make the first gate pass.</li>
+  <li><strong>F6.1 — freeze Darwin resolver truth:</strong> model default, scoped, supplemental, VPN, interface, and search-domain information from System Configuration. Do not flatten every resolver into one global list, parse human <span class="mono">scutil</span> output in production, clone glibc <span class="mono">ndots</span>, or copy Windows devolution. If the first implementation cannot represent a complex routing state safely, support an ordinary default resolver and fail closed for the unrepresented state.</li>
+  <li><strong>F6.2 — discovery implementation:</strong> use a maintained framework binding or a narrow separately audited support crate if FFI is unavoidable; retain <span class="mono">unsafe_code = "forbid"</span> in NBReq. Keep one Engine-owned resolver and the accepted HTTP/public-Resolver/hostname-TCP policies. Add injected routing/configuration fixtures before relying on the physical host.</li>
+  <li><strong>F6.3 — integration and lifecycle:</strong> prove Mio/kqueue wake, cancellation, deadlines, adapter/network reacquisition, repeated Engine create/shutdown, local UDP/TCP DNS, public Resolver, literal/hostname TCP, cleartext HTTP, verified Keychain TLS, malformed-input handling, and a scoped or split-DNS experiment. Human assistance may operate Wi-Fi, VPN, firewall, or Keychain state; commands and evidence remain bridge-visible.</li>
+  <li><strong>F6.4 — architecture gates:</strong> the available Intel Mac is the development and first physical gate. Add macOS CI and Apple Silicon compile coverage when available, but label those compile-only until runtime is observed. Obtain short-term physical Apple Silicon access for the final architecture confirmation. Intel success permits only an explicit <span class="mono">x86_64-apple-darwin</span> claim; a general supported-macOS claim waits for the applicable Apple Silicon gate as well.</li>
+  <li><strong>Provisional physical gate:</strong> complete feature-matrix build/tests/clippy/doctests/package; local protocol fixtures; real cleartext and HTTPS requests; verified platform trust; scoped/default DNS evidence; interruption/reacquisition; callback/manual/spawned parity; repeated joined shutdown; pressure repetitions; and a longer unattended run with timestamped logs.</li>
 </ul>
-<p><strong>Acceptance:</strong> Darwin resolver discovery is truthful for the claimed architecture, injected fixtures still cover protocol/state independently of OS discovery, and no F1/F2/F3 behaviour is rewritten to make macOS pass.</p>
+<p><strong>Acceptance:</strong> Darwin resolver discovery is truthful for every configuration represented by the implementation and fails closed otherwise; injected fixtures cover routing and protocol/state independently of the physical host; kqueue, Keychain TLS, cancellation, and joined shutdown pass on Intel; Apple Silicon is either separately runtime-proven or explicitly excluded from the support claim; and no accepted Windows/Linux/Wine behaviour is rewritten merely to make macOS pass.</p>
+
+<h3>F5 — Observation and profiled improvements</h3>
+<p><span class="status status-deferred">After F6 establishes the final supported platform shape</span></p>
+<ul>
+  <li>Continue realistic Windows/Linux/macOS/Wine interruption, restart, and multi-hour lifecycle runs while retaining HTTP rollback during early observation.</li>
+  <li>Profile bulk body-span decoding, owned-chunk movement, bounded fixed-body growth, rustls batching, request maps/serialization, whole-process memory, and idle CPU on the accepted platform set.</li>
+  <li>Prefer removal of unreasonable retention and fixed cost over synthetic throughput ranking.</li>
+  <li>Do not weaken memory ceilings, framing, lost-wake recovery, cancellation, contamination safety, platform honesty, or joined shutdown for performance.</li>
+</ul>
 
 <h2 id="sequence">6. Dependency and Milestone Sequence</h2>
 
@@ -766,8 +768,9 @@ impl TcpWriter {
 <tr><td><strong>F-M1 — Resolver</strong></td><td>F1</td><td>Cancellable public hostname resolution on the existing Engine.</td><td>Accepted 2026-08-25. Windows and exact-source Ubuntu/Linux resolver contract, fairness, and lifecycle suite pass; HTTP unchanged. macOS is F6.</td></tr>
 <tr><td><strong>F-M2 — TCP</strong></td><td>F2</td><td>Cancellable cleartext connections with bounded duplex I/O.</td><td>Cross-platform connect/stream/backpressure/half-close/shutdown suite passes.</td></tr>
 <tr><td><strong>F-M3 — Hickory-free</strong></td><td>F3</td><td>Same public behaviour with NBReq-owned bounded DNS wire code.</td><td>Parity corpus, parser campaign, MSRV, RustSec, package, and consumer gates pass.</td></tr>
-<tr><td><strong>F-M4 — Sustainable</strong></td><td>F4–F5</td><td>Reviewable modules, a default-on opt-out public Resolver boundary, and evidence-led improvements.</td><td>Mechanical diffs separated from behaviour; default/native-only/no-default feature surfaces compile; performance changes retain adversarial gates.</td></tr>
-<tr><td><strong>F-M5 — Darwin</strong></td><td>F6</td><td>Truthful macOS resolver discovery and Keychain/lifecycle evidence.</td><td>Not an F1 blocker. Intel physical gate and optional Apple Silicon compile coverage until each architecture’s gate passes.</td></tr>
+<tr><td><strong>F-M4 — Sustainable structure</strong></td><td>F4</td><td>Reviewable modules and a default-on opt-out public Resolver boundary.</td><td>Accepted 2026-08-30. Mechanical diffs remain separate from behaviour; future seams are evidence-led rather than open restructuring work.</td></tr>
+<tr><td><strong>F-M5 — Darwin</strong></td><td>F6</td><td>Truthful macOS resolver discovery plus kqueue, Keychain, lifecycle, and architecture evidence.</td><td>Intel physical gate first; Apple Silicon compile coverage is non-claiming until the planned physical confirmation. Fail closed for DNS routing states not represented honestly.</td></tr>
+<tr><td><strong>F-M6 — Observe and profile</strong></td><td>F5</td><td>Multi-platform observation and evidence-led improvements against the final supported shape.</td><td>Accepted Windows/Linux/macOS claims retain adversarial gates; performance work does not weaken lifecycle, limits, or platform honesty.</td></tr>
 </table>
 
 <div class="callout">
@@ -785,7 +788,7 @@ impl TcpWriter {
 <tr><td>DNS semantics</td><td>Answer/NXDOMAIN/NoData, failure rcodes, exact/search policy, ordering, TTL/cache modes, CNAME bounds, UDP/TCP fallback, malformed input, cancellation, and shutdown.</td></tr>
 <tr><td>TCP semantics</td><td>Literal/hostname connect, duplex progress, bounds, partial queues, retained EOF, half-close, abortive close, drop rules, cancellation, and shutdown.</td></tr>
 <tr><td>Fairness and limits</td><td>Public DNS cannot starve HTTP resolution; TCP cannot consume HTTP reservation; aggregate queued bytes remain strict under concurrent HTTP/TCP pressure.</td></tr>
-<tr><td>Platforms</td><td>Ordinary Windows and exact-source Ubuntu 20.04/Rust 1.85 for F1–F5 claims, plus focused stock-Wine fallback evidence for claims made. macOS/Darwin is F6 and is not implied by “Unix.”</td></tr>
+<tr><td>Platforms</td><td>Ordinary Windows and exact-source Ubuntu 20.04/Rust 1.85 remain the accepted baseline, plus focused stock-Wine fallback evidence for claims made. F6 adds architecture-specific physical macOS gates before F5 observes and profiles the final supported set. Intel evidence does not silently claim Apple Silicon.</td></tr>
 <tr><td>Security/package</td><td>Warning-denied lint, formatting, docs, dependency/RustSec/license gates, package contents, external consumer, and CI from the exact commit. After F4, cover default/all-feature, native-only without public Resolver, and no-default-feature builds; prove the native-only Windows dependency graph omits <span class="mono">windows-registry</span>.</td></tr>
 </table>
 
@@ -922,6 +925,7 @@ impl TcpWriter {
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 exact-source Ubuntu gate passed; the HTTP/1.1 extraction is a dual-platform acceptance candidate.</td><td>Archive SHA-256 <span class="mono">EEF505BA4CF66979565A09B9A66BAFF893950FD82D565CE165E9ECB0BA0EF5DC</span>, rustc/cargo 1.85.0, focused HTTP 63/63, complete offline verifier 24/24 in 339.399s with unchanged 266/311 library counts. The extracted archive rehearsed 48 package members; the local git tree rehearsed 49. Await final review; do not commit or open HTTP/2, protocol traits, pool composition, or further DNS extraction.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 accepted after final dual-platform review.</td><td>The HTTP/1.1 wire and harness extraction preserves the single native owner and unchanged tests. Redirect policy, DNS, standalone TCP, pooling, TLS, uploads, cancellation, and shutdown remain in the owner. Commit this exact tree; leave HTTP/2, protocol traits, pool composition, and further DNS extraction closed.</td></tr>
 <tr><td class="nowrap">2026-08-30</td><td>F4.4 committed as <span class="mono">dcdc3b9</span>; F4 closes as structurally sufficient.</td><td>Future candidates are recorded against F4 rather than opened: upload-loop extraction with a real HTTP/2 model, pool composition after multiplexing requirements, shared-owner DNS/TCP composition, evidence-led DNS policy/cache separation, and minor DNS harness/comment housekeeping. Proceed to F5 observation and profiling.</td></tr>
+<tr><td class="nowrap">2026-08-30</td><td>Sequence refinement: run F6 Darwin work before the in-depth F5 observation/profile phase.</td><td>Use the available Xcode 26.3 Intel Mac for F6.0 reconnaissance and the primary implementation/physical gate, then obtain a short-term Apple Silicon physical confirmation. CI/cross-compile evidence is useful but does not become a runtime claim. This ordering ensures any Darwin changes are included in F5’s final multi-platform profiling and soak.</td></tr>
 </table>
 
 </body>
