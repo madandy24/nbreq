@@ -1269,6 +1269,35 @@ archive SHA-256 was `5881F96B42257A7642C59810299C73A929EFB2B08BCC7D3D897282263AE
 and was verified on `gds-client-01i linode` with rustc/cargo 1.85.0. Final review accepted the
 test-isolation slice and it was committed as `693de4f`. F4.4 remains unopened: production HTTP
 wire/framing extraction and further DNS decomposition require their own reviewed boundaries.
+
+F4.4 opens only the HTTP/1.1 production boundary. Existing textual request serialization,
+response-head parsing, buffered and streaming response decoders, body framing, trailers, and
+connection-token rules move to `native_http/http1.rs`; the two decoder campaign harnesses move to
+`native_http/fuzz.rs` with their existing crate forwarding names. `native_http.rs` remains the sole
+transport owner and coordinator for reactor, resolver, TCP, TLS, pooling, redirects, deadlines,
+uploads, backpressure, standalone TCP, metrics, and Backend integration. Imports across the seam are
+explicit and moved items gain no more than `pub(super)` visibility. Tests remain in their F4.3
+module and retain their paths and names. No protocol trait, HTTP/2 implementation, owner change,
+dynamic dispatch, API change, or policy change belongs to F4.4. The `http1` name merely prevents
+HTTP/1.1 assumptions from occupying a generic wire namespace and leaves room for a later
+ALPN-selected HTTP/2 engine whose real requirements will determine any shared abstraction.
+
+The F4.4 Windows checkpoint preserves the mechanical source identity of both moved regions before
+formatting: the 1,330-line HTTP/1.1 block has normalized SHA-256
+`415562028CAF992571B31A8CFA9F1B2D01DBA351B7B8FB7407CDCAA8524861FC`, and the 255-line decoder
+harness block has SHA-256 `3B116DAB4E8F8D854DE577C5576CA86DBF8255A6C767A1DB224B77C47DBE7307`.
+The unchanged focused HTTP suite passed 63/63. After an existing Windows shared UDP/TCP fixture
+reservation miss was reproduced cleanly in isolation, the complete verifier passed 24/24 in
+81.868s with unchanged 268 native-only and 313 default/all-feature library tests. The 49-member
+package rehearsal includes both new child modules. The exact-source Ubuntu archive SHA-256 was
+`EEF505BA4CF66979565A09B9A66BAFF893950FD82D565CE165E9ECB0BA0EF5DC`; it was verified on
+`gds-client-01i linode` with rustc/cargo 1.85.0. The focused HTTP suite passed 63/63 and the
+complete offline verifier passed 24/24 in 339.399s with unchanged 266 native-only and 311
+default/all-feature library tests. The non-git extraction rehearsed 48 package members rather than
+the local tree's 49 because Cargo could not synthesize `.cargo_vcs_info.json`. Both new child
+modules are included. Final dual-platform review accepted this exact F4.4 extraction. Standalone
+DNS and TCP remain with the shared native owner; HTTP/2, protocol abstraction, pool composition,
+and further DNS decomposition remain unopened.
 `TcpSendErrorKind::QueueLimitExceeded` was removed from the unreleased contract.
 
 Payload-free metrics: `resolutions_*` count finite public DNS operations; `tcp_connects_*` count the
