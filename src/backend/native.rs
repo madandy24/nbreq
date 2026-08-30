@@ -1491,14 +1491,24 @@ mod tests {
     #[test]
     fn cancellation_releases_slot_and_generation_rejects_stale_id() {
         let (listener, address) = listener();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (_first, _) = listener.accept().expect("first connect must arrive");
+            accepted_tx.send(()).expect("first accept must signal");
             let (_second, _) = listener.accept().expect("second connect must arrive");
+            accepted_tx.send(()).expect("second accept must signal");
         });
         let mut reactor = NativeReactor::new(8).expect("reactor must construct");
         let first = reactor
             .connect(address, None, 32, 32)
             .expect("first connect must start");
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::Connected(first))
+        });
+        assert!(events.contains(&NativeEvent::Connected(first)));
+        accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server must observe first connection before cancellation");
         assert!(reactor.cancel(first));
         let second = reactor
             .connect(address, None, 32, 32)
@@ -1507,6 +1517,13 @@ mod tests {
         assert_ne!(first.generation, second.generation);
         assert!(!reactor.cancel(first));
         assert_eq!(reactor.active_count(), 1);
+        let events = drive_until(&mut reactor, Duration::from_secs(2), |events| {
+            events.contains(&NativeEvent::Connected(second))
+        });
+        assert!(events.contains(&NativeEvent::Connected(second)));
+        accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server must observe second connection before cancellation");
         assert!(reactor.cancel(second));
         server.join().expect("server must join");
     }

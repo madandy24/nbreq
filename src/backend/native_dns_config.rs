@@ -3,13 +3,14 @@
 //!
 //! This module reads configuration only. The NBReq-owned resolver remains responsible for every
 //! query socket, retry, deadline, cancellation, shutdown join, and FQ-10 candidate algorithm.
-//! Ordinary system discovery is Windows and Linux only. The default-on `resolver` feature adds
-//! public search-suffix discovery; native-only builds retain nameserver discovery for exact HTTP
-//! and TCP lookups. macOS and other Unix targets fail closed rather than inheriting Linux
-//! `/etc/resolv.conf` semantics. Injected nameserver and suffix fixtures remain usable everywhere.
+//! Ordinary system discovery uses platform-owned configuration on Windows, Linux, and the bounded
+//! default-resolver shape supported on macOS. The default-on `resolver` feature adds public
+//! search-suffix discovery; native-only builds retain nameserver discovery for exact HTTP and TCP
+//! lookups. Other Unix targets fail closed rather than inheriting Linux `/etc/resolv.conf`
+//! semantics. Injected nameserver and suffix fixtures remain usable everywhere.
 
 use std::collections::HashSet;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use std::net::IpAddr;
 use std::net::SocketAddr;
 #[cfg(any(windows, target_os = "linux"))]
@@ -19,11 +20,11 @@ use std::time::Duration;
 use crate::dns::normalize_dns_name;
 use crate::{Error, ErrorKind};
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(test, windows, target_os = "linux", target_os = "macos"))]
 const DNS_PORT: u16 = 53;
-#[cfg(windows)]
+#[cfg(any(test, windows, target_os = "macos"))]
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 const DEFAULT_ATTEMPTS: u8 = 3;
 pub(super) const MAX_SEARCH_SUFFIXES: usize = 6;
 
@@ -81,6 +82,7 @@ fn assemble_windows_search_suffixes(
     normalize_search_suffixes(raw)
 }
 
+#[cfg(any(test, windows, target_os = "linux", target_os = "macos"))]
 fn finish(
     nameservers: impl IntoIterator<Item = SocketAddr>,
     search_suffixes: impl IntoIterator<Item = impl AsRef<str>>,
@@ -289,7 +291,24 @@ mod platform {
     use super::*;
 
     pub(super) fn discover() -> Result<DiscoveredResolverConfig, Error> {
-        Err(macos_system_discovery_unsupported())
+        let config = nbreq_darwin::discover_default_resolver().map_err(|error| {
+            Error::new(
+                ErrorKind::Unsupported,
+                format!("macOS resolver configuration is not supported: {error}"),
+            )
+        })?;
+        let nameservers = macos_nameservers(&config.server_addresses, config.server_port)?;
+        let attempt_timeout = macos_attempt_timeout(config.server_timeout)?;
+        #[cfg(feature = "resolver")]
+        let search_suffixes = config.search_domains;
+        #[cfg(not(feature = "resolver"))]
+        let search_suffixes = std::iter::empty::<&'static str>();
+        finish(
+            nameservers,
+            search_suffixes,
+            attempt_timeout,
+            DEFAULT_ATTEMPTS,
+        )
     }
 }
 
@@ -315,18 +334,68 @@ mod platform {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-fn macos_system_discovery_unsupported() -> Error {
-    Error::new(
-        ErrorKind::Unsupported,
-        "truthful macOS resolver discovery is planned but not yet implemented; NBReq does not treat /etc/resolv.conf as a Linux stub",
-    )
+fn macos_nameservers(
+    addresses: &[String],
+    configured_port: Option<i64>,
+) -> Result<Vec<SocketAddr>, Error> {
+    let port = match configured_port {
+        None => DNS_PORT,
+        Some(port) => u16::try_from(port)
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    "macOS reported an invalid DNS server port",
+                )
+            })?,
+    };
+    addresses
+        .iter()
+        .map(|address| {
+            if address.contains('%') {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "macOS reported a scoped DNS server address that NBReq cannot yet represent",
+                ));
+            }
+            let address = address.parse::<IpAddr>().map_err(|_| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    "macOS reported a malformed DNS server address",
+                )
+            })?;
+            if address.is_unspecified() {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "macOS reported an unusable DNS server address",
+                ));
+            }
+            Ok(SocketAddr::new(address, port))
+        })
+        .collect()
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_attempt_timeout(configured_timeout: Option<i64>) -> Result<Duration, Error> {
+    let seconds = match configured_timeout {
+        None => return Ok(DEFAULT_ATTEMPT_TIMEOUT),
+        Some(seconds) if seconds > 0 => u64::try_from(seconds).unwrap_or(u64::MAX).min(5),
+        Some(_) => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "macOS reported an invalid DNS server timeout",
+            ));
+        }
+    };
+    Ok(Duration::from_secs(seconds))
 }
 
 #[cfg(any(test, all(unix, not(target_os = "linux"), not(target_os = "macos"))))]
 fn unverified_unix_system_discovery_unsupported() -> Error {
     Error::new(
         ErrorKind::Unsupported,
-        "system DNS discovery is supported on Windows and Linux only; this Unix target is not verified and does not inherit Linux resolv.conf semantics",
+        "system DNS discovery is supported on Windows, Linux, and bounded ordinary macOS configurations only; this Unix target is not verified and does not inherit Linux resolv.conf semantics",
     )
 }
 
@@ -419,18 +488,45 @@ mod tests {
     }
 
     #[test]
-    fn macos_system_discovery_fails_closed_with_an_explicit_unsupported_error() {
-        let error = macos_system_discovery_unsupported();
+    fn macos_server_fields_are_bounded_and_scoped_addresses_fail_closed() {
+        assert_eq!(
+            macos_nameservers(&["192.0.2.53".to_owned()], None).expect("default port"),
+            ["192.0.2.53:53".parse().expect("fixture socket")]
+        );
+        assert_eq!(
+            macos_nameservers(&["2001:db8::53".to_owned()], Some(5353)).expect("configured port"),
+            ["[2001:db8::53]:5353".parse().expect("fixture socket")]
+        );
+        for invalid in [Some(0), Some(-1), Some(i64::from(u16::MAX) + 1)] {
+            let error = macos_nameservers(&["192.0.2.53".to_owned()], invalid)
+                .expect_err("invalid port must fail closed");
+            assert_eq!(error.kind(), ErrorKind::Unsupported);
+        }
+        let error = macos_nameservers(&["fe80::1%en0".to_owned()], None)
+            .expect_err("scoped address must fail closed");
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert!(error.message().contains("planned but not yet implemented"));
-        assert!(error.message().contains("/etc/resolv.conf"));
+
+        assert_eq!(
+            macos_attempt_timeout(None).expect("default timeout"),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            macos_attempt_timeout(Some(20)).expect("bounded timeout"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            macos_attempt_timeout(Some(0))
+                .expect_err("zero timeout must fail closed")
+                .kind(),
+            ErrorKind::Unsupported
+        );
     }
 
     #[test]
     fn unverified_unix_system_discovery_fails_closed_without_linux_semantics() {
         let error = unverified_unix_system_discovery_unsupported();
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert!(error.message().contains("Windows and Linux only"));
+        assert!(error.message().contains("bounded ordinary macOS"));
         assert!(
             error
                 .message()
@@ -438,7 +534,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn current_platform_reports_at_least_one_system_nameserver() {
         let discovered = discover().expect("this supported test host must have system DNS");
@@ -447,18 +543,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(not(feature = "resolver"), any(windows, target_os = "linux")))]
+    #[cfg(all(
+        not(feature = "resolver"),
+        any(windows, target_os = "linux", target_os = "macos")
+    ))]
     fn native_only_system_discovery_omits_public_search_suffixes() {
         let discovered = discover().expect("this supported test host must have system DNS");
         assert!(discovered.search_suffixes.is_empty());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_ordinary_system_discovery_is_unsupported() {
-        let error = discover().expect_err("macOS must not inherit Linux resolv.conf discovery");
-        assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert!(error.message().contains("planned but not yet implemented"));
     }
 
     #[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]

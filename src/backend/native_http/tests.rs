@@ -3406,11 +3406,16 @@ fn abandoned_and_length_mismatched_uploads_fail_at_send_stage() {
     for abandon in [true, false] {
         let listener = TcpListener::bind("127.0.0.1:0").expect("producer failure must bind");
         let address = listener.local_addr().expect("producer failure address");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("producer failure must accept");
-            if !peer_observed_close(&mut stream) {
-                assert_socket_closed(&mut stream, &mut [0_u8; 1024], "producer failure");
-            }
+            accepted_tx
+                .send(())
+                .expect("producer failure accept must signal");
+            // The owner may have sent some request-head bytes before it observes the
+            // producer terminal. Those kernel-accepted bytes cannot be recalled; require
+            // the eventual close rather than assuming the connection stayed byte-empty.
+            drain_until_socket_closed(&mut stream, "producer failure");
         });
         let (body, sender) = UploadBody::fixed(4, 4).expect("producer failure pair");
         let config = EngineConfig::spawned().with_max_stream_queue_bytes_per_request(4);
@@ -3427,6 +3432,9 @@ fn abandoned_and_length_mismatched_uploads_fail_at_send_stage() {
                     .expect("producer failure request must build"),
             )
             .expect("producer failure request must submit");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("producer failure request must connect before producer termination");
         if abandon {
             drop(sender);
         } else {

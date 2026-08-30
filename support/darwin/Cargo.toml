@@ -1,0 +1,24 @@
+[package]
+name = "nbreq-darwin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "macOS System Configuration support for NBReq"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/madandy24/nbreq"
+readme = "README.md"
+publish = ["crates-io"]
+include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "=0.10.1"
+system-configuration = "=0.8.0"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

@@ -494,7 +494,7 @@ The implementation should use `httparse` for response-head recognition and its c
 
 ## 16. TLS
 
-The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store. System DNS configuration is read by pinned target-specific `ipconfig` 0.3.4 and `windows-registry` 0.6.1 on Windows and `resolv-conf` 0.7.6 on Linux; none of them own query execution or introduce an async runtime. Ordinary macOS and other unverified Unix discovery fail `Unsupported` rather than inheriting Linux `/etc/resolv.conf` semantics.
+The native backend uses pinned `rustls` 0.23.42 with an explicit Ring provider, driven as a sans-I/O state machine over NBReq's nonblocking reactor without an async runtime. Verified system trust uses pinned `rustls-platform-verifier` 0.7.0; generated fixtures inject a private test root without changing an operating-system store. System DNS configuration is read by pinned target-specific `ipconfig` 0.3.4 and `windows-registry` 0.6.1 on Windows, `resolv-conf` 0.7.6 on Linux, and the separately audited `nbreq-darwin` System Configuration helper on macOS; none of them own query execution or introduce an async runtime. Darwin accepts only a bounded ordinary-default shape: one consistent primary service matching the global DNS view, with no additional scoped, supplemental, conflicting, or `/etc/resolver` routing. Unrepresented or unreadable Darwin topology and other unverified Unix discovery fail `Unsupported` rather than inheriting Linux `/etc/resolv.conf` semantics. NBReq proper retains `unsafe_code = "forbid"`; the two audited Core Foundation get-rule conversions remain isolated in the Darwin support crate.
 
 DNS UDP truncation falls back to an NBReq-owned nonblocking TCP connection on the resolver poll owner. The length prefix and response are incrementally bounded; cancellation and Engine shutdown close that connection and join the resolver exactly like the UDP path.
 
@@ -896,7 +896,7 @@ Accepted answers form the WP0 contract. Unresolved items below are policy, integ
 11. **Native DNS milestone:** Is an owned blocking resolver service acceptable initially, provided request cancellation is prompt, or must Engine shutdown also cancel the underlying resolver immediately?\
     Recommendation: accept the worker for the first native slice, but do not declare DLL-safe production readiness until bounded resolver shutdown is proven.
 
-12. **Platform gates — accepted initial targets:** Windows 10 x64 or later; the Windows build under Ubuntu 20.04's distro-default Wine; and native Linux x64 on Ubuntu 20.04. macOS/Darwin is planned and unverified; it is not covered by “Unix” and is not an F1 gate. Versions may be varied if a concrete toolchain/backend problem is demonstrated and the change is recorded.
+12. **Platform gates — accepted initial targets:** Windows 10 x64 or later; the Windows build under Ubuntu 20.04's distro-default Wine; and native Linux x64 on Ubuntu 20.04. macOS/Darwin was not covered by “Unix” and was not an F1 gate. Follow-up F6 now accepts a bounded physical `x86_64-apple-darwin` checkpoint for the ordinary resolver shape, kqueue, Keychain TLS, HTTP, Resolver, TCP, cancellation, and lifecycle behaviour; live DNS-configuration rediscovery, the longer Intel soak, and physical Apple Silicon runtime remain open, so this is not yet a general macOS claim. Versions may be varied if a concrete toolchain/backend problem is demonstrated and the change is recorded.
 
 13. **HTTP scope:** Does any known GDS path require proxies, response compression, multipart file upload, cookies, client certificates, or methods beyond GET/POST in the first release?
 
@@ -1317,13 +1317,15 @@ F1 is accepted: `Resolver` is wired onto
 the existing Engine-owned DNS service. Applied
 `use_search_suffixes(true)` expands a snapshotted OS suffix list with the accepted FQ-10
 candidate algorithm rather than cloning glibc `ndots` or Windows DNS devolution. Ordinary system
-suffix/nameserver discovery is Windows and Linux only. On Windows, a filtered computer
+suffix/nameserver discovery was initially Windows and Linux only. On Windows, a filtered computer
 `SearchList` is complete; otherwise adapter `Domain` falling back to `DhcpDomain` from
 `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{adapter_name}` in
-nameserver rank, then computer `Domain`; there is no devolution. macOS and other unverified
-Unix fail closed until F6. Linux/Windows helper tests verify that fail-closed error contract;
-the target-selected macOS discovery test remains for F6/on-Mac execution. No macOS support
-claim is made. Trailing-dot names stay exact. Undotted relative names try suffixes only (exact identity only when the
+nameserver rank, then computer `Domain`; there is no devolution. Follow-up F6 adds bounded
+ordinary-default macOS discovery through System Configuration: one consistent primary service
+must match the global DNS view, no scoped/supplemental/conflicting state or `/etc/resolver` entry
+may exist, and anything unrepresented fails `Unsupported`. Other unverified Unix still fails
+closed. Physical Intel evidence accepts that architecture-specific checkpoint without claiming
+live DNS-snapshot rediscovery or Apple Silicon runtime. Trailing-dot names stay exact. Undotted relative names try suffixes only (exact identity only when the
 filtered suffix list is empty). Dotted relative names try exact first, then suffixes. NXDOMAIN
 and NoData continue; operational failures, cancel, and total-deadline expiry stop the whole
 search. Cache keys remain the queried candidate name so a search for `www` cannot populate

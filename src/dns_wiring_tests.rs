@@ -80,6 +80,12 @@ impl DualStackDns {
                     {
                         continue;
                     }
+                    // Winsock may report an ICMP port-unreachable from a resolver that
+                    // has already closed as ConnectionReset on this shared UDP fixture.
+                    // It says nothing about the fixture socket's ability to serve the next
+                    // query, so keep listening just as we do after a read timeout.
+                    #[cfg(windows)]
+                    Err(error) if error.kind() == io::ErrorKind::ConnectionReset => continue,
                     Err(error) => panic!("public DNS fixture receive failed: {error}"),
                 };
                 seen.fetch_add(1, Ordering::SeqCst);
@@ -130,6 +136,48 @@ impl Drop for DualStackDns {
             joined.join().expect("public DNS fixture must join");
         }
     }
+}
+
+#[cfg(feature = "resolver")]
+fn spawn_primed_http_listener(
+    listener: TcpListener,
+    priming_requests: usize,
+) -> (mpsc::Sender<()>, Arc<AtomicUsize>, JoinHandle<()>) {
+    let (release_tx, release_rx) = mpsc::channel();
+    let stale_connections = Arc::new(AtomicUsize::new(0));
+    let stale_seen = Arc::clone(&stale_connections);
+    let joined = thread::spawn(move || {
+        for _ in 0..priming_requests {
+            let (mut stream, _) = listener.accept().expect("primed HTTP accept");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1");
+        }
+        listener
+            .set_nonblocking(true)
+            .expect("primed HTTP listener must become nonblocking");
+        loop {
+            if release_rx.try_recv().is_ok() {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stale_seen.fetch_add(1, Ordering::SeqCst);
+                    let mut buffer = [0_u8; 1024];
+                    let _ = stream.read(&mut buffer);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nstale",
+                    );
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("primed HTTP listener failed: {error}"),
+            }
+        }
+    });
+    (release_tx, stale_connections, joined)
 }
 
 enum TcpPayload {
@@ -1154,21 +1202,7 @@ fn ipv4_refresh_replaces_the_http_shared_cache_view() {
     });
     let v1 = TcpListener::bind("127.0.0.1:0").expect("HTTP v1 listener");
     let port = v1.local_addr().expect("HTTP v1 port").port();
-    let v2 = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 2), port)).expect("HTTP v2 listener");
-    let server = thread::spawn(move || {
-        for _ in 0..2 {
-            let (mut stream, _) = v1.accept().expect("HTTP v1 accept");
-            let mut buffer = [0_u8; 1024];
-            let _ = stream.read(&mut buffer);
-            let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1");
-        }
-        let (mut stream, _) = v2.accept().expect("HTTP v2 accept");
-        let mut buffer = [0_u8; 1024];
-        let _ = stream.read(&mut buffer);
-        let _ = stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv2");
-    });
+    let (release_server, stale_connections, server) = spawn_primed_http_listener(v1, 2);
     let engine = spawned_engine(&dns);
     let url = format!("http://shared-cache.test:{port}/");
     let first = engine
@@ -1210,19 +1244,21 @@ fn ipv4_refresh_replaces_the_http_shared_cache_view() {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))
     );
 
-    let updated = engine
-        .client()
-        .execute(
-            Request::get(url)
-                .connect_timeout(Duration::from_secs(1))
-                .total_timeout(Duration::from_secs(2))
-                .build()
-                .expect("HTTP refreshed cache must build"),
-        )
-        .expect("HTTP must observe the public IPv4 refresh");
-    assert_eq!(updated.body(), b"v2");
-    engine.shutdown().expect("HTTP-cache Engine must stop");
+    let updated = engine.client().execute(
+        Request::get(url)
+            .connect_timeout(Duration::from_secs(1))
+            .total_timeout(Duration::from_secs(2))
+            .build()
+            .expect("HTTP refreshed cache must build"),
+    );
+    release_server.send(()).expect("release primed HTTP server");
     server.join().expect("HTTP-cache server must join");
+    assert!(
+        updated.is_err(),
+        "HTTP must stop using the reachable primed address after public IPv4 refresh"
+    );
+    assert_eq!(stale_connections.load(Ordering::SeqCst), 0);
+    engine.shutdown().expect("HTTP-cache Engine must stop");
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1414,21 +1450,7 @@ fn both_refresh_replaces_the_http_shared_cache_view() {
     });
     let v1 = TcpListener::bind("127.0.0.1:0").expect("HTTP v1 listener");
     let port = v1.local_addr().expect("HTTP v1 port").port();
-    let v2 = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 2), port)).expect("HTTP v2 listener");
-    let server = thread::spawn(move || {
-        for _ in 0..2 {
-            let (mut stream, _) = v1.accept().expect("HTTP v1 accept");
-            let mut buffer = [0_u8; 1024];
-            let _ = stream.read(&mut buffer);
-            let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv1");
-        }
-        let (mut stream, _) = v2.accept().expect("HTTP v2 accept");
-        let mut buffer = [0_u8; 1024];
-        let _ = stream.read(&mut buffer);
-        let _ = stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nv2");
-    });
+    let (release_server, stale_connections, server) = spawn_primed_http_listener(v1, 2);
     let engine = spawned_engine(&dns);
     let url = format!("http://shared-cache-both.test:{port}/");
     let first = engine
@@ -1471,19 +1493,21 @@ fn both_refresh_replaces_the_http_shared_cache_view() {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))
     );
 
-    let updated = engine
-        .client()
-        .execute(
-            Request::get(url)
-                .connect_timeout(Duration::from_secs(1))
-                .total_timeout(Duration::from_secs(2))
-                .build()
-                .expect("HTTP refreshed cache must build"),
-        )
-        .expect("HTTP must observe the public Both refresh");
-    assert_eq!(updated.body(), b"v2");
-    engine.shutdown().expect("HTTP-cache Engine must stop");
+    let updated = engine.client().execute(
+        Request::get(url)
+            .connect_timeout(Duration::from_secs(1))
+            .total_timeout(Duration::from_secs(2))
+            .build()
+            .expect("HTTP refreshed cache must build"),
+    );
+    release_server.send(()).expect("release primed HTTP server");
     server.join().expect("HTTP-cache server must join");
+    assert!(
+        updated.is_err(),
+        "HTTP must stop using the reachable primed address after public Both refresh"
+    );
+    assert_eq!(stale_connections.load(Ordering::SeqCst), 0);
+    engine.shutdown().expect("HTTP-cache Engine must stop");
 }
 
 #[test]
