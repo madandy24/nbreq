@@ -1806,9 +1806,9 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accept read-progress TCP");
             socket.write_all(b"a").expect("write first progress byte");
-            thread::sleep(Duration::from_millis(180));
+            thread::sleep(Duration::from_millis(600));
             socket.write_all(b"b").expect("write second progress byte");
-            thread::sleep(Duration::from_millis(180));
+            thread::sleep(Duration::from_millis(600));
             socket.write_all(b"c").expect("write third progress byte");
             let mut byte = [0_u8; 1];
             let _closed_or_reset = socket.read(&mut byte);
@@ -1823,7 +1823,7 @@ mod tests {
             .execute(
                 TcpConnectRequest::literal(address)
                     .receive_queue_bytes(8)
-                    .read_inactivity_timeout(Duration::from_millis(300))
+                    .read_inactivity_timeout(Duration::from_secs(1))
                     .build()
                     .expect("read-progress request must build"),
             )
@@ -1838,7 +1838,7 @@ mod tests {
             assert_eq!(byte[0], *expected);
         }
         assert!(
-            started.elapsed() > Duration::from_millis(300),
+            started.elapsed() > Duration::from_secs(1),
             "the fixture did not cross the original inactivity deadline"
         );
         drop(connection);
