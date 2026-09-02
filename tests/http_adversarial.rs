@@ -387,9 +387,11 @@ struct TlsIdentity {
 }
 
 impl TlsIdentity {
-    fn localhost() -> Self {
+    fn loopback() -> Self {
         let key = KeyPair::generate().expect("test TLS key must generate");
-        let mut params = CertificateParams::new(vec!["localhost".to_owned()])
+        // This fixture tests TLS policy, not DNS. Keep it independent of whether an upstream
+        // resolver chooses to answer the reserved localhost name.
+        let mut params = CertificateParams::new(vec!["127.0.0.1".to_owned()])
             .expect("test TLS parameters must build");
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
@@ -473,7 +475,7 @@ impl TlsServer {
     }
 
     fn url(&self) -> String {
-        format!("https://localhost:{}/", self.address.port())
+        format!("https://{}/", self.address)
     }
 }
 
@@ -1309,7 +1311,7 @@ fn explicit_no_verify_and_unknown_root_share_tls_outcomes() {
             eprintln!("skipping {backend_name}: selected curl implementation has no TLS support");
             continue;
         }
-        let identity = TlsIdentity::localhost();
+        let identity = TlsIdentity::loopback();
         let server = TlsServer::start(&identity);
         let engine = test_engine(EngineConfig::spawned(), backend);
         let client = engine.client();
