@@ -31,6 +31,12 @@ jobs:
           - name: Ubuntu MSRV 1.85
             os: ubuntu-latest
             toolchain: 1.85.0
+          - name: macOS 15 Apple Silicon stable
+            os: macos-15
+            toolchain: stable
+          - name: macOS 15 Apple Silicon MSRV 1.85
+            os: macos-15
+            toolchain: 1.85.0
 
     steps:
       - name: Check out source
@@ -48,6 +54,12 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Record macOS architecture
+        if: runner.os == 'macOS'
+        run: |
+          uname -m
+          sw_vers
 
       - name: Fetch exact locked graph
         run: cargo fetch --locked
