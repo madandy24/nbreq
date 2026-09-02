@@ -40,16 +40,35 @@ const MAX_CNAME_HOPS: u8 = 8;
 const DNS_CACHE_CAPACITY: usize = 256;
 const MAX_POSITIVE_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const SYSTEM_CONFIG_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ResolveKey(pub(super) u64);
 
-#[derive(Clone, Debug)]
 pub(super) struct ResolverConfig {
     pub(super) nameservers: Vec<SocketAddr>,
     pub(super) search_suffixes: Vec<String>,
     pub(super) attempt_timeout: Duration,
     pub(super) attempts: u8,
+    source: ResolverConfigSource,
+}
+
+enum ResolverConfigSource {
+    Static,
+    System,
+    #[cfg(test)]
+    Test {
+        receiver: Receiver<Result<ResolverSnapshot, Error>>,
+        refresh_interval: Option<Duration>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ResolverSnapshot {
+    nameservers: Vec<SocketAddr>,
+    search_suffixes: Vec<String>,
+    attempt_timeout: Duration,
+    attempts: u8,
 }
 
 impl ResolverConfig {
@@ -59,6 +78,7 @@ impl ResolverConfig {
             search_suffixes: Vec::new(),
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
+            source: ResolverConfigSource::Static,
         }
     }
 
@@ -77,7 +97,85 @@ impl ResolverConfig {
             search_suffixes: discovered.search_suffixes,
             attempt_timeout: discovered.attempt_timeout,
             attempts: discovered.attempts,
+            source: ResolverConfigSource::System,
         })
+    }
+
+    fn snapshot(&self) -> ResolverSnapshot {
+        ResolverSnapshot {
+            nameservers: self.nameservers.clone(),
+            search_suffixes: self.search_suffixes.clone(),
+            attempt_timeout: self.attempt_timeout,
+            attempts: self.attempts,
+        }
+    }
+
+    fn refresh_interval(&self) -> Option<Duration> {
+        match self.source {
+            ResolverConfigSource::System => Some(SYSTEM_CONFIG_REFRESH_INTERVAL),
+            ResolverConfigSource::Static => None,
+            #[cfg(test)]
+            ResolverConfigSource::Test {
+                refresh_interval, ..
+            } => refresh_interval,
+        }
+    }
+
+    fn is_system(&self) -> bool {
+        matches!(self.source, ResolverConfigSource::System)
+    }
+
+    fn rediscover(&self) -> Option<Result<ResolverSnapshot, Error>> {
+        match &self.source {
+            ResolverConfigSource::Static => None,
+            ResolverConfigSource::System => Some(super::native_dns_config::discover().map(
+                |discovered| ResolverSnapshot {
+                    nameservers: discovered.nameservers,
+                    search_suffixes: discovered.search_suffixes,
+                    attempt_timeout: discovered.attempt_timeout,
+                    attempts: discovered.attempts,
+                },
+            )),
+            #[cfg(test)]
+            ResolverConfigSource::Test { receiver, .. } => Some(match receiver.try_recv() {
+                Ok(snapshot) => snapshot,
+                Err(TryRecvError::Empty) => Ok(self.snapshot()),
+                Err(TryRecvError::Disconnected) => Err(Error::new(
+                    ErrorKind::Internal,
+                    "the injected DNS configuration source disconnected",
+                )),
+            }),
+        }
+    }
+
+    fn apply(&mut self, snapshot: ResolverSnapshot) {
+        self.nameservers = snapshot.nameservers;
+        self.search_suffixes = snapshot.search_suffixes;
+        self.attempt_timeout = snapshot.attempt_timeout;
+        self.attempts = snapshot.attempts;
+    }
+
+    #[cfg(test)]
+    fn with_test_refresh_source(self) -> (Self, Sender<Result<ResolverSnapshot, Error>>) {
+        self.with_test_refresh_source_and_interval(None)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_refresh_source_and_interval(
+        mut self,
+        refresh_interval: Option<Duration>,
+    ) -> (Self, Sender<Result<ResolverSnapshot, Error>>) {
+        let (sender, receiver) = mpsc::channel();
+        self.source = ResolverConfigSource::Test {
+            receiver,
+            refresh_interval,
+        };
+        (self, sender)
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot_for_test(nameserver: SocketAddr) -> ResolverSnapshot {
+        Self::for_test(nameserver).snapshot()
     }
 
     #[cfg(test)]
@@ -97,6 +195,7 @@ impl ResolverConfig {
             // enough room for a loaded CI host to schedule the answering server after failover.
             attempt_timeout: Duration::from_secs(1),
             attempts: 1,
+            source: ResolverConfigSource::Static,
         }
     }
 }
@@ -178,6 +277,7 @@ pub(super) struct PublicResolveSpec {
     pub(super) cache_mode: CacheMode,
     pub(super) max_results: usize,
     pub(super) expand_search: bool,
+    pub(super) unavailable_is_unsupported: bool,
 }
 
 enum Command {
@@ -190,13 +290,21 @@ enum Command {
         spec: PublicResolveSpec,
     },
     Cancel(ResolveKey),
+    #[cfg(test)]
+    RefreshConfig(Sender<()>),
     Shutdown,
 }
 
 #[derive(Clone)]
 enum QueryPolicy {
-    Http,
+    Http(RetryPolicy),
     Public(Box<PublicSession>),
+}
+
+#[derive(Clone, Copy)]
+struct RetryPolicy {
+    attempt_limit: u8,
+    attempt_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -220,6 +328,8 @@ struct PublicSession {
     /// `None` until a negative candidate is recorded; `Some(None)` if any contributing negative
     /// lacks cache validity; otherwise the earliest contributing expiry.
     negative_validity: Option<Option<Instant>>,
+    attempt_limit: u8,
+    attempt_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -236,6 +346,8 @@ struct PendingQuery {
     cname_hops: u8,
     wire: Vec<u8>,
     attempts_sent: u8,
+    attempt_limit: u8,
+    attempt_timeout: Duration,
     servers_tried: usize,
     last_udp_generation: u64,
     next_attempt: Instant,
@@ -265,6 +377,10 @@ struct ResolverState {
     next_tcp_token: usize,
     current_nameserver: usize,
     udp_generation: u64,
+    config_generation: u64,
+    config_available: bool,
+    config_dirty: bool,
+    next_config_refresh: Option<Instant>,
     cache: DnsCache,
     before_first_poll: Option<Sender<()>>,
 }
@@ -422,6 +538,11 @@ impl DnsCache {
         self.entries.remove(name);
     }
 
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.family_entries.clear();
+    }
+
     fn bump_use(&mut self) {
         self.next_use = self.next_use.checked_add(1).unwrap_or_else(|| {
             self.entries.clear();
@@ -434,8 +555,60 @@ impl DnsCache {
 pub(super) struct NativeResolver {
     commands: Sender<Command>,
     results: Receiver<ResolveResult>,
+    controls: Receiver<ResolverControl>,
     waker: NativeWaker,
     joined: Option<JoinHandle<()>>,
+}
+
+enum ResolverControl {
+    EvictIdleHttp(u64),
+}
+
+struct ResolverChannels {
+    commands: Receiver<Command>,
+    results: Sender<ResolveResult>,
+    controls: Sender<ResolverControl>,
+    result_waker: NativeWaker,
+}
+
+#[cfg(target_os = "macos")]
+struct ResolverConfigMonitor(Option<nbreq_darwin::ResolverChangeMonitor>);
+
+#[cfg(target_os = "macos")]
+impl ResolverConfigMonitor {
+    fn new(enabled: bool) -> Result<Self, Error> {
+        if !enabled {
+            return Ok(Self(None));
+        }
+        nbreq_darwin::ResolverChangeMonitor::new()
+            .map(|monitor| Self(Some(monitor)))
+            .map_err(|error| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    format!("macOS DNS notification setup failed: {error}"),
+                )
+            })
+    }
+
+    fn pump(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(nbreq_darwin::ResolverChangeMonitor::pump)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct ResolverConfigMonitor;
+
+#[cfg(not(target_os = "macos"))]
+impl ResolverConfigMonitor {
+    fn new(_enabled: bool) -> Result<Self, Error> {
+        Ok(Self)
+    }
+
+    fn pump(&self) -> bool {
+        false
+    }
 }
 
 impl NativeResolver {
@@ -469,6 +642,11 @@ impl NativeResolver {
 
         let (command_tx, command_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::channel();
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let next_config_refresh = config
+            .refresh_interval()
+            .and_then(|interval| Instant::now().checked_add(interval));
         let state = ResolverState {
             pending: HashMap::new(),
             by_key: HashMap::new(),
@@ -477,26 +655,59 @@ impl NativeResolver {
             next_tcp_token: FIRST_TCP_TOKEN,
             current_nameserver,
             udp_generation: 1,
+            config_generation: 1,
+            config_available: true,
+            config_dirty: false,
+            next_config_refresh,
             cache: DnsCache::new(),
             before_first_poll,
         };
         let joined = thread::Builder::new()
             .name("nbreq-native-dns".to_owned())
             .spawn(move || {
+                let monitor = match ResolverConfigMonitor::new(config.is_system()) {
+                    Ok(monitor) => {
+                        let _startup_result = startup_tx.send(Ok(()));
+                        monitor
+                    }
+                    Err(error) => {
+                        let _startup_result = startup_tx.send(Err(error));
+                        return;
+                    }
+                };
                 resolver_main(
                     &mut poll,
-                    &mut socket,
-                    command_rx,
-                    result_tx,
-                    result_waker,
+                    Some(socket),
+                    ResolverChannels {
+                        commands: command_rx,
+                        results: result_tx,
+                        controls: control_tx,
+                        result_waker,
+                    },
                     config,
                     state,
+                    monitor,
                 );
             })
             .map_err(|error| resolver_internal("thread start", &error))?;
+        match startup_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _join_result = joined.join();
+                return Err(error);
+            }
+            Err(_) => {
+                let _join_result = joined.join();
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "native resolver startup channel disconnected",
+                ));
+            }
+        }
         Ok(Self {
             commands: command_tx,
             results: result_rx,
+            controls: control_rx,
             waker,
             joined: Some(joined),
         })
@@ -518,6 +729,15 @@ impl NativeResolver {
         self.send(Command::Cancel(key))
     }
 
+    #[cfg(test)]
+    pub(super) fn refresh_config_for_test(&self) -> Result<(), Error> {
+        let (acknowledge, acknowledged) = mpsc::channel();
+        self.send(Command::RefreshConfig(acknowledge))?;
+        acknowledged
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| Error::new(ErrorKind::Internal, "test DNS refresh was not acknowledged"))
+    }
+
     pub(super) fn drain(&self) -> Result<Vec<ResolveResult>, Error> {
         let mut results = Vec::new();
         loop {
@@ -528,6 +748,22 @@ impl NativeResolver {
                     return Err(Error::new(
                         ErrorKind::Internal,
                         "native resolver result channel disconnected",
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(super) fn take_idle_http_eviction(&self) -> Result<Option<u64>, Error> {
+        let mut generation = None;
+        loop {
+            match self.controls.try_recv() {
+                Ok(ResolverControl::EvictIdleHttp(current)) => generation = Some(current),
+                Err(TryRecvError::Empty) => return Ok(generation),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(Error::new(
+                        ErrorKind::Internal,
+                        "native resolver control channel disconnected",
                     ));
                 }
             }
@@ -590,20 +826,53 @@ impl Drop for NativeResolver {
 
 fn resolver_main(
     poll: &mut NativePoll,
-    socket: &mut UdpSocket,
-    commands: Receiver<Command>,
-    results: Sender<ResolveResult>,
-    result_waker: NativeWaker,
-    config: ResolverConfig,
+    mut socket: Option<UdpSocket>,
+    channels: ResolverChannels,
+    mut config: ResolverConfig,
     mut state: ResolverState,
+    monitor: ResolverConfigMonitor,
 ) {
+    let ResolverChannels {
+        commands,
+        results,
+        controls,
+        result_waker,
+    } = channels;
     loop {
+        if monitor.pump() {
+            state.config_dirty = true;
+        }
+        if state
+            .next_config_refresh
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            state.config_dirty = true;
+        }
+        refresh_configuration_if_dirty(
+            &mut socket,
+            poll,
+            &mut config,
+            &mut state,
+            &results,
+            &controls,
+            &result_waker,
+        );
         let mut stop = false;
+        #[cfg(test)]
+        let mut refresh_acks = Vec::new();
         loop {
             match commands.try_recv() {
                 Ok(Command::Resolve { key, host }) => {
                     if let Some(previous) = state.by_key.remove(&key) {
                         remove_query(previous, &mut state, poll);
+                    }
+                    if !state.config_available {
+                        send_result(
+                            &results,
+                            &result_waker,
+                            ResolveResult::http(key, Err(configuration_unavailable_failure())),
+                        );
+                        continue;
                     }
                     let name = match parse_dns_name(&host) {
                         Ok(name) => name,
@@ -627,7 +896,10 @@ fn resolver_main(
                         0,
                         &state.pending,
                         &mut state.next_id,
-                        QueryPolicy::Http,
+                        QueryPolicy::Http(RetryPolicy {
+                            attempt_limit: config.attempts,
+                            attempt_timeout: config.attempt_timeout,
+                        }),
                     ) {
                         Ok((id, query)) => {
                             state.by_key.insert(key, id);
@@ -644,10 +916,30 @@ fn resolver_main(
                     if let Some(previous) = state.by_key.remove(&key) {
                         remove_query(previous, &mut state, poll);
                     }
+                    if !state.config_available {
+                        let error = if spec.unavailable_is_unsupported {
+                            Error::new(
+                                ErrorKind::Unsupported,
+                                "the current system DNS configuration is unavailable or unsupported",
+                            )
+                        } else {
+                            public_error(configuration_unavailable_failure())
+                        };
+                        send_result(
+                            &results,
+                            &result_waker,
+                            ResolveResult::public(key, PublicLookupOutcome::Failed(error)),
+                        );
+                        continue;
+                    }
                     begin_public_resolve(
                         key,
                         spec,
                         &config.search_suffixes,
+                        RetryPolicy {
+                            attempt_limit: config.attempts,
+                            attempt_timeout: config.attempt_timeout,
+                        },
                         &mut state,
                         &results,
                         &result_waker,
@@ -657,6 +949,11 @@ fn resolver_main(
                     if let Some(id) = state.by_key.remove(&key) {
                         remove_query(id, &mut state, poll);
                     }
+                }
+                #[cfg(test)]
+                Ok(Command::RefreshConfig(acknowledge)) => {
+                    state.config_dirty = true;
+                    refresh_acks.push(acknowledge);
                 }
                 Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
                     stop = true;
@@ -669,20 +966,67 @@ fn resolver_main(
             return;
         }
 
-        transmit_due(socket, &mut state, &results, &result_waker, &config, poll);
-        let timeout = state
+        refresh_configuration_if_dirty(
+            &mut socket,
+            poll,
+            &mut config,
+            &mut state,
+            &results,
+            &controls,
+            &result_waker,
+        );
+        #[cfg(test)]
+        for acknowledge in refresh_acks {
+            let _acknowledge_result = acknowledge.send(());
+        }
+
+        if let Some(active_socket) = socket.as_mut() {
+            if transmit_due(
+                active_socket,
+                &mut state,
+                &results,
+                &result_waker,
+                &config,
+                poll,
+            ) {
+                state.config_dirty = true;
+            }
+        }
+        refresh_configuration_if_dirty(
+            &mut socket,
+            poll,
+            &mut config,
+            &mut state,
+            &results,
+            &controls,
+            &result_waker,
+        );
+        let now = Instant::now();
+        let next_query = state
             .pending
             .values()
-            .map(|query| query.next_attempt.saturating_duration_since(Instant::now()))
+            .map(|query| query.next_attempt.saturating_duration_since(now))
+            .min();
+        let next_refresh = state
+            .next_config_refresh
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let timeout = next_query
+            .into_iter()
+            .chain(next_refresh)
             .min()
-            .map_or(NATIVE_SAFETY_POLL, |timeout| {
-                timeout.min(NATIVE_SAFETY_POLL)
-            });
+            .unwrap_or(NATIVE_SAFETY_POLL)
+            .min(NATIVE_SAFETY_POLL);
         if let Some(barrier) = state.before_first_poll.take() {
             let _send_result = barrier.send(());
         }
         let mut targets = Vec::with_capacity(state.tcp_by_token.len() + 1);
-        targets.push(PollTarget::new(SOCKET_TOKEN, &*socket, Interest::READABLE));
+        if let Some(active_socket) = socket.as_ref() {
+            targets.push(PollTarget::new(
+                SOCKET_TOKEN,
+                active_socket,
+                Interest::READABLE,
+            ));
+        }
         targets.extend(state.pending.values().filter_map(|query| {
             let QueryTransport::Tcp(tcp) = &query.transport else {
                 return None;
@@ -710,11 +1054,24 @@ fn resolver_main(
         let socket_ready = events
             .iter()
             .any(|event| event.token == SOCKET_TOKEN && event.readable);
-        if socket_ready
-            && receive_packets(socket, &mut state, &results, &result_waker, poll, &config)
-            && replace_current_nameserver(socket, poll, &config, state.current_nameserver)
-        {
-            advance_udp_generation(&mut state.udp_generation);
+        if socket_ready {
+            if let Some(active_socket) = socket.as_mut() {
+                if receive_packets(
+                    active_socket,
+                    &mut state,
+                    &results,
+                    &result_waker,
+                    poll,
+                    &config,
+                ) && replace_current_nameserver(
+                    active_socket,
+                    poll,
+                    &config,
+                    state.current_nameserver,
+                ) {
+                    advance_udp_generation(&mut state.udp_generation);
+                }
+            }
         }
         let tcp_events = events
             .iter()
@@ -741,6 +1098,179 @@ fn parse_dns_name(host: &str) -> Result<DnsName, ResolveFailure> {
     })
 }
 
+fn configuration_unavailable_failure() -> ResolveFailure {
+    ResolveFailure::classified(
+        DnsFailure::NoNameserver,
+        "the current system DNS configuration is unavailable or unsupported",
+    )
+}
+
+fn refresh_configuration_if_dirty(
+    socket: &mut Option<UdpSocket>,
+    poll: &mut NativePoll,
+    config: &mut ResolverConfig,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    controls: &Sender<ResolverControl>,
+    result_waker: &NativeWaker,
+) {
+    if !state.config_dirty {
+        return;
+    }
+    state.config_dirty = false;
+    state.next_config_refresh = config
+        .refresh_interval()
+        .and_then(|interval| Instant::now().checked_add(interval));
+    let Some(discovered) = config.rediscover() else {
+        return;
+    };
+    let snapshot = match discovered {
+        Ok(snapshot)
+            if !snapshot.nameservers.is_empty()
+                && snapshot.attempts != 0
+                && !snapshot.attempt_timeout.is_zero() =>
+        {
+            snapshot
+        }
+        Ok(_) => {
+            transition_configuration_unavailable(
+                socket,
+                poll,
+                state,
+                results,
+                controls,
+                result_waker,
+            );
+            return;
+        }
+        Err(_) => {
+            transition_configuration_unavailable(
+                socket,
+                poll,
+                state,
+                results,
+                controls,
+                result_waker,
+            );
+            return;
+        }
+    };
+
+    let current = config.snapshot();
+    if state.config_available && snapshot == current {
+        return;
+    }
+    let route_changed = !state.config_available || snapshot.nameservers != current.nameservers;
+    if !route_changed {
+        config.apply(snapshot);
+        advance_config_generation(&mut state.config_generation);
+        return;
+    }
+
+    fail_pending_for_configuration_change(state, poll, results, result_waker);
+    state.cache.clear();
+    config.apply(snapshot);
+    state.current_nameserver = 0;
+    state.config_available = install_configured_socket(socket, poll, config);
+    advance_config_generation(&mut state.config_generation);
+    send_control(
+        controls,
+        result_waker,
+        ResolverControl::EvictIdleHttp(state.config_generation),
+    );
+}
+
+fn transition_configuration_unavailable(
+    socket: &mut Option<UdpSocket>,
+    poll: &mut NativePoll,
+    state: &mut ResolverState,
+    results: &Sender<ResolveResult>,
+    controls: &Sender<ResolverControl>,
+    result_waker: &NativeWaker,
+) {
+    if !state.config_available {
+        return;
+    }
+    fail_pending_for_configuration_change(state, poll, results, result_waker);
+    state.cache.clear();
+    retire_configured_socket(socket, poll);
+    state.config_available = false;
+    advance_config_generation(&mut state.config_generation);
+    send_control(
+        controls,
+        result_waker,
+        ResolverControl::EvictIdleHttp(state.config_generation),
+    );
+}
+
+fn fail_pending_for_configuration_change(
+    state: &mut ResolverState,
+    poll: &mut NativePoll,
+    results: &Sender<ResolveResult>,
+    result_waker: &NativeWaker,
+) {
+    let ids = state.pending.keys().copied().collect::<Vec<_>>();
+    for id in ids {
+        let Some(query) = remove_query(id, state, poll) else {
+            continue;
+        };
+        state.by_key.remove(&query.key);
+        emit_failure(
+            query,
+            ResolveFailure::classified(
+                DnsFailure::NoNameserver,
+                "the system DNS configuration changed while the lookup was pending",
+            ),
+            results,
+            result_waker,
+        );
+    }
+}
+
+fn install_configured_socket(
+    socket: &mut Option<UdpSocket>,
+    poll: &mut NativePoll,
+    config: &ResolverConfig,
+) -> bool {
+    let Some(nameserver) = config.nameservers.first().copied() else {
+        retire_configured_socket(socket, poll);
+        return false;
+    };
+    let Ok(mut replacement) = connect_one_nameserver(nameserver) else {
+        retire_configured_socket(socket, poll);
+        return false;
+    };
+    if poll
+        .register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
+        .is_err()
+    {
+        retire_configured_socket(socket, poll);
+        return false;
+    }
+    retire_configured_socket(socket, poll);
+    *socket = Some(replacement);
+    true
+}
+
+fn retire_configured_socket(socket: &mut Option<UdpSocket>, poll: &mut NativePoll) {
+    if let Some(mut socket) = socket.take() {
+        let _deregister_result = poll.deregister(&mut socket);
+    }
+}
+
+fn advance_config_generation(generation: &mut u64) {
+    *generation = generation.wrapping_add(1);
+    if *generation == 0 {
+        *generation = 1;
+    }
+}
+
+fn send_control(controls: &Sender<ResolverControl>, waker: &NativeWaker, control: ResolverControl) {
+    if controls.send(control).is_ok() {
+        let _wake_result = waker.wake();
+    }
+}
+
 fn public_error(failure: ResolveFailure) -> Error {
     Error::dns(failure.class, failure.message)
 }
@@ -752,7 +1282,7 @@ fn emit_failure(
     result_waker: &NativeWaker,
 ) {
     match query.policy {
-        QueryPolicy::Http => send_result(
+        QueryPolicy::Http(_) => send_result(
             results,
             result_waker,
             ResolveResult::http(query.key, Err(failure)),
@@ -802,6 +1332,7 @@ fn begin_public_resolve(
     key: ResolveKey,
     spec: PublicResolveSpec,
     search_suffixes: &[String],
+    retry: RetryPolicy,
     state: &mut ResolverState,
     results: &Sender<ResolveResult>,
     result_waker: &NativeWaker,
@@ -821,6 +1352,8 @@ fn begin_public_resolve(
         from_cache: spec.cache_mode == CacheMode::Use,
         saw_nodata: false,
         negative_validity: None,
+        attempt_limit: retry.attempt_limit,
+        attempt_timeout: retry.attempt_timeout,
     };
     let Some(first) = session.candidates.first().cloned() else {
         send_result(
@@ -1100,6 +1633,13 @@ fn prepare_name_query(
     policy: QueryPolicy,
 ) -> Result<(u16, PendingQuery), ResolveFailure> {
     let public = matches!(policy, QueryPolicy::Public(_));
+    let retry = match &policy {
+        QueryPolicy::Http(retry) => *retry,
+        QueryPolicy::Public(session) => RetryPolicy {
+            attempt_limit: session.attempt_limit,
+            attempt_timeout: session.attempt_timeout,
+        },
+    };
     let id = allocate_id(pending, next_id, public).ok_or_else(|| {
         ResolveFailure::classified(
             DnsFailure::Protocol,
@@ -1122,6 +1662,8 @@ fn prepare_name_query(
             cname_hops,
             wire,
             attempts_sent: 0,
+            attempt_limit: retry.attempt_limit,
+            attempt_timeout: retry.attempt_timeout,
             servers_tried: 1,
             last_udp_generation: 0,
             next_attempt: Instant::now(),
@@ -1155,7 +1697,7 @@ fn allocate_id(
 fn public_txid_available(pending: &HashMap<u16, PendingQuery>) -> bool {
     let http_count = pending
         .values()
-        .filter(|query| matches!(query.policy, QueryPolicy::Http))
+        .filter(|query| matches!(query.policy, QueryPolicy::Http(_)))
         .count();
     public_txid_available_counts(http_count, pending.len())
 }
@@ -1175,7 +1717,8 @@ fn transmit_due(
     result_waker: &NativeWaker,
     config: &ResolverConfig,
     poll: &mut NativePoll,
-) {
+) -> bool {
+    let mut config_dirty = false;
     let now = Instant::now();
     let due = state
         .pending
@@ -1194,7 +1737,7 @@ fn transmit_due(
                     results,
                     result_waker,
                     match query.policy {
-                        QueryPolicy::Http => ResolveResult::http(
+                        QueryPolicy::Http(_) => ResolveResult::http(
                             query.key,
                             Err(ResolveFailure::classified(
                                 DnsFailure::Io,
@@ -1214,7 +1757,8 @@ fn transmit_due(
             continue;
         }
         let exhausted = state.pending.get(&id).is_some_and(|query| {
-            matches!(query.transport, QueryTransport::Udp) && query.attempts_sent >= config.attempts
+            matches!(query.transport, QueryTransport::Udp)
+                && query.attempts_sent >= query.attempt_limit
         });
         if exhausted {
             let exhausted_generation = state
@@ -1237,6 +1781,7 @@ fn transmit_due(
                     }
                 }
             } else {
+                config_dirty = true;
                 if exhausted_generation == state.udp_generation
                     && replace_current_nameserver(socket, poll, config, state.current_nameserver)
                 {
@@ -1248,7 +1793,7 @@ fn transmit_due(
                         results,
                         result_waker,
                         match query.policy {
-                            QueryPolicy::Http => ResolveResult::http(
+                            QueryPolicy::Http(_) => ResolveResult::http(
                                 query.key,
                                 Err(ResolveFailure::classified(
                                     DnsFailure::NoNameserver,
@@ -1278,10 +1823,10 @@ fn transmit_due(
             Ok(written) if written == query.wire.len() => {
                 query.attempts_sent += 1;
                 query.last_udp_generation = state.udp_generation;
-                query.next_attempt = now.checked_add(config.attempt_timeout).unwrap_or(now);
+                query.next_attempt = now.checked_add(query.attempt_timeout).unwrap_or(now);
             }
             Ok(_) => {
-                query.attempts_sent = config.attempts;
+                query.attempts_sent = query.attempt_limit;
                 query.last_udp_generation = state.udp_generation;
                 query.next_attempt = now;
             }
@@ -1289,12 +1834,13 @@ fn transmit_due(
                 query.next_attempt = now.checked_add(Duration::from_millis(1)).unwrap_or(now);
             }
             Err(_) => {
-                query.attempts_sent = config.attempts;
+                query.attempts_sent = query.attempt_limit;
                 query.last_udp_generation = state.udp_generation;
                 query.next_attempt = now;
             }
         }
     }
+    config_dirty
 }
 
 fn advance_udp_generation(generation: &mut u64) {
@@ -1390,12 +1936,13 @@ fn receive_packets(
             continue;
         };
         if matches!(result, Ok(ParsedAnswer::Truncated)) {
+            let attempt_timeout = query.attempt_timeout;
             match begin_tcp_fallback(
                 id,
                 &mut query,
                 poll,
                 config.nameservers[state.current_nameserver],
-                config.attempt_timeout,
+                attempt_timeout,
                 &mut state.tcp_by_token,
                 &mut state.next_tcp_token,
             ) {

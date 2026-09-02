@@ -28,7 +28,7 @@ const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_ATTEMPTS: u8 = 3;
 pub(super) const MAX_SEARCH_SUFFIXES: usize = 6;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DiscoveredResolverConfig {
     pub(super) nameservers: Vec<SocketAddr>,
     pub(super) search_suffixes: Vec<String>,

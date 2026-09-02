@@ -13,6 +13,8 @@ use super::BackendResolveCompletion;
 use super::native::{
     NATIVE_SAFETY_POLL, NativeEvent, NativeFailure, NativeFailureKind, NativeReactor, SlotId,
 };
+#[cfg(test)]
+use super::native_dns::ResolverSnapshot;
 use super::native_dns::{
     NativeResolver, PublicLookupOutcome, PublicResolveSpec, ResolveKey, ResolverConfig,
 };
@@ -183,6 +185,28 @@ impl NativeHttpFactory {
             resolver: Some(ResolverConfig::injected(nameserver).with_search_suffixes(suffixes)),
             tls: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_refreshable_nameserver(
+        config: &EngineConfig,
+        nameserver: SocketAddr,
+        refresh_interval: Duration,
+    ) -> (
+        Self,
+        std::sync::mpsc::Sender<Result<ResolverSnapshot, Error>>,
+    ) {
+        let (resolver, updates) = ResolverConfig::injected(nameserver)
+            .with_test_refresh_source_and_interval(Some(refresh_interval));
+        (
+            Self {
+                limits: HttpLimits::from_config(config),
+                connection_limits: ConnectionLimits::from_config(config),
+                resolver: Some(resolver),
+                tls: None,
+            },
+            updates,
+        )
     }
 
     pub(super) fn new_with_system_dns(config: &EngineConfig) -> Result<Self, Error> {
@@ -365,6 +389,7 @@ struct HttpTransfer {
     inactivity_deadline: Option<Instant>,
     inactivity_paused: bool,
     key: ConnectionKey,
+    resolver_config_generation: u64,
     request_permits_reuse: bool,
     request_write_drained: bool,
     request: Request,
@@ -555,6 +580,7 @@ struct NativeHttpBackend {
     idle: HashMap<ConnectionKey, VecDeque<IdleConnection>>,
     idle_slots: HashMap<SlotId, ConnectionKey>,
     idle_count: usize,
+    resolver_config_generation: u64,
     connection_count: usize,
     connections_per_key: HashMap<ConnectionKey, usize>,
     waiting: VecDeque<PendingResolve>,
@@ -882,6 +908,7 @@ impl NativeHttpBackend {
         let resolver = resolver
             .map(|config| NativeResolver::new(config, reactor.waker()))
             .transpose()?;
+        let resolver_config_generation = u64::from(resolver.is_some());
         Ok(Self {
             reactor,
             resolver,
@@ -904,6 +931,7 @@ impl NativeHttpBackend {
             idle: HashMap::new(),
             idle_slots: HashMap::new(),
             idle_count: 0,
+            resolver_config_generation,
             connection_count: 0,
             connections_per_key: HashMap::new(),
             waiting: VecDeque::new(),
@@ -986,6 +1014,25 @@ impl NativeHttpBackend {
         } else {
             false
         }
+    }
+
+    fn evict_all_idle(&mut self) {
+        let slots = self.idle_slots.keys().copied().collect::<Vec<_>>();
+        for slot in slots {
+            self.discard_idle_slot(slot);
+        }
+    }
+
+    fn apply_idle_http_eviction(&mut self) -> Result<(), Error> {
+        let config_generation = match &self.resolver {
+            Some(resolver) => resolver.take_idle_http_eviction()?,
+            None => None,
+        };
+        if let Some(config_generation) = config_generation {
+            self.resolver_config_generation = config_generation;
+            self.evict_all_idle();
+        }
+        Ok(())
     }
 
     fn make_connection_capacity(&mut self, key: &ConnectionKey) -> bool {
@@ -1115,6 +1162,9 @@ impl NativeHttpBackend {
     }
 
     fn start_pending(&mut self, pending: PendingResolve) -> Option<Completion> {
+        if let Err(error) = self.apply_idle_http_eviction() {
+            return pending.fail(error);
+        }
         let now = Instant::now();
         if pending
             .next_deadline()
@@ -1287,6 +1337,7 @@ impl NativeHttpBackend {
                 inactivity_deadline: pending.inactivity_deadline,
                 inactivity_paused: false,
                 key: pending.key,
+                resolver_config_generation: self.resolver_config_generation,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
                 request: pending.request,
@@ -1327,6 +1378,7 @@ impl NativeHttpBackend {
         let reusable = response_permits_reuse
             && transfer.request_permits_reuse
             && transfer.request_write_drained
+            && transfer.resolver_config_generation == self.resolver_config_generation
             && !peer_closed
             && self.connection_limits.idle_timeout != Duration::ZERO
             && self.idle_count < self.connection_limits.idle_global
@@ -1488,6 +1540,7 @@ impl NativeHttpBackend {
                 inactivity_deadline: pending.inactivity_deadline,
                 inactivity_paused: false,
                 key: pending.key,
+                resolver_config_generation: self.resolver_config_generation,
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
                 request: pending.request,
@@ -1500,6 +1553,7 @@ impl NativeHttpBackend {
     }
 
     fn process_resolver_results(&mut self) -> Result<Vec<BackendCompletion>, Error> {
+        self.apply_idle_http_eviction()?;
         let results = match &self.resolver {
             Some(resolver) => resolver.drain()?,
             None => return Ok(Vec::new()),
@@ -2263,6 +2317,7 @@ impl NativeHttpBackend {
             && !redirect_transfer_failed
             && transfer.request_permits_reuse
             && transfer.request_write_drained
+            && transfer.resolver_config_generation == self.resolver_config_generation
             && !peer_closed
             && self.connection_limits.idle_timeout != Duration::ZERO
             && self.idle_count < self.connection_limits.idle_global
@@ -3401,6 +3456,7 @@ impl Backend for NativeHttpBackend {
     }
 
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
+        self.apply_idle_http_eviction()?;
         self.resume_standalone_tcp()?;
         self.expire_idle(Instant::now());
         let mut completions = self.dispatch_waiting();
@@ -3550,6 +3606,7 @@ impl Backend for NativeHttpBackend {
                             cache_mode: CacheMode::Use,
                             max_results: sink.max_resolve_results(),
                             expand_search: false,
+                            unavailable_is_unsupported: false,
                         },
                     )
                 {
@@ -3607,6 +3664,7 @@ impl Backend for NativeHttpBackend {
                     cache_mode: request.cache_mode(),
                     max_results,
                     expand_search: request.applies_search_suffixes(),
+                    unavailable_is_unsupported: true,
                 },
             )
         {

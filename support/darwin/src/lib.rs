@@ -11,13 +11,21 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType, ToVoid};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
+use core_foundation::runloop::{
+    CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes, kCFRunLoopDefaultMode,
+};
 use core_foundation::string::CFString;
-use system_configuration::dynamic_store::{SCDynamicStore, SCDynamicStoreBuilder};
+use system_configuration::dynamic_store::{
+    SCDynamicStore, SCDynamicStoreBuilder, SCDynamicStoreCallBackContext,
+};
 
 const GLOBAL_IPV4: &str = "State:/Network/Global/IPv4";
 const GLOBAL_IPV6: &str = "State:/Network/Global/IPv6";
@@ -91,6 +99,87 @@ pub fn discover_default_resolver() -> Result<ResolverConfig, DiscoveryError> {
             DiscoveryError::new("could not open the macOS System Configuration store")
         })?;
     select_default(snapshot(&store)?)
+}
+
+/// Bounded System Configuration notification source for NBReq's existing DNS owner thread.
+///
+/// [`pump`](Self::pump) never performs discovery. It only lets already-pending callbacks mark the
+/// monitor dirty, so NBReq can rediscover after control returns to its ordinary owner loop.
+pub struct ResolverChangeMonitor {
+    _store: SCDynamicStore,
+    source: CFRunLoopSource,
+    run_loop: CFRunLoop,
+    dirty: Arc<AtomicBool>,
+}
+
+impl ResolverChangeMonitor {
+    /// Registers the represented global-primary and DNS keys on the calling thread's run loop.
+    pub fn new() -> Result<Self, DiscoveryError> {
+        let dirty = Arc::new(AtomicBool::new(false));
+        let callback_context = SCDynamicStoreCallBackContext {
+            callout: mark_resolver_dirty,
+            info: Arc::clone(&dirty),
+        };
+        let store = SCDynamicStoreBuilder::new("com.caverock.nbreq.dns-monitor")
+            .callback_context(callback_context)
+            .build()
+            .ok_or_else(|| {
+                DiscoveryError::new("could not open the macOS DNS notification store")
+            })?;
+        let keys = CFArray::from_CFTypes(&[
+            CFString::new(GLOBAL_IPV4),
+            CFString::new(GLOBAL_IPV6),
+            CFString::new(GLOBAL_DNS),
+        ]);
+        let patterns = CFArray::from_CFTypes(&[
+            CFString::new(SERVICE_DNS_PATTERN),
+            CFString::new(INTERFACE_DNS_PATTERN),
+        ]);
+        if !store.set_notification_keys(&keys, &patterns) {
+            return Err(DiscoveryError::new(
+                "could not register macOS DNS configuration notifications",
+            ));
+        }
+        let source = store.create_run_loop_source().ok_or_else(|| {
+            DiscoveryError::new("could not create the macOS DNS notification source")
+        })?;
+        let run_loop = CFRunLoop::get_current();
+        // SAFETY: this process-global Core Foundation mode is valid for the lifetime of the run
+        // loop. `ResolverChangeMonitor` removes this exact source/mode pair before dropping it.
+        run_loop.add_source(&source, unsafe { kCFRunLoopCommonModes });
+        Ok(Self {
+            _store: store,
+            source,
+            run_loop,
+            dirty,
+        })
+    }
+
+    /// Pumps pending callbacks without replacing Mio as the owner's blocking wait.
+    pub fn pump(&self) -> bool {
+        // A zero-duration, return-after-one-source pass is a bounded poll of the CF source. Mio
+        // remains the DNS owner's wait and its existing safety cap bounds notification latency.
+        let _result =
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::ZERO, true);
+        self.dirty.swap(false, Ordering::AcqRel)
+    }
+}
+
+impl Drop for ResolverChangeMonitor {
+    fn drop(&mut self) {
+        // SAFETY: this is the same process-global mode used when the source was registered.
+        self.run_loop
+            .remove_source(&self.source, unsafe { kCFRunLoopCommonModes });
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn mark_resolver_dirty(
+    _store: SCDynamicStore,
+    _changed_keys: CFArray<CFString>,
+    dirty: &mut Arc<AtomicBool>,
+) {
+    dirty.store(true, Ordering::Release);
 }
 
 fn reject_resolver_directory(path: &Path) -> Result<(), DiscoveryError> {

@@ -493,6 +493,7 @@ fn terminal_socket_failure_dominates_same_batch_write_progress() {
             inactivity_deadline: Some(deadline),
             inactivity_paused: false,
             key: connection_key,
+            resolver_config_generation: 0,
             request_permits_reuse: true,
             request_write_drained: false,
             request: Request::get(format!("http://{address}/batch"))
@@ -1159,6 +1160,133 @@ fn manual_native_http_reuses_one_clean_connection() {
     }
     engine.shutdown().expect("manual reuse Engine must stop");
     server.join().expect("manual reuse fixture must join");
+}
+
+#[test]
+fn queued_route_eviction_wins_before_same_turn_idle_reuse() {
+    let dns_a =
+        std::net::UdpSocket::bind("127.0.0.1:0").expect("configuration A placeholder must bind");
+    let dns_b =
+        std::net::UdpSocket::bind("127.0.0.1:0").expect("configuration B placeholder must bind");
+    let (resolver, updates) = ResolverConfig::injected(
+        dns_a
+            .local_addr()
+            .expect("configuration A placeholder address"),
+    )
+    .with_test_refresh_source_and_interval(None);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
+    let address = listener.local_addr().expect("HTTP fixture address");
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().expect("first HTTP socket must accept");
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("first HTTP socket timeout must configure");
+        read_request_head(&mut first, "first route-generation request");
+        first
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n1")
+            .expect("first HTTP response must write");
+        first.flush().expect("first HTTP response must flush");
+
+        let mut closed = [0_u8; 1];
+        assert_eq!(
+            first
+                .read(&mut closed)
+                .expect("old-generation idle socket close must be observable"),
+            0,
+            "the next request reused an idle socket after DNS configuration changed"
+        );
+
+        let (mut second, _) = listener
+            .accept()
+            .expect("replacement HTTP socket must accept");
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("replacement HTTP socket timeout must configure");
+        read_request_head(&mut second, "replacement route-generation request");
+        second
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n2")
+            .expect("replacement HTTP response must write");
+    });
+
+    let config = EngineConfig::manual();
+    let mut backend = NativeHttpBackend::new(
+        HttpLimits::from_config(&config),
+        Some(resolver),
+        None,
+        ConnectionLimits::from_config(&config),
+    )
+    .expect("refreshable backend must construct");
+    let request = |sequence, path| {
+        (
+            RequestId {
+                engine: 1,
+                sequence,
+            },
+            Request::get(format!("http://{address}/{path}"))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("route-generation request must build"),
+        )
+    };
+    let wait = |backend: &mut NativeHttpBackend, expected: RequestId| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let completions = backend
+                .poll(Instant::now() + Duration::from_millis(20))
+                .expect("refreshable backend poll must succeed");
+            if let Some(completion) = completions
+                .into_iter()
+                .find(|completion| completion.id == expected)
+            {
+                break completion.completion;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "route-generation request did not complete"
+            );
+        }
+    };
+
+    let (first_id, first_request) = request(1, "first");
+    assert!(
+        backend
+            .submit(first_id, first_request, Instant::now())
+            .is_none()
+    );
+    let Completion::Completed(first) = wait(&mut backend, first_id) else {
+        panic!("first route-generation request must complete");
+    };
+    assert_eq!(first.body(), b"1");
+    assert_eq!(backend.idle_count, 1);
+
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(
+            dns_b
+                .local_addr()
+                .expect("configuration B placeholder address"),
+        )))
+        .expect("configuration B must publish");
+    backend
+        .resolver
+        .as_ref()
+        .expect("test resolver must exist")
+        .refresh_config_for_test()
+        .expect("configuration B refresh must finish on the DNS owner");
+
+    let (second_id, second_request) = request(2, "second");
+    assert!(
+        backend
+            .submit(second_id, second_request, Instant::now())
+            .is_none()
+    );
+    assert_eq!(backend.resolver_config_generation, 2);
+    let Completion::Completed(second) = wait(&mut backend, second_id) else {
+        panic!("replacement route-generation request must complete");
+    };
+    assert_eq!(second.body(), b"2");
+
+    backend.shutdown().expect("refreshable backend must stop");
+    server.join().expect("HTTP fixture must join");
 }
 
 #[test]

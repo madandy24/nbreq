@@ -96,6 +96,7 @@ use crate::{
 struct DnsFixture {
     address: SocketAddr,
     stop: Sender<()>,
+    observed: Arc<Mutex<Vec<Name>>>,
     joined: Option<JoinHandle<()>>,
 }
 
@@ -261,6 +262,8 @@ impl DnsFixture {
             .expect("DNS fixture timeout must configure");
         let fixture_address = socket.local_addr().expect("DNS fixture address");
         let (stop_tx, stop_rx) = test_channel::channel();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let thread_observed = Arc::clone(&observed);
         let joined = thread::spawn(move || {
             let mut buffer = [0_u8; DNS_PACKET_LIMIT];
             loop {
@@ -285,6 +288,10 @@ impl DnsFixture {
                     .query()
                     .expect("DNS fixture query must exist")
                     .clone();
+                thread_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(query.name().clone());
                 let mut response = Message::new();
                 response
                     .set_id(request.id())
@@ -305,8 +312,16 @@ impl DnsFixture {
         Self {
             address: fixture_address,
             stop: stop_tx,
+            observed,
             joined: Some(joined),
         }
+    }
+
+    fn observations(&self) -> Vec<Name> {
+        self.observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -356,7 +371,10 @@ fn production_query_encoder_has_one_question_and_no_records() {
         0,
         &HashMap::new(),
         &mut next_id,
-        QueryPolicy::Http,
+        QueryPolicy::Http(RetryPolicy {
+            attempt_limit: DEFAULT_ATTEMPTS,
+            attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+        }),
     )
     .expect("ordinary DNS query must encode");
     let message = Message::from_vec(&query.wire).expect("ordinary DNS query must decode");
@@ -1003,6 +1021,7 @@ fn public_resolution_uses_the_replacement_generation() {
         cache_mode: CacheMode::Bypass,
         max_results: 8,
         expand_search: false,
+        unavailable_is_unsupported: true,
     };
 
     resolver
@@ -1094,6 +1113,447 @@ fn concurrent_exhaustion_has_one_terminal_per_lookup_and_later_work_recovers() {
     resolver
         .shutdown()
         .expect("concurrent recovery resolver must join");
+}
+
+#[test]
+fn live_configuration_refresh_moves_the_original_resolver_from_a_to_b() {
+    let first = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 51));
+    let second = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 52));
+    let (config, updates) = ResolverConfig::for_test(first.address).with_test_refresh_source();
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+
+    resolver
+        .resolve(ResolveKey(210), "configuration-a.test".to_owned())
+        .expect("first-generation lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("first generation must answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 51))]
+    );
+
+    updates
+        .send(Ok(ResolverSnapshot {
+            nameservers: vec![second.address],
+            search_suffixes: Vec::new(),
+            attempt_timeout: Duration::from_millis(50),
+            attempts: 2,
+        }))
+        .expect("test configuration B must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("test refresh must wake the owner");
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("configuration controls must remain live")
+            .is_some(),
+        "route replacement must request idle HTTP eviction"
+    );
+    resolver
+        .resolve(ResolveKey(211), "configuration-a.test".to_owned())
+        .expect("second-generation lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("refreshed generation must answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 52))]
+    );
+    assert!(
+        second
+            .observations()
+            .contains(&fqdn("configuration-a.test")),
+        "a route-generation change must clear the old positive cache entry"
+    );
+
+    resolver.shutdown().expect("refreshable resolver must join");
+}
+
+#[test]
+fn equal_live_configuration_snapshot_is_a_complete_no_op() {
+    let fixture = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 53));
+    let snapshot = ResolverSnapshot {
+        nameservers: vec![fixture.address],
+        search_suffixes: Vec::new(),
+        attempt_timeout: Duration::from_millis(50),
+        attempts: 2,
+    };
+    let (config, updates) = ResolverConfig::for_test(fixture.address)
+        .with_test_refresh_source_and_interval(Some(Duration::from_millis(5)));
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+
+    resolver
+        .resolve(ResolveKey(212), "configuration-equal.test".to_owned())
+        .expect("prime lookup must submit");
+    wait_for_resolution(&mut owner, &resolver)
+        .result
+        .expect("prime lookup must answer");
+    updates
+        .send(Ok(snapshot.clone()))
+        .expect("equal test configuration must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("equal refresh must complete");
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("configuration controls must remain live")
+            .is_none(),
+        "an equal snapshot must not evict idle HTTP"
+    );
+    updates
+        .send(Ok(snapshot))
+        .expect("duplicate equal configuration must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("duplicate equal refresh must complete");
+    thread::sleep(Duration::from_millis(20));
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("configuration controls must remain live")
+            .is_none(),
+        "duplicate notifications and periodic equal refreshes must be no-ops"
+    );
+
+    resolver
+        .resolve(ResolveKey(213), "configuration-equal.test".to_owned())
+        .expect("cached lookup must submit");
+    wait_for_resolution(&mut owner, &resolver)
+        .result
+        .expect("equal refresh must preserve the cache");
+    assert_eq!(
+        fixture
+            .observations()
+            .iter()
+            .filter(|name| **name == fqdn("configuration-equal.test"))
+            .count(),
+        1,
+        "equal refresh must not clear a valid cache entry"
+    );
+
+    resolver.shutdown().expect("refreshable resolver must join");
+}
+
+#[test]
+fn route_change_fails_pending_once_without_replay_then_uses_the_new_server() {
+    let silent = StdUdpSocket::bind("127.0.0.1:0").expect("silent DNS server must bind");
+    silent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("silent DNS timeout must configure");
+    let first_address = silent.local_addr().expect("silent DNS address");
+    let second = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 54));
+    let (config, updates) = ResolverConfig::for_test(first_address).with_test_refresh_source();
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+
+    resolver
+        .resolve(ResolveKey(214), "configuration-pending.test".to_owned())
+        .expect("pending lookup must submit");
+    let mut wire = [0_u8; DNS_PACKET_LIMIT];
+    silent
+        .recv_from(&mut wire)
+        .expect("old server must observe the pending query");
+    updates
+        .send(Ok(ResolverSnapshot {
+            nameservers: vec![second.address],
+            search_suffixes: Vec::new(),
+            attempt_timeout: Duration::from_millis(50),
+            attempts: 2,
+        }))
+        .expect("configuration B must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("route refresh must complete");
+    let terminal = wait_for_resolution(&mut owner, &resolver);
+    assert_eq!(terminal.key, ResolveKey(214));
+    assert_eq!(
+        terminal
+            .result
+            .expect_err("old-generation lookup must fail")
+            .class,
+        DnsFailure::NoNameserver
+    );
+    assert!(
+        resolver
+            .drain()
+            .expect("result drain must stay live")
+            .is_empty()
+    );
+    assert!(
+        !second
+            .observations()
+            .contains(&fqdn("configuration-pending.test")),
+        "the old-generation lookup must not replay on configuration B"
+    );
+
+    resolver
+        .resolve(ResolveKey(215), "configuration-later.test".to_owned())
+        .expect("new-generation lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("new generation must answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 54))]
+    );
+    resolver.shutdown().expect("refreshable resolver must join");
+}
+
+#[test]
+fn unsupported_live_snapshot_fails_closed_and_later_recovers() {
+    let first = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 55));
+    let second = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 56));
+    let (config, updates) = ResolverConfig::for_test(first.address).with_test_refresh_source();
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+
+    updates
+        .send(Err(Error::new(
+            ErrorKind::Unsupported,
+            "injected split DNS topology",
+        )))
+        .expect("unsupported topology must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("unsupported refresh must complete");
+    resolver
+        .resolve(ResolveKey(216), "configuration-unavailable.test".to_owned())
+        .expect("unavailable lookup must submit to the live Engine");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect_err("unsupported live topology must fail closed")
+            .class,
+        DnsFailure::NoNameserver
+    );
+
+    resolver
+        .public_resolve(
+            ResolveKey(218),
+            PublicResolveSpec {
+                host: "configuration-unavailable-public.test".to_owned(),
+                family: AddressFamily::Ipv4,
+                order: AddressOrder::Ipv4ThenIpv6,
+                cache_mode: CacheMode::Bypass,
+                max_results: 8,
+                expand_search: false,
+                unavailable_is_unsupported: true,
+            },
+        )
+        .expect("unavailable public lookup must submit to the live Engine");
+    let Some(PublicLookupOutcome::Failed(error)) =
+        wait_for_resolution(&mut owner, &resolver).public
+    else {
+        panic!("unavailable public lookup must fail");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert_eq!(error.dns_failure(), None);
+
+    resolver
+        .public_resolve(
+            ResolveKey(219),
+            PublicResolveSpec {
+                host: "configuration-unavailable-tcp.test".to_owned(),
+                family: AddressFamily::Both,
+                order: AddressOrder::Ipv4ThenIpv6,
+                cache_mode: CacheMode::Use,
+                max_results: 8,
+                expand_search: false,
+                unavailable_is_unsupported: false,
+            },
+        )
+        .expect("unavailable hostname-TCP lookup must submit to the live Engine");
+    let Some(PublicLookupOutcome::Failed(error)) =
+        wait_for_resolution(&mut owner, &resolver).public
+    else {
+        panic!("unavailable hostname-TCP lookup must fail");
+    };
+    assert_eq!(error.kind(), ErrorKind::Transport);
+    assert_eq!(error.dns_failure(), Some(DnsFailure::NoNameserver));
+
+    updates
+        .send(Ok(ResolverSnapshot {
+            nameservers: vec![second.address],
+            search_suffixes: Vec::new(),
+            attempt_timeout: Duration::from_millis(50),
+            attempts: 2,
+        }))
+        .expect("represented topology must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("recovery refresh must complete");
+    resolver
+        .resolve(ResolveKey(217), "configuration-recovered.test".to_owned())
+        .expect("recovered lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("live Engine must recover")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 56))]
+    );
+
+    resolver.shutdown().expect("refreshable resolver must join");
+}
+
+#[test]
+fn injected_static_configuration_never_rediscovers() {
+    let fixture = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 57));
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(ResolverConfig::for_test(fixture.address), owner.waker())
+            .expect("static resolver must construct");
+    resolver
+        .refresh_config_for_test()
+        .expect("static refresh request must be harmless");
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("configuration controls must remain live")
+            .is_none()
+    );
+    resolver
+        .resolve(ResolveKey(218), "configuration-static.test".to_owned())
+        .expect("static lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("static resolver must remain usable")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 57))]
+    );
+    resolver.shutdown().expect("static resolver must join");
+}
+
+#[test]
+fn suffix_only_refresh_changes_future_public_candidates_without_route_churn() {
+    let fixture = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 58));
+    let (config, updates) = ResolverConfig::for_test(fixture.address)
+        .with_search_suffixes(["corp.test"])
+        .with_test_refresh_source();
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+    let public = |host: &str| PublicResolveSpec {
+        host: host.to_owned(),
+        family: AddressFamily::Ipv4,
+        order: AddressOrder::Ipv4ThenIpv6,
+        cache_mode: CacheMode::Bypass,
+        max_results: 8,
+        expand_search: true,
+        unavailable_is_unsupported: true,
+    };
+
+    resolver
+        .public_resolve(ResolveKey(219), public("before"))
+        .expect("first suffix lookup must submit");
+    assert!(matches!(
+        wait_for_resolution(&mut owner, &resolver).public,
+        Some(PublicLookupOutcome::Completed {
+            status: ResolveStatus::Answer,
+            ..
+        })
+    ));
+    updates
+        .send(Ok(ResolverSnapshot {
+            nameservers: vec![fixture.address],
+            search_suffixes: vec!["lab.test".to_owned()],
+            attempt_timeout: Duration::from_millis(50),
+            attempts: 2,
+        }))
+        .expect("suffix-only configuration must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("suffix-only refresh must complete");
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("configuration controls must remain live")
+            .is_none(),
+        "suffix-only refresh must not evict HTTP"
+    );
+    resolver
+        .public_resolve(ResolveKey(220), public("after"))
+        .expect("second suffix lookup must submit");
+    assert!(matches!(
+        wait_for_resolution(&mut owner, &resolver).public,
+        Some(PublicLookupOutcome::Completed {
+            status: ResolveStatus::Answer,
+            ..
+        })
+    ));
+    let observed = fixture.observations();
+    assert!(observed.contains(&fqdn("before.corp.test")));
+    assert!(observed.contains(&fqdn("after.lab.test")));
+    assert!(!observed.contains(&fqdn("after.corp.test")));
+    resolver.shutdown().expect("refreshable resolver must join");
+}
+
+#[test]
+fn exhausted_transport_requests_the_same_configuration_transition() {
+    let silent = StdUdpSocket::bind("127.0.0.1:0").expect("silent DNS server must bind");
+    let first_address = silent.local_addr().expect("silent DNS address");
+    let second = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 59));
+    let (config, updates) = ResolverConfig::for_test(first_address).with_test_refresh_source();
+    updates
+        .send(Ok(ResolverSnapshot {
+            nameservers: vec![second.address],
+            search_suffixes: Vec::new(),
+            attempt_timeout: Duration::from_millis(50),
+            attempts: 2,
+        }))
+        .expect("configuration B must await exhaustion");
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("refreshable resolver must construct");
+
+    resolver
+        .resolve(ResolveKey(221), "configuration-exhausted.test".to_owned())
+        .expect("exhausting lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect_err("the operation exposing exhaustion must still fail")
+            .class,
+        DnsFailure::NoNameserver
+    );
+    let transition_deadline = Instant::now() + Duration::from_secs(2);
+    while resolver
+        .take_idle_http_eviction()
+        .expect("configuration controls must remain live")
+        .is_none()
+    {
+        assert!(
+            Instant::now() < transition_deadline,
+            "exhaustion did not request rediscovery"
+        );
+        owner
+            .poll(transition_deadline)
+            .expect("transition wake poll must succeed");
+    }
+    resolver
+        .resolve(
+            ResolveKey(222),
+            "configuration-after-exhaustion.test".to_owned(),
+        )
+        .expect("post-exhaustion lookup must submit");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("later lookup must use configuration B")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 59))]
+    );
+    resolver.shutdown().expect("refreshable resolver must join");
 }
 
 #[test]
@@ -1359,6 +1819,533 @@ fn hostname_resolution_feeds_the_existing_http_owner() {
     assert_eq!(response.body(), b"ok");
     engine.shutdown().expect("native DNS/HTTP Engine must stop");
     server.join().expect("HTTP fixture must join");
+}
+
+#[test]
+fn route_generation_change_evicts_idle_http_before_the_next_lease() {
+    let dns_a = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let dns_b = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
+    let address = listener.local_addr().expect("HTTP fixture address");
+    let server = thread::spawn(move || {
+        let read_request = |stream: &mut std::net::TcpStream| {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("HTTP fixture read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("HTTP request must read");
+                assert_ne!(read, 0, "client closed before HTTP request head");
+                request.extend_from_slice(&buffer[..read]);
+            }
+        };
+        let (mut first, _) = listener.accept().expect("first HTTP socket must accept");
+        read_request(&mut first);
+        first
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n1")
+            .expect("first HTTP response must write");
+        let mut closed = [0_u8; 1];
+        assert_eq!(
+            first
+                .read(&mut closed)
+                .expect("idle socket close must be observable"),
+            0,
+            "route generation change must close the idle socket"
+        );
+        let (mut second, _) = listener.accept().expect("second HTTP socket must accept");
+        read_request(&mut second);
+        second
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n2")
+            .expect("second HTTP response must write");
+    });
+
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            dns_a.address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("refreshable HTTP Engine must construct");
+    let first = engine
+        .client()
+        .execute(
+            Request::get(format!("http://refresh.test:{}/first", address.port()))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("first refresh request must build"),
+        )
+        .expect("first refresh request must complete");
+    assert_eq!(first.body(), b"1");
+    assert_eq!(engine.metrics().current().idle_connections(), 1);
+
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(dns_b.address)))
+        .expect("configuration B must publish");
+    let refresh_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let metrics = engine.metrics();
+        if metrics.current().idle_connections() == 0 && metrics.idle_connections_evicted() >= 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < refresh_deadline,
+            "route refresh did not evict the idle HTTP socket"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let second = engine
+        .client()
+        .execute(
+            Request::get(format!("http://refresh.test:{}/second", address.port()))
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("second refresh request must build"),
+        )
+        .expect("second refresh request must complete");
+    assert_eq!(second.body(), b"2");
+    let metrics = engine.metrics();
+    assert_eq!(metrics.connections_opened(), 2);
+    assert_eq!(metrics.connections_reused(), 0);
+    assert!(
+        dns_b.observations().contains(&fqdn("refresh.test")),
+        "the second request must resolve through configuration B"
+    );
+    engine
+        .shutdown()
+        .expect("refreshable HTTP Engine must stop");
+    server.join().expect("refreshable HTTP fixture must join");
+}
+
+#[cfg(feature = "resolver")]
+#[test]
+fn route_generation_change_leaves_an_active_http_response_alive() {
+    let dns_a = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let dns_b = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("active HTTP fixture must bind");
+    let address = listener.local_addr().expect("active HTTP fixture address");
+    let (body_started, body_started_rx) = test_channel::channel();
+    let (release_body, release_body_rx) = test_channel::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("active HTTP socket must accept");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("active HTTP read timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 512];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).expect("active HTTP request read");
+            assert_ne!(read, 0, "client closed before active HTTP request head");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\na")
+            .expect("active HTTP response prefix must write");
+        body_started
+            .send(())
+            .expect("active HTTP body-start signal must send");
+        release_body_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("active HTTP body release must arrive");
+        stream
+            .write_all(b"b")
+            .expect("active HTTP response suffix must write");
+        let mut closed = [0_u8; 1];
+        assert_eq!(
+            stream
+                .read(&mut closed)
+                .expect("stale active HTTP socket close must be observable"),
+            0,
+            "an old-generation active HTTP socket must not enter the idle pool"
+        );
+    });
+
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            dns_a.address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("active HTTP refresh Engine must construct");
+    let client = engine.client();
+    let request_thread = thread::spawn(move || {
+        client.execute(
+            Request::get(format!("http://active-refresh.test:{}/", address.port()))
+                .total_timeout(Duration::from_secs(3))
+                .build()
+                .expect("active HTTP refresh request must build"),
+        )
+    });
+    body_started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("active HTTP response must reach its body");
+
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(dns_b.address)))
+        .expect("active HTTP configuration B must publish");
+    let refresh_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let response = engine.resolver().execute(
+            crate::ResolveRequest::hostname(format!(
+                "active-route-probe-{}.test",
+                dns_b.observations().len()
+            ))
+            .address_family(crate::AddressFamily::Ipv4)
+            .cache_mode(crate::CacheMode::Bypass)
+            .total_timeout(Duration::from_millis(250))
+            .build()
+            .expect("active route probe must build"),
+        );
+        let response = match response {
+            Ok(response) => response,
+            Err(crate::ExecuteError::Failed(error))
+                if error.dns_failure() == Some(DnsFailure::NoNameserver)
+                    && Instant::now() < refresh_deadline =>
+            {
+                continue;
+            }
+            Err(error) => panic!("active route probe failed unexpectedly: {error:?}"),
+        };
+        if response
+            .addresses()
+            .iter()
+            .any(|address| address.address() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+            && !dns_b.observations().is_empty()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < refresh_deadline,
+            "active HTTP route refresh did not reach configuration B"
+        );
+    }
+
+    release_body
+        .send(())
+        .expect("active HTTP body must be released");
+    let response = request_thread
+        .join()
+        .expect("active HTTP request thread must join")
+        .expect("active HTTP request must survive the route change");
+    assert_eq!(response.body(), b"ab");
+    assert_eq!(
+        engine.metrics().current().idle_connections(),
+        0,
+        "the old-generation active HTTP connection must close after completing"
+    );
+    engine
+        .shutdown()
+        .expect("active HTTP refresh Engine must stop");
+    server.join().expect("active HTTP fixture must join");
+}
+
+#[cfg(feature = "resolver")]
+#[test]
+fn route_generation_change_leaves_live_tcp_alive_and_future_hostname_connect_uses_b() {
+    use crate::TcpConnectRequest;
+
+    let dns_a = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let dns_b = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("active TCP fixture must bind");
+    let port = listener
+        .local_addr()
+        .expect("active TCP fixture address")
+        .port();
+    let server = thread::spawn(move || {
+        for expected in *b"ab" {
+            let (mut stream, _) = listener.accept().expect("active TCP socket must accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("active TCP read timeout");
+            let mut byte = [0_u8; 1];
+            stream
+                .read_exact(&mut byte)
+                .expect("active TCP byte must arrive");
+            assert_eq!(byte[0], expected);
+            stream.write_all(&byte).expect("active TCP echo must write");
+        }
+    });
+
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            dns_a.address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("active TCP refresh Engine must construct");
+    let mut first = engine
+        .tcp_connector()
+        .execute(
+            TcpConnectRequest::hostname("active-tcp-a.test", port)
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .expect("first hostname TCP request must build"),
+        )
+        .expect("first hostname TCP connect must complete");
+
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(dns_b.address)))
+        .expect("active TCP configuration B must publish");
+    let refresh_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let probe_name = format!("tcp-route-probe-{}.test", dns_b.observations().len());
+        let probe = engine.resolver().execute(
+            crate::ResolveRequest::hostname(probe_name)
+                .address_family(crate::AddressFamily::Ipv4)
+                .cache_mode(crate::CacheMode::Bypass)
+                .total_timeout(Duration::from_millis(250))
+                .build()
+                .expect("TCP route probe must build"),
+        );
+        match probe {
+            Ok(_) if !dns_b.observations().is_empty() => break,
+            Ok(_) => {}
+            Err(crate::ExecuteError::Failed(error))
+                if error.dns_failure() == Some(DnsFailure::NoNameserver)
+                    && Instant::now() < refresh_deadline =>
+            {
+                continue;
+            }
+            Err(error) => panic!("TCP route probe failed unexpectedly: {error:?}"),
+        }
+        assert!(
+            Instant::now() < refresh_deadline,
+            "active TCP route refresh did not reach configuration B"
+        );
+    }
+
+    first
+        .send(vec![b'a'])
+        .expect("first live TCP send must survive");
+    let mut first_echo = [0_u8; 1];
+    assert_eq!(
+        first.read(&mut first_echo).expect("first live TCP read"),
+        Some(1)
+    );
+    assert_eq!(first_echo, [b'a']);
+
+    let mut second = engine
+        .tcp_connector()
+        .execute(
+            TcpConnectRequest::hostname("active-tcp-b.test", port)
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .expect("second hostname TCP request must build"),
+        )
+        .expect("second hostname TCP connect must complete");
+    second
+        .send(vec![b'b'])
+        .expect("second hostname TCP send must succeed");
+    let mut second_echo = [0_u8; 1];
+    assert_eq!(
+        second
+            .read(&mut second_echo)
+            .expect("second hostname TCP read"),
+        Some(1)
+    );
+    assert_eq!(second_echo, [b'b']);
+    assert!(
+        dns_b.observations().contains(&fqdn("active-tcp-b.test")),
+        "a future hostname connect must resolve through configuration B"
+    );
+    drop(first);
+    drop(second);
+    engine.shutdown().expect("active TCP Engine must stop");
+    server.join().expect("active TCP fixture must join");
+}
+
+#[test]
+fn route_generation_change_fails_dns_pending_hostname_tcp_once_and_releases_borrows() {
+    use crate::{DnsFailure, TcpConnectCompletion, TcpConnectRequest};
+
+    let silent = StdUdpSocket::bind("127.0.0.1:0").expect("pending TCP DNS fixture must bind");
+    silent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("pending TCP DNS read timeout");
+    let first_address = silent.local_addr().expect("pending TCP DNS address");
+    let second = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            first_address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("pending hostname TCP Engine must construct");
+    let pending = engine
+        .tcp_connector()
+        .submit(
+            TcpConnectRequest::hostname("pending-route-change.test", 9)
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .expect("pending hostname TCP request must build"),
+        )
+        .expect("pending hostname TCP request must submit");
+    let mut wire = [0_u8; DNS_PACKET_LIMIT];
+    silent
+        .recv_from(&mut wire)
+        .expect("configuration A must observe pending hostname DNS");
+
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(second.address)))
+        .expect("pending hostname TCP configuration B must publish");
+    match pending.wait() {
+        TcpConnectCompletion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Transport);
+            assert_eq!(error.dns_failure(), Some(DnsFailure::NoNameserver));
+        }
+        other => panic!("pending hostname TCP must fail once at DNS transition: {other:?}"),
+    }
+    let metrics = engine.metrics();
+    assert_eq!(metrics.tcp_connects_failed(), 1);
+    assert_eq!(metrics.current().inflight_resolutions(), 0);
+    assert_eq!(metrics.current().standalone_tcp_connections(), 0);
+    assert_eq!(metrics.current().reserved_tcp_queue_bytes(), 0);
+    engine
+        .shutdown()
+        .expect("pending hostname TCP Engine must stop");
+}
+
+#[cfg(feature = "resolver")]
+#[test]
+fn route_generation_change_and_public_cancel_commit_one_terminal_and_release_the_borrow() {
+    use crate::{ResolveCompletion, ResolveRequest};
+
+    let silent = StdUdpSocket::bind("127.0.0.1:0").expect("cancel-race DNS fixture must bind");
+    silent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("cancel-race DNS read timeout");
+    let first_address = silent.local_addr().expect("cancel-race DNS address");
+    let second = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            first_address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("cancel-race Engine must construct");
+    let pending = engine
+        .resolver()
+        .submit(
+            ResolveRequest::hostname("configuration-cancel-race.test")
+                .address_family(crate::AddressFamily::Ipv4)
+                .cache_mode(crate::CacheMode::Bypass)
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("cancel-race resolve request must build"),
+        )
+        .expect("cancel-race resolve must submit");
+    let handle = pending.handle();
+    let mut wire = [0_u8; DNS_PACKET_LIMIT];
+    silent
+        .recv_from(&mut wire)
+        .expect("configuration A must observe the cancel-race query");
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(second.address)))
+        .expect("cancel-race configuration B must publish");
+    handle
+        .cancel()
+        .expect("cancel-race cancellation must submit");
+
+    match pending.wait() {
+        ResolveCompletion::Cancelled => {}
+        ResolveCompletion::Failed(error) => {
+            assert_eq!(error.kind(), ErrorKind::Transport);
+            assert_eq!(error.dns_failure(), Some(DnsFailure::NoNameserver));
+        }
+        ResolveCompletion::Completed(response) => {
+            panic!("cancel/configuration race unexpectedly completed: {response:?}")
+        }
+    }
+    let terminal_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let metrics = engine.metrics();
+        let terminals = metrics
+            .resolutions_completed()
+            .saturating_add(metrics.resolutions_failed())
+            .saturating_add(metrics.resolutions_cancelled());
+        if terminals == 1 && metrics.current().inflight_resolutions() == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < terminal_deadline,
+            "cancel/configuration race did not release its DNS borrow exactly once"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    engine.shutdown().expect("cancel-race Engine must stop");
+}
+
+#[cfg(feature = "resolver")]
+#[test]
+fn route_generation_change_and_shutdown_commit_one_terminal_and_join() {
+    use crate::{ResolveCompletion, ResolveRequest};
+
+    let silent = StdUdpSocket::bind("127.0.0.1:0").expect("shutdown-race DNS fixture must bind");
+    silent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("shutdown-race DNS read timeout");
+    let first_address = silent.local_addr().expect("shutdown-race DNS address");
+    let second = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let config = EngineConfig::spawned();
+    let (factory, updates) =
+        crate::backend::native_http::NativeHttpFactory::new_with_refreshable_nameserver(
+            &config,
+            first_address,
+            Duration::from_millis(5),
+        );
+    let engine = crate::Engine::with_spawned_factory(config, Box::new(factory))
+        .expect("shutdown-race Engine must construct");
+    let shared = engine.shared_for_testing();
+    let pending = engine
+        .resolver()
+        .submit(
+            ResolveRequest::hostname("configuration-shutdown-race.test")
+                .address_family(crate::AddressFamily::Ipv4)
+                .cache_mode(crate::CacheMode::Bypass)
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("shutdown-race resolve request must build"),
+        )
+        .expect("shutdown-race resolve must submit");
+    let mut wire = [0_u8; DNS_PACKET_LIMIT];
+    silent
+        .recv_from(&mut wire)
+        .expect("configuration A must observe the shutdown-race query");
+    updates
+        .send(Ok(ResolverConfig::snapshot_for_test(second.address)))
+        .expect("shutdown-race configuration B must publish");
+    engine.shutdown().expect("shutdown-race Engine must join");
+
+    match pending.wait() {
+        ResolveCompletion::Cancelled => {}
+        ResolveCompletion::Failed(error) => assert!(
+            error.kind() == ErrorKind::EngineStopped
+                || (error.kind() == ErrorKind::Transport
+                    && error.dns_failure() == Some(DnsFailure::NoNameserver)),
+            "shutdown/configuration race returned an unrelated failure: {error:?}"
+        ),
+        other => panic!("shutdown/configuration race must terminate once: {other:?}"),
+    }
+    let metrics = shared.metrics_snapshot();
+    assert_eq!(
+        metrics
+            .resolutions_completed()
+            .saturating_add(metrics.resolutions_failed())
+            .saturating_add(metrics.resolutions_cancelled()),
+        1
+    );
+    assert_eq!(metrics.current().inflight_resolutions(), 0);
 }
 
 #[test]
