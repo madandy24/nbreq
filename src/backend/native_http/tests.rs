@@ -1936,13 +1936,30 @@ fn cancel_during_redirected_request_closes_the_active_hop() {
 fn total_timeout_is_not_reset_between_redirect_hops() {
     let target_listener =
         TcpListener::bind("127.0.0.1:0").expect("redirect timeout target must bind");
+    target_listener
+        .set_nonblocking(true)
+        .expect("redirect timeout target must become nonblocking");
     let target_address = target_listener
         .local_addr()
         .expect("redirect timeout target address");
     let target_server = thread::spawn(move || {
-        let (mut stream, _) = target_listener
-            .accept()
-            .expect("redirect timeout target must accept");
+        let accept_deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match target_listener.accept() {
+                Ok(accepted) => break accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < accept_deadline,
+                        "redirect timeout target was never reached"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("redirect timeout target accept failed: {error}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("redirect timeout target stream must become blocking");
         read_request_head(&mut stream, "redirect timeout target request");
         assert!(
             peer_observed_close(&mut stream),
@@ -1960,7 +1977,10 @@ fn total_timeout_is_not_reset_between_redirect_hops() {
             .accept()
             .expect("redirect timeout source must accept");
         read_request_head(&mut stream, "redirect timeout source request");
-        thread::sleep(Duration::from_millis(140));
+        // Consume enough of the original deadline to distinguish it from a
+        // deadline restarted at the redirect, while leaving ample time for a
+        // loaded CI runner to establish the second loopback connection.
+        thread::sleep(Duration::from_millis(600));
         stream
             .write_all(
                 format!(
@@ -1978,7 +1998,7 @@ fn total_timeout_is_not_reset_between_redirect_hops() {
     let started = Instant::now();
     let result = engine.client().execute(
         Request::get(format!("http://{source_address}/start"))
-            .total_timeout(Duration::from_millis(220))
+            .total_timeout(Duration::from_secs(2))
             .build()
             .expect("redirect timeout request must build"),
     );
@@ -1989,7 +2009,7 @@ fn total_timeout_is_not_reset_between_redirect_hops() {
     assert_eq!(error.kind(), ErrorKind::Timeout);
     assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
     assert!(
-        elapsed < Duration::from_millis(320),
+        elapsed < Duration::from_millis(2_400),
         "redirect reset the total timeout: {elapsed:?}"
     );
     engine
