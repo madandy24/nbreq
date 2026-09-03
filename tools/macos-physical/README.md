@@ -9,8 +9,10 @@ The gate is intentionally split:
    complete 24-stage verifier under stable and Rust 1.85, checks the Darwin helper, builds these
    probes, and performs a short live HTTP/DNS/TCP smoke.
 2. `nbreq-f6-reacquire` proves that one Engine created before an owner-operated network outage
-   reaches DNS-stage failure and later recovers. Only run it when an independent provider console
-   or other recovery path can restore networking.
+   reaches DNS-stage failure and later recovers. `launch-reacquire-watchdog.sh` is the physical-host
+   launcher for a transient `ifconfig` bounce: it detaches the probe, arms an independent 90-second
+   restore before link-down, and also restores through the primary worker after 45 seconds. Run it
+   only when the provider can reboot the host if both local restore paths unexpectedly fail.
 3. `nbreq-f6-split-guard` is the fail-closed observation binary for a separately controlled
    `/etc/resolver` experiment. The system change and exact cleanup remain owner-operated.
 4. `launch-soak.sh` detaches one long-lived Engine, writes timestamped output plus PID/exit-marker
@@ -63,3 +65,28 @@ tools/macos-physical/target/release/nbreq-f6-split-guard
 Do not disable a rented host's only network path without first proving that the provider console can
 restore it. Do not create an `/etc/resolver` entry without an exact cleanup trap. These two actions
 remain interactive acceptance steps rather than automated side effects of this package.
+
+Where the provider has no independent console but can reboot the host, a transient interface-flag
+bounce is safer than disabling the persistent network service. Review the detected interface first,
+then launch the detached probe and its two local restore paths while SSH is healthy:
+
+```sh
+cd /path/to/nbreq
+sh tools/macos-physical/launch-reacquire-watchdog.sh en0
+```
+
+The command prompts for `sudo` before launching anything. It prints separate probe, primary-restore,
+watchdog-restore, and exit-marker paths. SSH is expected to disappear briefly. Do not use this helper
+with `networksetup -setnetworkserviceenabled`; that setting may survive a reboot.
+
+The split-DNS lifecycle helper first proves ordinary Engine construction is supported, creates only
+`/etc/resolver/nbreq-f64.test` under a root-owned cleanup trap, proves fail-closed construction, removes
+the exact fixture (and the directory only if it created it), then proves ordinary construction again:
+
+```sh
+cd /path/to/nbreq
+sh tools/macos-physical/run-split-guard-lifecycle.sh
+```
+
+It refuses to run if `/etc/resolver` already contains anything and writes separate before/during/after
+logs. This fixture routes only the unused `nbreq-f64.test` suffix to loopback and does not interrupt SSH.
