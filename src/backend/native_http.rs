@@ -598,6 +598,8 @@ struct NativeHttpBackend {
         Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     #[cfg(test)]
     standalone_socket_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    wait_for_idle_probe_data: bool,
 }
 
 struct StandaloneResolve {
@@ -948,6 +950,8 @@ impl NativeHttpBackend {
             standalone_dns_handoff_gate: None,
             #[cfg(test)]
             standalone_socket_gate: None,
+            #[cfg(test)]
+            wait_for_idle_probe_data: false,
         })
     }
 
@@ -1269,6 +1273,18 @@ impl NativeHttpBackend {
         let Some(mut idle) = self.take_idle(&pending.key) else {
             return Some(pending);
         };
+        #[cfg(test)]
+        if self.wait_for_idle_probe_data {
+            self.wait_for_idle_probe_data = false;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while self.reactor.idle_is_quiet(idle.slot) == Ok(true) {
+                assert!(
+                    Instant::now() < deadline,
+                    "test fixture bytes never became observable on the idle socket"
+                );
+                std::thread::yield_now();
+            }
+        }
         if self.reactor.idle_is_quiet(idle.slot) != Ok(true) {
             self.reactor.cancel(idle.slot);
             self.release_connection(&pending.key);

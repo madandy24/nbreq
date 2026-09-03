@@ -2351,13 +2351,16 @@ fn manual_lease_probe_rejects_unobserved_bytes_before_reuse() {
     });
 
     let config = EngineConfig::manual();
-    let backend = NativeHttpBackend::new(
+    let mut backend = NativeHttpBackend::new(
         HttpLimits::from_config(&config),
         None,
         None,
         ConnectionLimits::from_config(&config),
     )
     .expect("manual lease-probe backend must construct");
+    // The server-side write barrier proves only that the sender handed the bytes to its kernel.
+    // Wait test-only until the client can peek them, then exercise the unchanged real lease probe.
+    backend.wait_for_idle_probe_data = true;
     let mut engine = Engine::with_backend(config, Box::new(backend))
         .expect("manual lease-probe Engine must construct");
     let first = engine
