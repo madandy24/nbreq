@@ -904,14 +904,50 @@ fn resolver_follows_cname_and_falls_back_from_a_to_aaaa() {
 fn silent_nameserver_rotates_to_the_next_ranked_server() {
     let silent = StdUdpSocket::bind("127.0.0.1:0").expect("silent DNS server must bind");
     let silent_address = silent.local_addr().expect("silent DNS server address");
-    let answering = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 31));
-    let config = ResolverConfig::multiple_for_test(vec![silent_address, answering.address]);
+    let answering = StdUdpSocket::bind("127.0.0.1:0").expect("answering DNS server must bind");
+    answering
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("answering DNS server timeout must configure");
+    let answering_address = answering
+        .local_addr()
+        .expect("answering DNS server address");
+    let config = ResolverConfig::multiple_for_test(vec![silent_address, answering_address]);
     let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
     let mut resolver =
         NativeResolver::new(config, owner.waker()).expect("multi-server resolver must construct");
     resolver
         .resolve(ResolveKey(80), "rotate.test".to_owned())
         .expect("multi-server resolution must submit");
+
+    // Serve the second socket on this test thread. A spawned fixture can be starved by the rest of
+    // the parallel suite after rotation, turning scheduler delay into a false retry-budget failure.
+    let mut buffer = [0_u8; DNS_PACKET_LIMIT];
+    let (length, peer) = answering
+        .recv_from(&mut buffer)
+        .expect("query must rotate to the second DNS server");
+    let request = Message::from_vec(&buffer[..length]).expect("rotated DNS query must parse");
+    let query = request
+        .query()
+        .expect("rotated DNS query must exist")
+        .clone();
+    let mut response = Message::new();
+    response
+        .set_id(request.id())
+        .set_message_type(MessageType::Response)
+        .set_recursion_available(true)
+        .add_query(query.clone())
+        .add_answer(Record::from_rdata(
+            query.name().clone(),
+            60,
+            RData::A(A(Ipv4Addr::new(127, 0, 0, 31))),
+        ));
+    answering
+        .send_to(
+            &response.to_vec().expect("rotated DNS response must encode"),
+            peer,
+        )
+        .expect("rotated DNS response must send");
+
     let deadline = Instant::now() + Duration::from_secs(5);
     let answer = loop {
         if let Some(result) = resolver
