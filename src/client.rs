@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use crate::registry::{CompletionCallback, RequestState, Shared};
 use crate::{
-    Completion, Error, ExecuteError, Request, RequestId, Response, ResponseReader, StreamRequest,
+    Completion, Error, ErrorKind, ExecuteError, Request, RequestBuilder, RequestId, RequestOptions,
+    Response, ResponseReader, RunMode, StreamRequest, TlsVerification,
 };
 
 /// Cheap cloneable command handle issued by an [`Engine`](crate::Engine).
@@ -66,6 +67,107 @@ impl Client {
     /// An ID issued by another Engine fails closed.
     pub fn cancel(&self, request_id: RequestId) -> Result<(), Error> {
         self.shared.cancel(request_id)
+    }
+}
+
+/// Engine-bound builder for a simple buffered HTTP request.
+///
+/// This builder owns a cheap clone of the Engine's [`Client`] ticket and delegates to the same
+/// [`RequestBuilder`] and [`Client::execute`] path as the explicit API. It does not own or extend
+/// the Engine lifetime, create another Engine, or select a different backend.
+#[derive(Clone, Debug)]
+pub struct EngineRequestBuilder {
+    client: Client,
+    request: RequestBuilder,
+}
+
+impl EngineRequestBuilder {
+    pub(crate) fn new(client: Client, request: RequestBuilder) -> Self {
+        Self { client, request }
+    }
+
+    /// Adds an owned header.
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
+        self.request = self.request.header(name, value);
+        self
+    }
+
+    /// Sets the buffered request body.
+    #[must_use]
+    pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.request = self.request.body(body);
+        self
+    }
+
+    /// Sets all portable request options.
+    #[must_use]
+    pub fn options(mut self, options: RequestOptions) -> Self {
+        self.request = self.request.options(options);
+        self
+    }
+
+    /// Sets the maximum connection-establishment duration.
+    #[must_use]
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.request = self.request.connect_timeout(timeout);
+        self
+    }
+
+    /// Sets the maximum duration without useful I/O progress.
+    #[must_use]
+    pub fn inactivity_timeout(mut self, timeout: Duration) -> Self {
+        self.request = self.request.inactivity_timeout(timeout);
+        self
+    }
+
+    /// Sets the maximum total duration beginning at request acceptance.
+    #[must_use]
+    pub fn total_timeout(mut self, timeout: Duration) -> Self {
+        self.request = self.request.total_timeout(timeout);
+        self
+    }
+
+    /// Sets the maximum number of redirects followed.
+    #[must_use]
+    pub fn redirect_limit(mut self, limit: u8) -> Self {
+        self.request = self.request.redirect_limit(limit);
+        self
+    }
+
+    /// Sets HTTPS certificate and hostname verification policy.
+    #[must_use]
+    pub fn tls_verification(mut self, verification: TlsVerification) -> Self {
+        self.request = self.request.tls_verification(verification);
+        self
+    }
+
+    /// Builds, submits, and waits for the buffered response.
+    ///
+    /// HTTP error statuses remain ordinary [`Response`] values. A manual Engine returns
+    /// [`ErrorKind::WrongMode`] through [`ExecuteError::Submission`] before request admission;
+    /// this method never drives an Engine internally.
+    pub fn call(self) -> Result<Response, ExecuteError> {
+        if self.client.shared.run_mode == RunMode::Manual {
+            return Err(ExecuteError::Submission(Error::new(
+                ErrorKind::WrongMode,
+                "blocking HTTP convenience calls require a spawned Engine",
+            )));
+        }
+        let request = self.request.build().map_err(ExecuteError::Submission)?;
+        self.client.execute(request)
+    }
+
+    /// Replaces the buffered body, then builds, submits, and waits for the response.
+    pub fn send(mut self, body: impl Into<Vec<u8>>) -> Result<Response, ExecuteError> {
+        self.request = self.request.body(body);
+        self.call()
+    }
+
+    /// Replaces the buffered body with an empty body, then executes the request.
+    pub fn send_empty(mut self) -> Result<Response, ExecuteError> {
+        self.request = self.request.body(Vec::new());
+        self.call()
     }
 }
 
@@ -192,7 +294,7 @@ pub enum WaitOutcome {
 #[cfg(test)]
 mod tests {
     use crate::testing;
-    use crate::{EngineConfig, ErrorKind};
+    use crate::{EngineConfig, ErrorKind, Method, TlsVerification};
 
     use super::*;
 
@@ -200,6 +302,83 @@ mod tests {
         Request::get("https://example.invalid/")
             .build()
             .expect("test request must build")
+    }
+
+    #[test]
+    fn engine_request_builder_forwards_existing_request_controls() {
+        let (engine, _controller) =
+            testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+        let request = engine
+            .post("http://example.test/items")
+            .header("X-Test", b"value".to_vec())
+            .body(b"original".to_vec())
+            .connect_timeout(Duration::from_millis(101))
+            .inactivity_timeout(Duration::from_millis(202))
+            .total_timeout(Duration::from_millis(303))
+            .redirect_limit(4)
+            .tls_verification(TlsVerification::DangerouslyDisableCertificateVerification)
+            .request
+            .build()
+            .expect("forwarded request must build");
+
+        assert_eq!(request.method(), &Method::Post);
+        assert_eq!(request.url(), "http://example.test/items");
+        assert_eq!(request.headers().len(), 1);
+        assert_eq!(request.headers()[0].name(), "X-Test");
+        assert_eq!(request.headers()[0].value(), b"value");
+        assert_eq!(request.body(), b"original");
+        assert_eq!(
+            request.options().connect_timeout,
+            Some(Duration::from_millis(101))
+        );
+        assert_eq!(
+            request.options().inactivity_timeout,
+            Some(Duration::from_millis(202))
+        );
+        assert_eq!(
+            request.options().total_timeout,
+            Some(Duration::from_millis(303))
+        );
+        assert_eq!(request.options().redirect_limit, 4);
+        assert_eq!(
+            request.options().tls_verification,
+            TlsVerification::DangerouslyDisableCertificateVerification
+        );
+        engine.shutdown().expect("deterministic Engine must stop");
+    }
+
+    #[test]
+    fn engine_request_builder_rejects_manual_mode_before_admission() {
+        let (engine, controller) = testing::engine(EngineConfig::manual())
+            .expect("manual deterministic Engine must construct");
+        let before = engine.metrics();
+        let error = engine
+            .get("http://example.test/")
+            .call()
+            .expect_err("blocking convenience must reject manual mode");
+        assert!(matches!(
+            error,
+            ExecuteError::Submission(ref error) if error.kind() == ErrorKind::WrongMode
+        ));
+        assert_eq!(controller.active_requests(), 0);
+        assert_eq!(engine.metrics(), before);
+        engine.shutdown().expect("manual Engine must stop");
+    }
+
+    #[test]
+    fn engine_request_builder_ticket_does_not_extend_engine_lifetime() {
+        let (engine, _controller) =
+            testing::engine(EngineConfig::spawned()).expect("deterministic Engine must construct");
+        let request = engine.get("http://example.test/");
+        engine.shutdown().expect("Engine must stop");
+
+        let error = request
+            .call()
+            .expect_err("ticket must observe the stopped Engine");
+        assert!(matches!(
+            error,
+            ExecuteError::Submission(ref error) if error.kind() == ErrorKind::EngineStopped
+        ));
     }
 
     #[test]

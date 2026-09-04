@@ -26,11 +26,45 @@ nbreq = { version = "0.1", default-features = false, features = ["native"] }
 The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
 not create a different DNS owner; it only removes the public Resolver surface and search expansion.
 
-## Spawned mode and blocking requests
+## Basic buffered requests
 
-Spawned mode owns its reactor thread and, by default, one callback worker. It is the normal choice
-for services, command-line programs, DLLs, and applications that want blocking convenience calls
-without adopting an executor.
+Spawned mode owns its reactor thread and supports simple Engine-bound blocking GET and POST calls.
+The convenience builder delegates to the ordinary Request and Client path, so it uses the same
+backend, pool, limits, timeouts, redirects, TLS policy, errors, and shutdown owner:
+
+```rust,no_run
+use std::time::Duration;
+
+use nbreq::{Engine, EngineConfig};
+
+let engine = Engine::new(EngineConfig::spawned())?;
+
+let response = engine
+    .get("https://example.com/")
+    .header("Accept", "text/plain")
+    .total_timeout(Duration::from_secs(30))
+    .call()?;
+
+let created = engine
+    .post("https://example.com/items")
+    .header("Content-Type", "application/json")
+    .send(br#"{"name":"thing"}"#)?;
+
+println!("GET {}, POST {}", response.status(), created.status());
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`call()` sends the body already configured on the builder and is valid for an empty POST.
+`send(body)` replaces that buffered body; `send_empty()` explicitly replaces it with an empty body.
+HTTP 4xx and 5xx statuses remain ordinary `Response` values. These blocking terminals reject a
+manually driven Engine with `WrongMode` rather than driving it implicitly.
+
+## Spawned mode and explicit blocking requests
+
+Issue a cheap cloneable Client when code needs the explicit Request surface or will later use
+callbacks, direct waiters, cancellation handles, or streaming. The Client does not own or extend
+the Engine lifetime:
 
 ```rust,no_run
 use std::time::Duration;

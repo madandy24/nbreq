@@ -18,23 +18,20 @@ runtime.
 
 ## Quick start
 
-The default build is self-contained Rust HTTP/1.1. Create one independently owned Engine, issue
-cheap cloneable Clients from it, and consume the Engine when the service stops:
+The default build is self-contained Rust HTTP/1.1. Create one independently owned Engine and use
+its GET/POST convenience methods for ordinary buffered requests:
 
 ```rust
 use std::time::Duration;
 
-use nbreq::{Engine, EngineConfig, Request};
+use nbreq::{Engine, EngineConfig};
 
 let engine = Engine::new(EngineConfig::spawned())?;
-let client = engine.client();
-
-let response = client.execute(
-    Request::get("https://example.com/")
-        .connect_timeout(Duration::from_secs(5))
-        .total_timeout(Duration::from_secs(15))
-        .build()?,
-)?;
+let response = engine
+    .get("https://example.com/")
+    .connect_timeout(Duration::from_secs(5))
+    .total_timeout(Duration::from_secs(15))
+    .call()?;
 
 println!("status {}, {} bytes", response.status(), response.body().len());
 engine.shutdown()?;
@@ -42,8 +39,9 @@ engine.shutdown()?;
 ```
 
 HTTP error status codes are responses. DNS, connection, TLS, timeout, limit, cancellation, and
-shutdown outcomes remain distinct. Clients do not own or extend Engine lifetime, and no hidden
-runtime is installed globally.
+shutdown outcomes remain distinct. The convenience builder uses the same Engine, connection pool,
+limits, and request path as an explicit Client; it installs no hidden global runtime. Use
+`Engine::client()` for callbacks, direct waiters, prompt cancellation, manual driving, or streaming.
 
 See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
 streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.

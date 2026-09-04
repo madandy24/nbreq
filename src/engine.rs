@@ -17,8 +17,8 @@ use crate::reactor::{ReactorCore, reactor_panicked, spawned_main};
 use crate::registry::Shared;
 use crate::waiter::sealed::Sealed;
 use crate::{
-    Client, DriveStatus, EngineConfig, Error, ErrorKind, HttpBackend, RunMode, ShutdownError,
-    ShutdownOutcome, TcpConnector, WaiterTarget,
+    Client, DriveStatus, EngineConfig, EngineRequestBuilder, Error, ErrorKind, HttpBackend,
+    Request, RunMode, ShutdownError, ShutdownOutcome, TcpConnector, WaiterTarget,
 };
 
 static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
@@ -269,6 +269,50 @@ impl Engine {
     #[must_use]
     pub fn client(&self) -> Client {
         Client::new(Arc::clone(&self.shared))
+    }
+
+    /// Starts a simple Engine-bound GET request.
+    ///
+    /// The returned builder uses this Engine's existing [`Client`], backend, connection pool,
+    /// limits, and lifecycle. It does not create or retain another Engine.
+    ///
+    /// ```no_run
+    /// use nbreq::{Engine, EngineConfig};
+    ///
+    /// let engine = Engine::new(EngineConfig::spawned())?;
+    /// let response = engine
+    ///     .get("https://example.com/")
+    ///     .header("Accept", "text/plain")
+    ///     .call()?;
+    /// assert!(response.status() >= 100);
+    /// engine.shutdown()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn get(&self, url: impl Into<String>) -> EngineRequestBuilder {
+        EngineRequestBuilder::new(self.client(), Request::get(url))
+    }
+
+    /// Starts a simple Engine-bound POST request.
+    ///
+    /// The buffered body may be supplied with [`EngineRequestBuilder::send`], or an empty POST may
+    /// be executed with [`EngineRequestBuilder::call`] or [`EngineRequestBuilder::send_empty`].
+    ///
+    /// ```no_run
+    /// use nbreq::{Engine, EngineConfig};
+    ///
+    /// let engine = Engine::new(EngineConfig::spawned())?;
+    /// let response = engine
+    ///     .post("https://example.com/items")
+    ///     .header("Content-Type", "application/json")
+    ///     .send(br#"{"name":"thing"}"#)?;
+    /// assert!(response.status() >= 100);
+    /// engine.shutdown()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn post(&self, url: impl Into<String>) -> EngineRequestBuilder {
+        EngineRequestBuilder::new(self.client(), Request::post(url))
     }
 
     /// Issues a cheap cloneable hostname-resolution handle for this Engine.

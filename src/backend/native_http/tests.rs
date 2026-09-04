@@ -987,14 +987,9 @@ fn native_http_reuses_one_clean_connection_for_sequential_requests() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("reuse fixture read timeout");
+        let mut requests = Vec::new();
         for body in [b"one".as_slice(), b"two".as_slice()] {
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 256];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).expect("reused request must read");
-                assert_ne!(read, 0, "client closed the reusable connection early");
-                request.extend_from_slice(&buffer[..read]);
-            }
+            requests.push(read_request_wire(&mut stream, "reused request"));
             stream
                 .write_all(
                     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
@@ -1007,23 +1002,29 @@ fn native_http_reuses_one_clean_connection_for_sequential_requests() {
         release_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("metrics observation must release the reusable peer");
+        requests
     });
     let config = EngineConfig::spawned();
     let engine =
         Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
             .expect("reuse Engine must construct");
-    for expected in [b"one".as_slice(), b"two".as_slice()] {
-        let response = engine
-            .client()
-            .execute(
-                Request::get(format!("http://{address}/reuse"))
-                    .total_timeout(Duration::from_secs(2))
-                    .build()
-                    .expect("reuse request must build"),
-            )
-            .expect("reuse request must complete");
-        assert_eq!(response.body(), expected);
-    }
+    let url = format!("http://{address}/reuse");
+    let response = engine
+        .client()
+        .execute(
+            Request::get(url.clone())
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("explicit reuse request must build"),
+        )
+        .expect("explicit reuse request must complete");
+    assert_eq!(response.body(), b"one");
+    let response = engine
+        .get(url)
+        .total_timeout(Duration::from_secs(2))
+        .call()
+        .expect("convenience reuse request must complete");
+    assert_eq!(response.body(), b"two");
     let metrics = engine.metrics();
     assert_eq!(metrics.requests_accepted(), 2);
     assert_eq!(metrics.requests_completed(), 2);
@@ -1036,7 +1037,96 @@ fn native_http_reuses_one_clean_connection_for_sequential_requests() {
     assert_eq!(metrics.high_water().idle_connections(), 1);
     release_tx.send(()).expect("reusable peer must release");
     engine.shutdown().expect("reuse Engine must stop");
-    server.join().expect("reuse fixture must join");
+    let requests = server.join().expect("reuse fixture must join");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+}
+
+#[test]
+fn engine_post_convenience_matches_explicit_wire_and_preserves_status_responses() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("POST parity fixture must bind");
+    let address = listener.local_addr().expect("POST parity fixture address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("POST parity fixture must accept once");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("POST parity read timeout");
+        let mut requests = Vec::new();
+        for index in 0..5 {
+            requests.push(read_request_wire(&mut stream, "POST parity request"));
+            stream
+                .write_all(b"HTTP/1.1 418 Teapot\r\nContent-Length: 0\r\n\r\n")
+                .unwrap_or_else(|error| panic!("POST parity response {index} must write: {error}"));
+        }
+        requests
+    });
+
+    let config = EngineConfig::spawned();
+    let engine =
+        Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
+            .expect("POST parity Engine must construct");
+    let url = format!("http://{address}/items");
+    let explicit = engine
+        .client()
+        .execute(
+            Request::post(url.clone())
+                .header("Content-Type", "application/octet-stream")
+                .body(b"payload".to_vec())
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("explicit POST must build"),
+        )
+        .expect("HTTP error status must remain a response");
+    assert_eq!(explicit.status(), 418);
+
+    let convenience = engine
+        .post(url.clone())
+        .header("Content-Type", "application/octet-stream")
+        .body(b"discarded".to_vec())
+        .total_timeout(Duration::from_secs(2))
+        .send(b"payload".to_vec())
+        .expect("convenience POST must complete");
+    assert_eq!(convenience.status(), 418);
+
+    let explicit_empty = engine
+        .client()
+        .execute(
+            Request::post(url.clone())
+                .header("Content-Type", "application/octet-stream")
+                .total_timeout(Duration::from_secs(2))
+                .build()
+                .expect("explicit empty POST must build"),
+        )
+        .expect("explicit empty POST must complete");
+    assert_eq!(explicit_empty.status(), 418);
+
+    let convenience_empty_call = engine
+        .post(url.clone())
+        .header("Content-Type", "application/octet-stream")
+        .total_timeout(Duration::from_secs(2))
+        .call()
+        .expect("empty POST call must complete");
+    assert_eq!(convenience_empty_call.status(), 418);
+
+    let convenience_empty = engine
+        .post(url)
+        .header("Content-Type", "application/octet-stream")
+        .body(b"discarded".to_vec())
+        .total_timeout(Duration::from_secs(2))
+        .send_empty()
+        .expect("convenience empty POST must complete");
+    assert_eq!(convenience_empty.status(), 418);
+
+    let metrics = engine.metrics();
+    assert_eq!(metrics.connections_opened(), 1);
+    assert_eq!(metrics.connections_reused(), 4);
+    engine.shutdown().expect("POST parity Engine must stop");
+    let requests = server.join().expect("POST parity fixture must join");
+    assert_eq!(requests[0], requests[1]);
+    assert_eq!(requests[2], requests[3]);
+    assert_eq!(requests[2], requests[4]);
 }
 
 #[test]

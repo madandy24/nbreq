@@ -3,10 +3,10 @@ use std::time::Instant;
 
 use nbreq::EngineBuilder;
 use nbreq::{
-    Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, ErrorKind, HttpBackend,
-    PendingRequest, PendingTcpConnect, RequestHandle, ResourceMetrics, ResponseReader,
-    StreamRequest, TcpConnection, TcpConnector, TcpFinishStatus, TcpReader, TcpWriter, UploadBody,
-    UploadSender,
+    Client, DetachedCallbacks, Engine, EngineConfig, EngineMetrics, EngineRequestBuilder,
+    ErrorKind, HttpBackend, PendingRequest, PendingTcpConnect, RequestHandle, ResourceMetrics,
+    ResponseReader, StreamRequest, TcpConnection, TcpConnector, TcpFinishStatus, TcpReader,
+    TcpWriter, UploadBody, UploadSender,
 };
 #[cfg(feature = "resolver")]
 use nbreq::{PendingResolve, Resolver};
@@ -18,6 +18,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 fn public_thread_traits_match_the_contract() {
     assert_send::<Engine>();
     assert_send_sync::<Client>();
+    assert_send_sync::<EngineRequestBuilder>();
     assert_send_sync::<RequestHandle>();
     assert_send::<PendingRequest>();
     assert_send::<DetachedCallbacks>();

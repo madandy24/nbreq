@@ -56,7 +56,9 @@ mod lifecycle_tests;
 mod dns_wiring_tests;
 
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
-pub use client::{CancelOnDrop, Client, PendingRequest, RequestHandle, WaitOutcome};
+pub use client::{
+    CancelOnDrop, Client, EngineRequestBuilder, PendingRequest, RequestHandle, WaitOutcome,
+};
 #[cfg(feature = "resolver")]
 pub use dns::{
     AddressFamily, AddressOrder, CacheMode, PendingResolve, ResolveCompletion, ResolveHandle,
