@@ -703,8 +703,12 @@ fn truncated_udp_response_falls_back_to_fragmented_tcp() {
     });
 
     let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
-    let mut resolver = NativeResolver::new(ResolverConfig::for_test(address), owner.waker())
-        .expect("TCP-fallback resolver must construct");
+    let mut config = ResolverConfig::for_test(address);
+    // The fixture deliberately fragments a valid TCP reply across three writes. Keep the
+    // resolver deadline bounded without making loaded-runner scheduling part of that proof.
+    config.attempt_timeout = Duration::from_secs(1);
+    let mut resolver =
+        NativeResolver::new(config, owner.waker()).expect("TCP-fallback resolver must construct");
     resolver
         .resolve(ResolveKey(70), "tcp-fallback.test".to_owned())
         .expect("TCP-fallback resolution must submit");
