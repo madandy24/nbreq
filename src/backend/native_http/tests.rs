@@ -4073,10 +4073,12 @@ fn useful_response_progress_refreshes_the_inactivity_deadline() {
             received.extend_from_slice(&buffer[..read]);
         }
         stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n")
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n")
             .expect("response head must write");
-        for byte in b"progress" {
-            thread::sleep(Duration::from_millis(50));
+        // Each useful byte has 600 ms of scheduler headroom, while the complete 1.2-second
+        // sequence still crosses the original one-second inactivity deadline.
+        for byte in b"yes" {
+            thread::sleep(Duration::from_millis(400));
             stream
                 .write_all(std::slice::from_ref(byte))
                 .expect("progress byte must write");
@@ -4092,13 +4094,13 @@ fn useful_response_progress_refreshes_the_inactivity_deadline() {
         .client()
         .execute(
             Request::get(format!("http://{address}/progress"))
-                .inactivity_timeout(Duration::from_millis(200))
-                .total_timeout(Duration::from_secs(2))
+                .inactivity_timeout(Duration::from_secs(1))
+                .total_timeout(Duration::from_secs(5))
                 .build()
                 .expect("progress request must build"),
         )
         .expect("useful progress must keep the request alive");
-    assert_eq!(response.body(), b"progress");
+    assert_eq!(response.body(), b"yes");
     engine.shutdown().expect("native HTTP Engine must stop");
     server.join().expect("HTTP fixture must join");
 }

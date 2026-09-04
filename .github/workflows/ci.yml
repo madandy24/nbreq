@@ -31,6 +31,12 @@ jobs:
           - name: Ubuntu MSRV 1.85
             os: ubuntu-latest
             toolchain: 1.85.0
+          - name: macOS 15 Intel stable
+            os: macos-15-intel
+            toolchain: stable
+          - name: macOS 15 Intel MSRV 1.85
+            os: macos-15-intel
+            toolchain: 1.85.0
           - name: macOS 15 Apple Silicon stable
             os: macos-15
             toolchain: stable
