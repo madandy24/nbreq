@@ -289,6 +289,11 @@ fn run_tcp_aware_dns(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // Windows accepts can inherit the listener's nonblocking mode. The
+                // framing reads below need to wait for a query that has not arrived yet.
+                stream
+                    .set_nonblocking(false)
+                    .expect("public DNS TCP stream must use blocking fixture I/O");
                 stream
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .expect("public DNS TCP read timeout");
@@ -1121,6 +1126,145 @@ fn result_cap_is_enforced_before_unbounded_growth() {
     );
     assert_eq!(capped.addresses().len(), 3);
     engine.shutdown().expect("capped Engine must stop");
+}
+
+#[test]
+#[cfg(feature = "resolver")]
+fn review_p2_dns_cache_preserves_addresses_beyond_the_first_callers_limit() {
+    let dns = DualStackDns::with_handler(|request| Some(many_a(&request, 8)));
+    let engine = spawned_engine(&dns);
+    let request = |limit, cache_mode| {
+        ResolveRequest::hostname("review-cache.test")
+            .address_family(AddressFamily::Ipv4)
+            .max_results(limit)
+            .cache_mode(cache_mode)
+            .total_timeout(Duration::from_secs(3))
+            .build()
+            .expect("bounded cache request must build")
+    };
+
+    let small = completed(&engine, request(1, CacheMode::Use));
+    let larger = completed(&engine, request(8, CacheMode::Use));
+    let uncached = completed(&engine, request(8, CacheMode::Bypass));
+    engine
+        .shutdown()
+        .expect("cache regression Engine must join");
+
+    assert_eq!(
+        small.addresses().len(),
+        1,
+        "the first caller's cap still applies"
+    );
+    assert_eq!(
+        uncached.addresses().len(),
+        8,
+        "the fixture supplies eight addresses"
+    );
+    assert!(
+        larger.from_cache(),
+        "a larger output cap must not force another query"
+    );
+    assert_eq!(
+        dns.queries(),
+        2,
+        "only the initial and bypass requests need the wire"
+    );
+    assert_eq!(
+        larger.addresses(),
+        uncached.addresses(),
+        "a caller's output limit must not truncate the shared DNS cache"
+    );
+}
+
+#[test]
+#[cfg(feature = "resolver")]
+fn cache_refresh_keeps_both_families_independent_of_output_cap_and_order() {
+    let dns = DualStackDns::with_handler(|request| {
+        let query = request.query().expect("multi-address query").clone();
+        if query.query_type() == RecordType::A {
+            return Some(many_a(&request, 8));
+        }
+        let mut response = Message::new();
+        response
+            .set_id(request.id())
+            .set_message_type(MessageType::Response)
+            .add_query(query.clone());
+        for index in 1..=8 {
+            response.add_answer(Record::from_rdata(
+                query.name().clone(),
+                60,
+                RData::AAAA(AAAA(std::net::Ipv6Addr::new(
+                    0x2001, 0xdb8, 0, 0, 0, 0, 0, index,
+                ))),
+            ));
+        }
+        Some(response)
+    });
+    let engine = spawned_engine(&dns);
+    let request = |limit, cache_mode, order| {
+        ResolveRequest::hostname("cache-both.test")
+            .address_family(AddressFamily::Both)
+            .max_results(limit)
+            .cache_mode(cache_mode)
+            .address_order(order)
+            .total_timeout(Duration::from_secs(3))
+            .build()
+            .expect("cache request")
+    };
+    for cache_mode in [CacheMode::Use, CacheMode::Refresh] {
+        let small = completed(&engine, request(1, cache_mode, AddressOrder::Ipv4ThenIpv6));
+        assert_eq!(small.addresses().len(), 1);
+        for order in [AddressOrder::Ipv4ThenIpv6, AddressOrder::Ipv6ThenIpv4] {
+            let cached = completed(&engine, request(16, CacheMode::Use, order));
+            let bypass = completed(&engine, request(16, CacheMode::Bypass, order));
+            assert!(cached.from_cache());
+            assert_eq!(cached.addresses().len(), 16);
+            assert_eq!(cached.addresses(), bypass.addresses());
+        }
+    }
+    assert_eq!(
+        dns.queries(),
+        12,
+        "two fills and four bypasses query both families"
+    );
+    engine.shutdown().expect("Engine joins");
+}
+
+#[test]
+#[cfg(feature = "resolver")]
+fn review_p2_dns_wire_ids_are_not_a_predictable_incrementing_sequence() {
+    let ids = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&ids);
+    let dns = DualStackDns::with_handler(move |request| {
+        observed
+            .lock()
+            .expect("wire ID observations")
+            .push(request.id());
+        Some(a_record(&request, Ipv4Addr::LOCALHOST))
+    });
+    let engine = spawned_engine(&dns);
+    for index in 0..32 {
+        let response = completed(
+            &engine,
+            ResolveRequest::hostname(format!("review-id-{index}.test"))
+                .address_family(AddressFamily::Ipv4)
+                .cache_mode(CacheMode::Bypass)
+                .total_timeout(Duration::from_secs(3))
+                .build()
+                .expect("wire ID request must build"),
+        );
+        assert_eq!(response.status(), ResolveStatus::Answer);
+    }
+    engine.shutdown().expect("wire ID Engine must join");
+    let ids = ids.lock().expect("wire ID observations");
+    assert_eq!(ids.len(), 32, "one answered question per distinct name");
+    // This is a wire-level regression for the known predictable pattern, not an entropy test.
+    // Random IDs may legitimately contain adjacent values; reject only the entire 32-ID run.
+    assert!(
+        !ids.windows(2)
+            .all(|pair| pair[1] == pair[0].wrapping_add(1)),
+        "all 32 observed DNS IDs followed the predictable +1 sequence: {ids:?}"
+    );
 }
 
 #[test]

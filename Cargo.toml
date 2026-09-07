@@ -18,6 +18,8 @@ include = [
     "!/src/backend/curl.rs",
     "!/src/curl_tests.rs",
     "/tests/**",
+    "!/tests/fixtures/fuzz/**",
+    "/tests/fixtures/fuzz/**/*.seed",
     "/examples/ffi_owner.rs",
     "/examples/manual.rs",
     "/examples/native_platform_https.rs",

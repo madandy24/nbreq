@@ -18,6 +18,7 @@ use super::native_dns::ResolverSnapshot;
 use super::native_dns::{
     NativeResolver, PublicLookupOutcome, PublicResolveSpec, ResolveKey, ResolverConfig,
 };
+use super::native_tls::worker::{HandshakeWorkers, INPUT_WINDOW};
 use super::native_tls::{
     NativeTls, NativeTlsConfigs, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
     encrypted_receive_limit,
@@ -27,7 +28,7 @@ use crate::metrics::Metrics;
 use crate::registry::{Shared, TcpConnectSink};
 use crate::stream::{ResponseSink, UploadBody, UploadFraming, UploadPoll};
 use crate::tcp::io::TcpIoOwner;
-use crate::types::{http_origin, redirected_request};
+use crate::types::{RequestRedirect, http_origin, plan_redirect};
 use crate::{
     AddressFamily, AddressOrder, CacheMode, Completion, EngineConfig, Error, ErrorKind, Header,
     LimitKind, Request, RequestId, ResolveStatus, Response, ShutdownError, StreamRequest,
@@ -37,6 +38,7 @@ use crate::{
 use crate::{ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress};
 
 const MAX_INFORMATIONAL_RESPONSES: u8 = 8;
+const HTTP_BODY_SEND_WINDOW: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 struct ConnectionLimits {
@@ -226,7 +228,9 @@ impl NativeHttpFactory {
             limits: HttpLimits::from_config(config),
             connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
-            tls: Some(NativeTlsConfigs::platform()?),
+            tls: Some(NativeTlsConfigs::platform_with_extra_roots(
+                config.additional_tls_root_certificates(),
+            )?),
         })
     }
 
@@ -237,7 +241,9 @@ impl NativeHttpFactory {
             limits: HttpLimits::from_config(config),
             connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::system()?),
-            tls: Some(NativeTlsConfigs::platform()?),
+            tls: Some(NativeTlsConfigs::platform_with_extra_roots(
+                config.additional_tls_root_certificates(),
+            )?),
         })
     }
 
@@ -382,6 +388,7 @@ struct HttpTransfer {
     body_bearing: bool,
     response_started: bool,
     connected: bool,
+    connecting: Option<HttpConnecting>,
     tls: Option<NativeTls>,
     connect_deadline: Option<Instant>,
     total_deadline: Option<Instant>,
@@ -393,9 +400,19 @@ struct HttpTransfer {
     request_permits_reuse: bool,
     request_write_drained: bool,
     request: Request,
+    request_body_offset: usize,
     redirect_hops: u8,
     upload: Option<NativeUpload>,
     upload_aborted: bool,
+}
+
+// Survives only the TCP connection phase. Failed addresses share the same request, TLS state,
+// connection reservation, and deadlines. Once TCP connects, no address fallback may replay it.
+struct HttpConnecting {
+    remaining: VecDeque<SocketAddr>,
+    cleartext_request: Option<Vec<u8>>,
+    outbound_limit: usize,
+    receive_limit: usize,
 }
 
 enum TransferResponse {
@@ -406,7 +423,7 @@ enum TransferResponse {
         retained_offset: usize,
         peer_closed: bool,
         tls_dirty_eof: bool,
-        redirect: Option<Request>,
+        redirect: Option<RequestRedirect>,
     },
 }
 
@@ -505,14 +522,17 @@ impl NativeUpload {
     }
 }
 
-fn cleartext_outbound_limit(serialized: &SerializedRequest, upload: Option<&UploadBody>) -> usize {
-    upload.map_or(serialized.bytes.len(), |upload| {
-        serialized
-            .bytes
-            .len()
-            .saturating_add(upload.queue_capacity())
-            .saturating_add(32)
-    })
+fn cleartext_outbound_limit(
+    serialized: &SerializedRequest,
+    body_bytes: usize,
+    upload: Option<&UploadBody>,
+) -> usize {
+    // Small buffered requests still fit in one socket batch. Large bodies are borrowed into a
+    // bounded window, instead of allocating another body-sized transport queue.
+    let body_window = upload.map_or(body_bytes.min(HTTP_BODY_SEND_WINDOW), |upload| {
+        upload.queue_capacity().saturating_add(32)
+    });
+    serialized.bytes.len().saturating_add(body_window)
 }
 
 impl HttpTransfer {
@@ -560,6 +580,9 @@ impl HttpTransfer {
 
 struct NativeHttpBackend {
     reactor: NativeReactor,
+    tls_workers: HandshakeWorkers,
+    handshake_waiting: VecDeque<(SlotId, Vec<u8>)>,
+    handshake_peer_closed: HashSet<SlotId>,
     resolver: Option<NativeResolver>,
     tls: Option<NativeTlsConfigs>,
     limits: HttpLimits,
@@ -911,8 +934,12 @@ impl NativeHttpBackend {
             .map(|config| NativeResolver::new(config, reactor.waker()))
             .transpose()?;
         let resolver_config_generation = u64::from(resolver.is_some());
+        let tls_workers = HandshakeWorkers::new(reactor.waker());
         Ok(Self {
             reactor,
+            tls_workers,
+            handshake_waiting: VecDeque::new(),
+            handshake_peer_closed: HashSet::new(),
             resolver,
             tls,
             limits,
@@ -1194,6 +1221,7 @@ impl NativeHttpBackend {
         completion: Completion,
         completions: &mut Vec<BackendCompletion>,
     ) {
+        self.cancel_handshake(slot);
         self.reactor.cancel(slot);
         if let Some(mut transfer) = self.transfers.remove(&slot) {
             self.request_to_slot.remove(&transfer.request_id);
@@ -1294,7 +1322,11 @@ impl NativeHttpBackend {
         let outbound_limit = if idle.tls.is_some() {
             encrypted_outbound_limit()
         } else {
-            cleartext_outbound_limit(&pending.serialized, pending.response.upload())
+            cleartext_outbound_limit(
+                &pending.serialized,
+                pending.request.body().len(),
+                pending.response.upload(),
+            )
         };
         let receive_limit = if idle.tls.is_some() {
             encrypted_receive_limit(self.limits.reactor_receive_limit())
@@ -1310,15 +1342,19 @@ impl NativeHttpBackend {
             self.release_connection(&pending.key);
             return Some(pending);
         }
-        let outbound = match idle.tls.as_mut() {
+        let mut request_body_offset = 0;
+        let encrypted = match idle.tls.as_mut() {
             Some(tls) => {
                 if tls.begin_request(pending.serialized.bytes.clone()).is_err() {
                     self.reactor.cancel(idle.slot);
                     self.release_connection(&pending.key);
                     return Some(pending);
                 }
-                match tls.pump_request(outbound_limit) {
-                    Ok(outbound) => outbound,
+                match tls.pump_request_body(pending.request.body(), outbound_limit) {
+                    Ok(progress) => {
+                        request_body_offset = progress.consumed_body;
+                        Some(progress.outbound)
+                    }
                     Err(_) => {
                         self.reactor.cancel(idle.slot);
                         self.release_connection(&pending.key);
@@ -1326,12 +1362,37 @@ impl NativeHttpBackend {
                     }
                 }
             }
-            None => pending.serialized.bytes.clone(),
+            None => None,
         };
-        if self.reactor.queue_write(idle.slot, &outbound).is_err() {
+        let outbound = encrypted.as_deref().unwrap_or(&pending.serialized.bytes);
+        if self.reactor.queue_write(idle.slot, outbound).is_err() {
             self.reactor.cancel(idle.slot);
             self.release_connection(&pending.key);
             return Some(pending);
+        }
+        if idle.tls.is_none() {
+            // Fill the same first socket batch as the headers, including on reused sockets.
+            // Nothing is transmitted until the next reactor pass, so a local queue failure can
+            // still discard this idle connection and retry with the untouched original body.
+            let queued_body = self
+                .reactor
+                .outbound_capacity(idle.slot)
+                .and_then(|capacity| {
+                    let count = pending.request.body().len().min(capacity);
+                    if count != 0 {
+                        self.reactor
+                            .queue_write(idle.slot, &pending.request.body()[..count])?;
+                    }
+                    Ok(count)
+                });
+            match queued_body {
+                Ok(count) => request_body_offset = count,
+                Err(_) => {
+                    self.reactor.cancel(idle.slot);
+                    self.release_connection(&pending.key);
+                    return Some(pending);
+                }
+            }
         }
         let request_id = pending.request_id;
         let (response, upload) = pending
@@ -1346,6 +1407,7 @@ impl NativeHttpBackend {
                 body_bearing: pending.body_bearing,
                 response_started: false,
                 connected: true,
+                connecting: None,
                 tls: idle.tls,
                 connect_deadline: pending.connect_deadline,
                 total_deadline: pending.total_deadline,
@@ -1357,6 +1419,7 @@ impl NativeHttpBackend {
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
                 request: pending.request,
+                request_body_offset,
                 redirect_hops: pending.redirect_hops,
                 upload,
                 upload_aborted: false,
@@ -1381,12 +1444,13 @@ impl NativeHttpBackend {
             return;
         };
         self.request_to_slot.remove(&transfer.request_id);
-        let redirect = redirected_request(
+        let redirect = plan_redirect(
             &transfer.request,
             response.status(),
             transfer.redirect_hops,
             || resolved_redirect_target(&transfer.request, &response),
-        );
+        )
+        .map(|redirect| redirect.map(|redirect| redirect.apply(transfer.request)));
         let request_id = transfer.request_id;
         let total_deadline = transfer.total_deadline;
         let next_redirect_hops = transfer.redirect_hops.saturating_add(1);
@@ -1402,11 +1466,7 @@ impl NativeHttpBackend {
         if reusable {
             let parked = Instant::now()
                 .checked_add(self.connection_limits.idle_timeout)
-                .filter(|idle_deadline| {
-                    self.reactor
-                        .set_deadline(slot, Some(*idle_deadline))
-                        .is_ok()
-                });
+                .filter(|idle_deadline| self.reactor.park_idle(slot, *idle_deadline).is_ok());
             if let Some(expires_at) = parked {
                 self.idle_slots.insert(slot, transfer.key.clone());
                 self.idle
@@ -1479,7 +1539,7 @@ impl NativeHttpBackend {
 
     fn begin_connection(
         &mut self,
-        address: SocketAddr,
+        mut addresses: VecDeque<SocketAddr>,
         mut pending: PendingResolve,
     ) -> Option<Completion> {
         let deadline = pending.next_deadline();
@@ -1494,7 +1554,7 @@ impl NativeHttpBackend {
             match configs.connection(
                 &pending.host,
                 pending.tls_verification,
-                pending.serialized.bytes.clone(),
+                std::mem::take(&mut pending.serialized.bytes),
             ) {
                 Ok(tls) => Some(tls),
                 Err(error) => {
@@ -1508,30 +1568,58 @@ impl NativeHttpBackend {
         let outbound_limit = if tls.is_some() {
             encrypted_outbound_limit()
         } else {
-            cleartext_outbound_limit(&pending.serialized, pending.response.upload())
+            cleartext_outbound_limit(
+                &pending.serialized,
+                pending.request.body().len(),
+                pending.response.upload(),
+            )
         };
         let receive_limit = if tls.is_some() {
             encrypted_receive_limit(self.limits.reactor_receive_limit())
         } else {
             self.limits.reactor_receive_limit()
         };
-        let slot = match self
-            .reactor
-            .connect(address, deadline, outbound_limit, receive_limit)
-        {
-            Ok(slot) => slot,
-            Err(failure) => {
+        let slot = loop {
+            if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+                let timeout = pending.expired_timeout(Instant::now());
                 self.release_connection(&pending.key);
-                return pending.fail(native_transport_error(failure));
+                return pending.fail(Error::timeout(timeout, native_timeout_message(timeout)));
+            }
+            let Some(address) = addresses.pop_front() else {
+                self.release_connection(&pending.key);
+                return pending.fail(Error::transport(
+                    TransportStage::Dns,
+                    "the native resolver returned no usable address",
+                ));
+            };
+            match self
+                .reactor
+                .connect(address, deadline, outbound_limit, receive_limit)
+            {
+                Ok(slot) => break slot,
+                Err(failure)
+                    if failure.kind == NativeFailureKind::Connect && !addresses.is_empty() =>
+                {
+                    continue;
+                }
+                Err(failure) => {
+                    self.release_connection(&pending.key);
+                    return pending.fail(native_transport_error(failure));
+                }
             }
         };
-        if tls.is_none() {
-            if let Err(failure) = self.reactor.queue_write(slot, &pending.serialized.bytes) {
+        if tls.is_some() {
+            if let Err(failure) = self.reactor.set_read_allowance(slot, Some(INPUT_WINDOW)) {
                 self.reactor.cancel(slot);
                 self.release_connection(&pending.key);
                 return pending.fail(native_transport_error(failure));
             }
         }
+        let cleartext_request = if tls.is_none() {
+            Some(pending.serialized.bytes)
+        } else {
+            None
+        };
         let request_id = pending.request_id;
         let now = Instant::now();
         pending.inactivity_deadline = pending
@@ -1549,6 +1637,12 @@ impl NativeHttpBackend {
                 body_bearing: pending.body_bearing,
                 response_started: false,
                 connected: false,
+                connecting: Some(HttpConnecting {
+                    remaining: addresses,
+                    cleartext_request,
+                    outbound_limit,
+                    receive_limit,
+                }),
                 tls,
                 connect_deadline: pending.connect_deadline,
                 total_deadline: pending.total_deadline,
@@ -1560,6 +1654,7 @@ impl NativeHttpBackend {
                 request_permits_reuse: pending.serialized.permits_reuse,
                 request_write_drained: false,
                 request: pending.request,
+                request_body_offset: 0,
                 redirect_hops: pending.redirect_hops,
                 upload,
                 upload_aborted: false,
@@ -1633,21 +1728,13 @@ impl NativeHttpBackend {
             self.request_to_resolve.remove(&pending.request_id);
             match result.result {
                 Ok(answer) => {
-                    let Some(ip) = answer.addresses.into_iter().next() else {
-                        self.release_connection(&pending.key);
-                        let id = pending.request_id;
-                        if let Some(completion) = pending.fail(Error::transport(
-                            TransportStage::Dns,
-                            "the native resolver returned no usable address",
-                        )) {
-                            completions.push(BackendCompletion { id, completion });
-                        }
-                        continue;
-                    };
+                    let addresses = answer
+                        .addresses
+                        .into_iter()
+                        .map(|ip| SocketAddr::new(ip, pending.port))
+                        .collect();
                     let id = pending.request_id;
-                    if let Some(completion) =
-                        self.begin_connection(SocketAddr::new(ip, pending.port), pending)
-                    {
+                    if let Some(completion) = self.begin_connection(addresses, pending) {
                         completions.push(BackendCompletion { id, completion });
                     }
                 }
@@ -1916,7 +2003,8 @@ impl NativeHttpBackend {
 
     fn start_reserved(&mut self, pending: PendingResolve) -> Option<Completion> {
         if let Ok(ip) = pending.host.parse::<IpAddr>() {
-            return self.begin_connection(SocketAddr::new(ip, pending.port), pending);
+            return self
+                .begin_connection(VecDeque::from([SocketAddr::new(ip, pending.port)]), pending);
         }
         let key = match self.next_resolve_key() {
             Ok(key) => key,
@@ -1941,12 +2029,90 @@ impl NativeHttpBackend {
         None
     }
 
+    fn retry_http_connect(
+        &mut self,
+        slot: SlotId,
+        mut failure: NativeFailure,
+        completions: &mut Vec<BackendCompletion>,
+    ) {
+        self.reactor.cancel(slot);
+        loop {
+            let Some(transfer) = self.transfers.get_mut(&slot) else {
+                return;
+            };
+            let now = Instant::now();
+            let deadline = transfer.next_deadline();
+            if deadline.is_some_and(|deadline| deadline <= now) {
+                let timeout = transfer.expired_timeout(now);
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::timeout(timeout, native_timeout_message(timeout))),
+                    completions,
+                );
+                return;
+            }
+            let connecting = transfer.connecting.as_mut().expect("TCP fallback state");
+            let Some(address) = connecting.remaining.pop_front() else {
+                self.finish(
+                    slot,
+                    Completion::Failed(native_transport_error(failure)),
+                    completions,
+                );
+                return;
+            };
+            let next = match self.reactor.connect(
+                address,
+                deadline,
+                connecting.outbound_limit,
+                connecting.receive_limit,
+            ) {
+                Ok(next) => next,
+                Err(next_failure) if next_failure.kind == NativeFailureKind::Connect => {
+                    failure = next_failure;
+                    continue;
+                }
+                Err(error) => {
+                    self.finish(
+                        slot,
+                        Completion::Failed(native_transport_error(error)),
+                        completions,
+                    );
+                    return;
+                }
+            };
+            if transfer.tls.is_some() {
+                if let Err(error) = self.reactor.set_read_allowance(next, Some(INPUT_WINDOW)) {
+                    self.reactor.cancel(next);
+                    self.finish(
+                        slot,
+                        Completion::Failed(native_transport_error(error)),
+                        completions,
+                    );
+                    return;
+                }
+            }
+            let transfer = self.transfers.remove(&slot).expect("retained TCP attempt");
+            self.request_to_slot.insert(transfer.request_id, next);
+            self.transfers.insert(next, transfer);
+            return;
+        }
+    }
+
     fn fail_native(
         &mut self,
         slot: SlotId,
         failure: NativeFailure,
         completions: &mut Vec<BackendCompletion>,
     ) {
+        if failure.kind == NativeFailureKind::Connect
+            && self
+                .transfers
+                .get(&slot)
+                .is_some_and(|transfer| transfer.connecting.is_some())
+        {
+            self.retry_http_connect(slot, failure, completions);
+            return;
+        }
         let tls_handshake = self
             .transfers
             .get(&slot)
@@ -1993,11 +2159,18 @@ impl NativeHttpBackend {
                 return Ok(false);
             }
         };
-        let pumped = self
-            .transfers
-            .get_mut(&slot)
-            .and_then(|transfer| transfer.tls.as_mut())
-            .map(|tls| tls.pump_request(capacity));
+        let pumped = self.transfers.get_mut(&slot).and_then(|transfer| {
+            transfer.tls.as_mut().map(|tls| {
+                tls.pump_request_body(
+                    &transfer.request.body()[transfer.request_body_offset..],
+                    capacity,
+                )
+                .map(|progress| {
+                    transfer.request_body_offset += progress.consumed_body;
+                    progress.outbound
+                })
+            })
+        });
         let outbound = match pumped {
             Some(Ok(outbound)) => outbound,
             Some(Err(error)) => {
@@ -2020,12 +2193,55 @@ impl NativeHttpBackend {
         Ok(queued)
     }
 
+    fn pump_cleartext_body(
+        &mut self,
+        slot: SlotId,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<bool, Error> {
+        let capacity = self
+            .reactor
+            .outbound_capacity(slot)
+            .map_err(native_internal_error)?;
+        let Some(transfer) = self.transfers.get_mut(&slot) else {
+            return Ok(false);
+        };
+        let body = &transfer.request.body()[transfer.request_body_offset..];
+        let count = body.len().min(capacity);
+        if count == 0 {
+            return Ok(false);
+        }
+        if let Err(failure) = self.reactor.queue_write(slot, &body[..count]) {
+            self.finish(
+                slot,
+                Completion::Failed(native_transport_error(failure)),
+                completions,
+            );
+            return Ok(false);
+        }
+        transfer.request_body_offset += count;
+        Ok(true)
+    }
+
     fn pump_request_output(
         &mut self,
         slot: SlotId,
         completions: &mut Vec<BackendCompletion>,
     ) -> Result<bool, Error> {
-        let mut queued = self.pump_tls_request(slot, completions)?;
+        if self
+            .transfers
+            .get(&slot)
+            .is_some_and(|transfer| transfer.connecting.is_some())
+        {
+            return Ok(false);
+        }
+        let Some(transfer) = self.transfers.get(&slot) else {
+            return Ok(false);
+        };
+        let mut queued = if transfer.tls.is_some() {
+            self.pump_tls_request(slot, completions)?
+        } else {
+            self.pump_cleartext_body(slot, completions)?
+        };
         loop {
             let Some(uses_tls) = self
                 .transfers
@@ -2132,7 +2348,9 @@ impl NativeHttpBackend {
             .tls
             .as_ref()
             .is_none_or(NativeTls::request_fully_encrypted);
-        upload_complete && encrypted
+        upload_complete
+            && encrypted
+            && transfer.request_body_offset == transfer.request.body().len()
     }
 
     fn refresh_request_write_drained(&mut self, slot: SlotId) -> Result<(), Error> {
@@ -2161,6 +2379,22 @@ impl NativeHttpBackend {
         arm_deadline: bool,
         completions: &mut Vec<BackendCompletion>,
     ) -> Result<(), Error> {
+        let connecting = self
+            .transfers
+            .get_mut(&slot)
+            .and_then(|transfer| transfer.connecting.take());
+        if arm_deadline {
+            if let Some(request) = connecting.and_then(|connecting| connecting.cleartext_request) {
+                if let Err(failure) = self.reactor.queue_write(slot, &request) {
+                    self.finish(
+                        slot,
+                        Completion::Failed(native_transport_error(failure)),
+                        completions,
+                    );
+                    return Ok(());
+                }
+            }
+        }
         let start = self
             .transfers
             .get_mut(&slot)
@@ -2241,6 +2475,14 @@ impl NativeHttpBackend {
     }
 
     fn refresh_stream_allowance(&mut self, slot: SlotId) -> Result<(), Error> {
+        if self
+            .transfers
+            .get(&slot)
+            .and_then(|transfer| transfer.tls.as_ref())
+            .is_some_and(NativeTls::is_handshaking)
+        {
+            return self.refresh_tls_allowance(slot);
+        }
         let stream_state = self.transfers.get(&slot).and_then(|transfer| {
             let TransferResponse::Streaming {
                 decoder,
@@ -2341,11 +2583,7 @@ impl NativeHttpBackend {
         if reusable {
             let parked = Instant::now()
                 .checked_add(self.connection_limits.idle_timeout)
-                .filter(|idle_deadline| {
-                    self.reactor
-                        .set_deadline(slot, Some(*idle_deadline))
-                        .is_ok()
-                });
+                .filter(|idle_deadline| self.reactor.park_idle(slot, *idle_deadline).is_ok());
             if let Some(expires_at) = parked {
                 self.idle_slots.insert(slot, transfer.key.clone());
                 self.idle
@@ -2369,7 +2607,8 @@ impl NativeHttpBackend {
             self.release_connection(&transfer.key);
         }
 
-        if let Some((request, response)) = redirect {
+        if let Some((redirect, response)) = redirect {
+            let request = redirect.apply(transfer.request);
             let now = Instant::now();
             let deadlines = PendingDeadlines {
                 connect: request
@@ -2477,7 +2716,7 @@ impl NativeHttpBackend {
                         if transfer.upload.is_some() {
                             Ok(None)
                         } else {
-                            redirected_request(
+                            plan_redirect(
                                 &transfer.request,
                                 head.status(),
                                 transfer.redirect_hops,
@@ -2676,6 +2915,129 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn cancel_handshake(&mut self, slot: SlotId) {
+        self.handshake_waiting.retain(|(id, _)| *id != slot);
+        self.handshake_peer_closed.remove(&slot);
+        self.tls_workers.cancel(slot);
+    }
+
+    fn refresh_tls_allowance(&mut self, slot: SlotId) -> Result<(), Error> {
+        let Some(transfer) = self.transfers.get(&slot) else {
+            return Ok(());
+        };
+        let Some(tls) = &transfer.tls else {
+            return Ok(());
+        };
+        let allowance = if tls.is_handshaking() {
+            Some(
+                if tls.handshake_in_worker()
+                    || self.handshake_waiting.iter().any(|(id, _)| *id == slot)
+                {
+                    0
+                } else {
+                    INPUT_WINDOW
+                },
+            )
+        } else if transfer.response.is_streaming() {
+            return self.refresh_stream_allowance(slot);
+        } else {
+            None
+        };
+        self.reactor
+            .set_read_allowance(slot, allowance)
+            .map_err(native_internal_error)
+    }
+
+    fn service_tls(&mut self, completions: &mut Vec<BackendCompletion>) -> Result<(), Error> {
+        while let Some(finished) = self.tls_workers.take_finished() {
+            let slot = finished.slot;
+            let Some(transfer) = self.transfers.get_mut(&slot) else {
+                continue;
+            };
+            let now = Instant::now();
+            if transfer
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= now)
+            {
+                let timeout = transfer.expired_timeout(now);
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::timeout(timeout, native_timeout_message(timeout))),
+                    completions,
+                );
+                continue;
+            }
+            let Some(tls) = &mut transfer.tls else {
+                continue;
+            };
+            tls.restore_handshake(finished.session);
+            let peer_closed = self.handshake_peer_closed.remove(&slot);
+            if transfer.response.is_streaming() {
+                let progress = finished
+                    .progress
+                    .and_then(|progress| tls.retain_stream_progress(progress));
+                self.handle_stream_tls_progress(
+                    slot,
+                    Some(progress),
+                    Vec::new(),
+                    true,
+                    completions,
+                )?;
+            } else {
+                self.handle_buffered_tls_progress(
+                    slot,
+                    Some(finished.progress),
+                    Vec::new(),
+                    true,
+                    completions,
+                )?;
+            }
+            self.refresh_tls_allowance(slot)?;
+            if peer_closed {
+                completions.extend(self.process_events(vec![NativeEvent::PeerClosed(slot)])?);
+            }
+        }
+        while self.tls_workers.has_capacity() {
+            let Some((slot, input)) = self.handshake_waiting.pop_front() else {
+                break;
+            };
+            let Some(transfer) = self.transfers.get_mut(&slot) else {
+                continue;
+            };
+            let now = Instant::now();
+            if transfer
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= now)
+            {
+                let timeout = transfer.expired_timeout(now);
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::timeout(timeout, native_timeout_message(timeout))),
+                    completions,
+                );
+                continue;
+            }
+            let deadline = transfer
+                .connect_deadline
+                .into_iter()
+                .chain(transfer.total_deadline)
+                .min();
+            let Some(tls) = transfer.tls.as_mut() else {
+                continue;
+            };
+            let Some(session) = tls.take_handshake() else {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "TLS handshake lost its session",
+                ));
+            };
+            if let Err(error) = self.tls_workers.submit(slot, session, input, deadline) {
+                self.finish(slot, Completion::Failed(error), completions);
+            }
+        }
+        Ok(())
+    }
+
     fn handle_stream_data(
         &mut self,
         slot: SlotId,
@@ -2688,6 +3050,17 @@ impl NativeHttpBackend {
             .get_mut(&slot)
             .and_then(|transfer| transfer.tls.as_mut())
             .map(|tls| tls.receive_streaming(&bytes));
+        self.handle_stream_tls_progress(slot, tls_progress, bytes, arm_deadline, completions)
+    }
+
+    fn handle_stream_tls_progress(
+        &mut self,
+        slot: SlotId,
+        tls_progress: Option<Result<TlsStreamProgress, Error>>,
+        bytes: Vec<u8>,
+        arm_deadline: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
         let (established, outbound, peer_closed) = match tls_progress {
             Some(Ok(TlsStreamProgress {
                 outbound,
@@ -2779,6 +3152,42 @@ impl NativeHttpBackend {
         if self
             .transfers
             .get(&slot)
+            .and_then(|transfer| transfer.tls.as_ref())
+            .is_some_and(NativeTls::is_handshaking)
+        {
+            // A failed socket in this readiness batch has already been removed. Do not submit
+            // work or rearm it; the following failure event owns terminal classification.
+            if !arm_deadline {
+                return Ok(());
+            }
+            self.note_progress(slot, false, true)?;
+            self.reactor
+                .set_read_allowance(slot, Some(0))
+                .map_err(native_internal_error)?;
+            if bytes.len() > INPUT_WINDOW
+                || self.handshake_waiting.iter().any(|(id, _)| *id == slot)
+                || self
+                    .transfers
+                    .get(&slot)
+                    .and_then(|transfer| transfer.tls.as_ref())
+                    .is_some_and(NativeTls::handshake_in_worker)
+            {
+                self.finish(
+                    slot,
+                    Completion::Failed(Error::new(
+                        ErrorKind::Internal,
+                        "TLS handshake received bytes without an input allowance",
+                    )),
+                    completions,
+                );
+            } else {
+                self.handshake_waiting.push_back((slot, bytes));
+            }
+            return Ok(());
+        }
+        if self
+            .transfers
+            .get(&slot)
             .is_some_and(|transfer| transfer.response.is_streaming())
         {
             return self.handle_stream_data(slot, bytes, arm_deadline, completions);
@@ -2788,6 +3197,17 @@ impl NativeHttpBackend {
             .get_mut(&slot)
             .and_then(|transfer| transfer.tls.as_mut())
             .map(|tls| tls.receive(&bytes));
+        self.handle_buffered_tls_progress(slot, tls_progress, bytes, arm_deadline, completions)
+    }
+
+    fn handle_buffered_tls_progress(
+        &mut self,
+        slot: SlotId,
+        tls_progress: Option<Result<TlsProgress, Error>>,
+        bytes: Vec<u8>,
+        arm_deadline: bool,
+        completions: &mut Vec<BackendCompletion>,
+    ) -> Result<(), Error> {
         let (plaintext, established, outbound, peer_closed) = match tls_progress {
             Some(Ok(TlsProgress {
                 outbound,
@@ -3208,6 +3628,18 @@ impl NativeHttpBackend {
                     self.handle_data(slot, bytes, !failed_slots.contains(&slot), &mut completions)?;
                 }
                 NativeEvent::PeerClosed(slot) => {
+                    // Preserve Data-before-FIN ordering while packet processing is offloaded.
+                    // The flight can contain Finished, application bytes, and close_notify.
+                    if self.handshake_waiting.iter().any(|(id, _)| *id == slot)
+                        || self
+                            .transfers
+                            .get(&slot)
+                            .and_then(|transfer| transfer.tls.as_ref())
+                            .is_some_and(NativeTls::handshake_in_worker)
+                    {
+                        self.handshake_peer_closed.insert(slot);
+                        continue;
+                    }
                     let tls_state = self
                         .transfers
                         .get(&slot)
@@ -3421,6 +3853,9 @@ impl Backend for NativeHttpBackend {
     }
 
     fn cancel(&mut self, id: RequestId) {
+        if let Some(slot) = self.request_to_slot.get(&id).copied() {
+            self.cancel_handshake(slot);
+        }
         if let Some(key) = self.standalone_request_to_resolve.remove(&id) {
             self.standalone_resolves.remove(&key);
             if let Some(resolver) = &self.resolver {
@@ -3480,6 +3915,7 @@ impl Backend for NativeHttpBackend {
         completions.extend(std::mem::take(&mut self.pending_http_from_dns));
         completions.extend(self.expire_resolves()?);
         completions.extend(self.dispatch_waiting());
+        self.service_tls(&mut completions)?;
         self.resume_streams(&mut completions)?;
         let poll_deadline = if completions.is_empty() {
             deadline
@@ -3491,6 +3927,7 @@ impl Backend for NativeHttpBackend {
             .poll(poll_deadline)
             .map_err(native_internal_error)?;
         completions.extend(self.process_events(events)?);
+        self.service_tls(&mut completions)?;
         self.resume_standalone_tcp()?;
         self.drain_dns()?;
         completions.extend(std::mem::take(&mut self.pending_http_from_dns));
@@ -3500,6 +3937,11 @@ impl Backend for NativeHttpBackend {
     }
 
     fn shutdown(&mut self) -> Result<(), ShutdownError> {
+        // Close sockets before joining any potentially blocking resolver/verifier.
+        self.reactor.shutdown();
+        self.tls_workers.stop();
+        self.handshake_waiting.clear();
+        self.handshake_peer_closed.clear();
         let closing = self.connection_count;
         self.request_to_slot.clear();
         self.transfers.clear();
@@ -3530,11 +3972,12 @@ impl Backend for NativeHttpBackend {
             metrics.set_idle_connections(0);
             metrics.set_connection_waiters(0);
         }
-        if let Some(resolver) = &mut self.resolver {
-            resolver.shutdown().map_err(ShutdownError::new)?;
-        }
-        self.reactor.shutdown();
-        Ok(())
+        let dns_shutdown = match &mut self.resolver {
+            Some(resolver) => resolver.shutdown().map_err(ShutdownError::new),
+            None => Ok(()),
+        };
+        let tls_shutdown = self.tls_workers.shutdown();
+        tls_shutdown.and(dns_shutdown)
     }
 
     fn poll_mode(&self) -> PollMode {

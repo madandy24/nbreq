@@ -1,0 +1,16 @@
+{
+  "evidence": {
+    "path": "thoughts\\evidence\\nbreq-m2-response-evidence-20260907.tar.gz",
+    "sha256": "c93a9ecb0711cc0969c8ed2246e6a8582420e397ab0f23b101b7ef4ed3d2c7ff",
+    "files": 806,
+    "bytes": 974019
+  },
+  "source": {
+    "path": "thoughts\\evidence\\nbreq-m2-response-20260907.tar.gz",
+    "sha256": "c93b515df6a1cd369f962d4f4876d2eb692c003ef0f16dfd1a0ff78811eebbbf"
+  },
+  "valid_comparison_cases": 120,
+  "windows_verifiers": 1,
+  "remote_verifiers": 6,
+  "ownership_tests": 13
+}

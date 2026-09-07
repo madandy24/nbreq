@@ -13,6 +13,8 @@ const STACK_RESPONSE_HEADER_SLOTS: usize = 32;
 
 #[derive(Debug)]
 pub(super) struct SerializedRequest {
+    // Only the request line and headers. The HTTP owner retains the original body and feeds it
+    // separately, so DNS/connect/admission waiting never requires a second payload allocation.
     pub(super) bytes: Vec<u8>,
     pub(super) response_to_head: bool,
     pub(super) permits_reuse: bool,
@@ -163,13 +165,6 @@ pub(super) fn serialize_request_with_upload(
     let capacity = request_line_bytes
         .checked_add(header_bytes)
         .and_then(|bytes| bytes.checked_add(2))
-        .and_then(|bytes| {
-            bytes.checked_add(if upload.is_none() {
-                request.body().len()
-            } else {
-                0
-            })
-        })
         .ok_or_else(|| request_header_bytes_limit(limits.header_bytes))?;
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(method.as_bytes());
@@ -193,9 +188,6 @@ pub(super) fn serialize_request_with_upload(
         append_header(&mut bytes, b"Transfer-Encoding", b"chunked");
     }
     bytes.extend_from_slice(b"\r\n");
-    if upload.is_none() {
-        bytes.extend_from_slice(request.body());
-    }
     Ok(SerializedRequest {
         bytes,
         response_to_head: matches!(request.method(), Method::Head),
@@ -1080,7 +1072,7 @@ pub(super) fn parse_response_head(
             "HTTP response contains both Transfer-Encoding and Content-Length",
         ));
     }
-    let framing = if response_to_head || matches!(status, 204 | 205 | 304) {
+    let framing = if response_to_head || matches!(status, 204 | 304) {
         BodyFraming::None
     } else if transfer_encoding {
         BodyFraming::Chunked

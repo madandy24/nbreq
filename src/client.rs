@@ -258,7 +258,7 @@ impl PendingRequest {
     }
 
     pub(crate) fn try_completion(&self) -> Option<Completion> {
-        self.state.completion()
+        self.state.try_completion()
     }
 
     pub(crate) fn request_id(&self) -> RequestId {

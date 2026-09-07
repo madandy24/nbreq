@@ -79,6 +79,8 @@ impl AdmissionPermit {
 
 struct RequestInner {
     completion: Option<Completion>,
+    // Payload delivery consumes `completion`; terminal arbitration must survive that move.
+    terminal: bool,
     callback: Option<CompletionCallback>,
     callback_active: bool,
     inflight_permit: Option<AdmissionPermit>,
@@ -114,6 +116,7 @@ impl RequestState {
             id,
             inner: Mutex::new(RequestInner {
                 completion: None,
+                terminal: false,
                 callback,
                 callback_active: false,
                 inflight_permit: Some(inflight_permit),
@@ -129,11 +132,11 @@ impl RequestState {
     }
 
     pub(crate) fn is_terminal(&self) -> bool {
-        lock_unpoisoned(&self.inner).completion.is_some()
+        lock_unpoisoned(&self.inner).terminal
     }
 
-    pub(crate) fn completion(&self) -> Option<Completion> {
-        lock_unpoisoned(&self.inner).completion.clone()
+    pub(crate) fn try_completion(&self) -> Option<Completion> {
+        lock_unpoisoned(&self.inner).completion.take()
     }
 
     pub(crate) fn wait(&self) -> Completion {
@@ -142,14 +145,14 @@ impl RequestState {
             "blocking wait on the active drive/callback stack is forbidden"
         );
         let inner = lock_unpoisoned(&self.inner);
-        let inner = self
+        let mut inner = self
             .changed
-            .wait_while(inner, |inner| inner.completion.is_none())
+            .wait_while(inner, |inner| !inner.terminal)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner
             .completion
-            .clone()
-            .expect("terminal wait predicate completed without a result")
+            .take()
+            .expect("terminal HTTP waiter has already been consumed")
     }
 
     pub(crate) fn wait_for(&self, duration: std::time::Duration) -> Option<Completion> {
@@ -158,20 +161,30 @@ impl RequestState {
             "blocking wait on the active drive/callback stack is forbidden"
         );
         let inner = lock_unpoisoned(&self.inner);
-        let (inner, _timeout) = self
+        let (mut inner, _timeout) = self
             .changed
-            .wait_timeout_while(inner, duration, |inner| inner.completion.is_none())
+            .wait_timeout_while(inner, duration, |inner| !inner.terminal)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.completion.clone()
+        if inner.terminal {
+            Some(
+                inner
+                    .completion
+                    .take()
+                    .expect("terminal HTTP waiter has already been consumed"),
+            )
+        } else {
+            None
+        }
     }
 
     fn commit(&self, completion: Completion) -> (bool, Option<CallbackJob>) {
         let mut inner = lock_unpoisoned(&self.inner);
-        if inner.completion.is_some() {
+        if inner.terminal {
             return (false, None);
         }
 
         self.metrics.request_terminal(&completion);
+        inner.terminal = true;
         inner.completion = Some(completion);
         self.changed.notify_all();
         let job = Self::take_terminal_job(self.id, &mut inner);
@@ -189,13 +202,13 @@ impl RequestState {
     }
 
     fn take_terminal_job(id: RequestId, inner: &mut RequestInner) -> Option<CallbackJob> {
-        if !inner.callback_active || inner.completion.is_none() {
+        if !inner.callback_active || !inner.terminal {
             return None;
         }
         let callback = inner.callback.take()?;
         let completion = inner
             .completion
-            .clone()
+            .take()
             .expect("terminal callback requires canonical completion");
         let inflight_permit = inner
             .inflight_permit
@@ -1640,7 +1653,6 @@ impl Shared {
             if core.lifecycle == LifecycleState::Running {
                 core.lifecycle = LifecycleState::ShuttingDown;
             }
-            self.stopped.store(true, Ordering::Release);
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
             let mut tcp_terminals = Vec::new();
             for state in connects {
@@ -1690,6 +1702,10 @@ impl Shared {
         for io in live_tcp {
             io.abort(TcpAbort::EngineStopped);
         }
+        // Admission closed above; publish the owner stop only after terminal results
+        // are committed. Backend teardown drops stream producers and must not win
+        // that race with an Internal error before cancellation reaches them.
+        self.stopped.store(true, Ordering::Release);
         self.queue.wake();
     }
 
@@ -2101,6 +2117,206 @@ mod tests {
     use std::time::Duration;
 
     use crate::{Completion, EngineConfig, Error, ErrorKind, Request, TcpConnectRequest};
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn shutdown_commits_stream_terminals_before_exposing_reactor_stop() {
+        let engine = crate::testing::native_http_engine_manual_with_nameserver(
+            EngineConfig::manual(),
+            "127.0.0.1:9".parse().expect("unused nameserver"),
+        )
+        .expect("Engine");
+        let shared = engine.shared_for_testing();
+        let mut readers = (0..2)
+            .map(|_| {
+                engine
+                    .client()
+                    .submit_stream(
+                        Request::get("http://127.0.0.1:1/shutdown-order")
+                            .build()
+                            .expect("request")
+                            .into(),
+                    )
+                    .expect("submit")
+            })
+            .collect::<Vec<_>>();
+        // Stand in for the backend's ownership of active response producers, without
+        // network or scheduling dependencies from a live reactor.
+        let mut sinks = Some(
+            shared
+                .queue
+                .drain()
+                .into_iter()
+                .map(|submission| match submission {
+                    Submission::Stream { response, .. } => response,
+                    _ => panic!("only streams were submitted"),
+                })
+                .collect::<Vec<_>>(),
+        );
+        let states = lock_unpoisoned(&shared.core)
+            .stream_requests
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        // Hold shutdown after the first terminal commit, while it releases that
+        // request's permits. HashMap iteration order is stable without mutations.
+        let permit_guard = lock_unpoisoned(&states[0].permits);
+        let shutdown_shared = Arc::clone(&shared);
+        let shutdown = thread::spawn(move || shutdown_shared.begin_shutdown());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !states[0].is_terminal() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let reached_first_terminal = states[0].is_terminal();
+        let second_terminal_before_release = states[1].is_terminal();
+        let exposed_stop = shared.stopped.load(Ordering::Acquire);
+        if exposed_stop {
+            // The spawned owner may now tear down its backend. A producer dropped
+            // before cancellation commits would publish an Internal error instead.
+            drop(sinks.take());
+        }
+        drop(permit_guard);
+        shutdown.join().expect("shutdown worker");
+        drop(sinks);
+        let outcomes = readers
+            .iter_mut()
+            .map(|reader| reader.try_head().map(|head| head.is_some()))
+            .collect::<Vec<_>>();
+        for state in &states {
+            shared.finish_stream_state(state);
+        }
+        engine.shutdown().expect("shutdown");
+        assert!(
+            reached_first_terminal,
+            "shutdown must reach the held permit"
+        );
+        assert!(
+            !second_terminal_before_release,
+            "second stream must still be pending"
+        );
+        assert!(
+            !exposed_stop
+                && outcomes
+                    .iter()
+                    .all(|outcome| matches!(outcome, Err(crate::StreamError::Cancelled))),
+            "reactor stop exposed before all terminals: {exposed_stop}; outcomes: {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn m2_consumed_completion_leaves_only_a_permanent_terminal_marker() {
+        let (engine, _controller) = crate::testing::engine(EngineConfig::manual()).expect("Engine");
+        let shared = engine.shared_for_testing();
+        let pending = engine
+            .client()
+            .submit(
+                Request::get("https://example.invalid/")
+                    .build()
+                    .expect("request"),
+            )
+            .expect("submit");
+        let state = lock_unpoisoned(&shared.core)
+            .requests
+            .get(&pending.request_id())
+            .cloned()
+            .expect("accepted state");
+        assert!(shared.complete_state(
+            &state,
+            Completion::Completed(crate::Response::new(200, Vec::new(), vec![7; 50 * 1024]))
+        ));
+        let delivered = pending.wait();
+        assert!(
+            state.is_terminal(),
+            "taking the payload must not undo terminal state"
+        );
+        assert!(
+            lock_unpoisoned(&state.inner).completion.is_none(),
+            "a retained request state must not retain a delivered body"
+        );
+        assert!(!shared.complete_state(&state, Completion::Cancelled));
+        assert_eq!(engine.metrics().requests_completed(), 1);
+        assert_eq!(engine.metrics().requests_cancelled(), 0);
+        drop(delivered);
+        engine.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn m2_callback_extraction_is_unique_before_and_after_activation() {
+        for complete_before_activation in [false, true] {
+            let (mut engine, _controller) =
+                crate::testing::engine(EngineConfig::manual()).expect("Engine");
+            let shared = engine.shared_for_testing();
+            let (state_tx, state_rx) = mpsc::channel();
+            if complete_before_activation {
+                let weak = Arc::downgrade(&shared);
+                shared.set_callback_activation_hook(move || {
+                    let shared = weak.upgrade().expect("Engine still alive");
+                    let state = lock_unpoisoned(&shared.core)
+                        .requests
+                        .values()
+                        .next()
+                        .cloned()
+                        .expect("accepted callback state");
+                    assert!(shared.complete_state(
+                        &state,
+                        Completion::Completed(crate::Response::new(200, Vec::new(), vec![9; 1024]))
+                    ));
+                    state_tx.send(state).expect("state receiver");
+                });
+            }
+            let (body_tx, body_rx) = mpsc::channel();
+            let handle = engine
+                .client()
+                .start(
+                    Request::get("https://example.invalid/")
+                        .build()
+                        .expect("request"),
+                    move |completion| {
+                        let Completion::Completed(response) = completion else {
+                            panic!("expected response");
+                        };
+                        body_tx
+                            .send(response.into_body().try_into_vec().ok())
+                            .expect("body receiver");
+                    },
+                )
+                .expect("start");
+            let state = if complete_before_activation {
+                state_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("hook state")
+            } else {
+                let state = lock_unpoisoned(&shared.core)
+                    .requests
+                    .get(&handle.id())
+                    .cloned()
+                    .expect("accepted callback state");
+                assert!(shared.complete_state(
+                    &state,
+                    Completion::Completed(crate::Response::new(200, Vec::new(), vec![9; 1024]))
+                ));
+                state
+            };
+            assert_eq!(engine.metrics().current().inflight_requests(), 1);
+            assert_eq!(engine.metrics().current().queued_callbacks(), 1);
+            engine.drive(Instant::now()).expect("drive callback");
+            let bytes = body_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("callback")
+                .expect("internal request state must not keep an alias during the callback");
+            assert_eq!(bytes, vec![9; 1024]);
+            assert!(state.is_terminal());
+            assert!(lock_unpoisoned(&state.inner).completion.is_none());
+            assert!(!shared.complete_state(&state, Completion::Cancelled));
+            assert!(
+                state.activate_callback().is_none(),
+                "callback cannot be delivered twice"
+            );
+            assert_eq!(engine.metrics().requests_completed(), 1);
+            assert_eq!(engine.metrics().current().inflight_requests(), 0);
+            engine.shutdown().expect("shutdown");
+        }
+    }
 
     #[test]
     fn hostname_tcp_borrows_resolution_capacity_without_counting_a_resolver_operation() {

@@ -3543,6 +3543,41 @@ mod tests {
     }
 
     #[test]
+    fn review_p2_tcp_finish_callback_registration_is_single_use_after_delivery() {
+        let mut live = live_tcp(crate::RunMode::Spawned, 4, 4);
+        let (first, delivered) = mpsc::channel();
+        live.connection
+            .finish_with(move |result| {
+                first.send(result).expect("first callback delivery");
+            })
+            .expect("first finish callback must register");
+        live.owner
+            .complete_write_shutdown()
+            .expect("owner completes half-close");
+        recv_finish(&delivered).expect("first callback observes success");
+
+        let unexpected = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = StdArc::clone(&unexpected);
+        let second = live.connection.finish_with(move |_| {
+            observed.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+        live.engine
+            .shutdown()
+            .expect("finish regression Engine and callbacks must join");
+        assert_eq!(
+            second
+                .expect_err("completion must not reopen finish callback registration")
+                .kind(),
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            unexpected.load(AtomicOrdering::SeqCst),
+            0,
+            "a rejected second callback never runs"
+        );
+    }
+
+    #[test]
     fn finish_with_survives_writer_drop_after_registration() {
         let mut live = live_tcp(crate::RunMode::Spawned, 8, 4);
         live.connection.try_send(b"ab".to_vec()).expect("queued");

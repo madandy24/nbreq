@@ -373,7 +373,6 @@ struct ResolverState {
     pending: HashMap<u16, PendingQuery>,
     by_key: HashMap<ResolveKey, u16>,
     tcp_by_token: HashMap<Token, u16>,
-    next_id: u16,
     next_tcp_token: usize,
     current_nameserver: usize,
     udp_generation: u64,
@@ -632,13 +631,6 @@ impl NativeResolver {
         let (mut socket, current_nameserver) = connect_nameserver(&config.nameservers)?;
         poll.register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
             .map_err(|error| resolver_internal("socket registration", &error))?;
-        let mut initial_id = [0_u8; 2];
-        getrandom::fill(&mut initial_id).map_err(|error| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("native resolver transaction randomization failed: {error}"),
-            )
-        })?;
 
         let (command_tx, command_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
@@ -651,7 +643,6 @@ impl NativeResolver {
             pending: HashMap::new(),
             by_key: HashMap::new(),
             tcp_by_token: HashMap::new(),
-            next_id: u16::from_ne_bytes(initial_id),
             next_tcp_token: FIRST_TCP_TOKEN,
             current_nameserver,
             udp_generation: 1,
@@ -895,7 +886,6 @@ fn resolver_main(
                         DnsRecordType::A,
                         0,
                         &state.pending,
-                        &mut state.next_id,
                         QueryPolicy::Http(RetryPolicy {
                             attempt_limit: config.attempts,
                             attempt_timeout: config.attempt_timeout,
@@ -1477,7 +1467,6 @@ fn start_current_candidate(
         record_type,
         0,
         &state.pending,
-        &mut state.next_id,
         QueryPolicy::Public(Box::new(session)),
     ) {
         Ok((id, query)) => {
@@ -1629,7 +1618,6 @@ fn prepare_name_query(
     record_type: DnsRecordType,
     cname_hops: u8,
     pending: &HashMap<u16, PendingQuery>,
-    next_id: &mut u16,
     policy: QueryPolicy,
 ) -> Result<(u16, PendingQuery), ResolveFailure> {
     let public = matches!(policy, QueryPolicy::Public(_));
@@ -1640,7 +1628,7 @@ fn prepare_name_query(
             attempt_timeout: session.attempt_timeout,
         },
     };
-    let id = allocate_id(pending, next_id, public).ok_or_else(|| {
+    let id = allocate_id(pending, public)?.ok_or_else(|| {
         ResolveFailure::classified(
             DnsFailure::Protocol,
             if public {
@@ -1675,23 +1663,40 @@ fn prepare_name_query(
 
 fn allocate_id(
     pending: &HashMap<u16, PendingQuery>,
-    next_id: &mut u16,
     public: bool,
-) -> Option<u16> {
+) -> Result<Option<u16>, ResolveFailure> {
+    allocate_id_with_random(pending, public, getrandom::fill)
+}
+
+fn allocate_id_with_random(
+    pending: &HashMap<u16, PendingQuery>,
+    public: bool,
+    random: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> Result<Option<u16>, ResolveFailure> {
     if public && !public_txid_available(pending) {
-        return None;
+        return Ok(None);
     }
     if pending.len() >= DNS_TRANSACTION_ID_SPACE {
-        return None;
+        return Ok(None);
     }
+    // Fresh OS entropy for every allocation: observing one query cannot reveal the
+    // next query's starting point or collision walk. An odd stride visits the entire
+    // 16-bit space, bounding collision handling even when only one ID remains free.
+    let mut entropy = [0_u8; 4];
+    random(&mut entropy).map_err(|error| {
+        ResolveFailure::new(format!(
+            "native resolver transaction randomization failed: {error}"
+        ))
+    })?;
+    let mut candidate = u16::from_ne_bytes([entropy[0], entropy[1]]);
+    let stride = u16::from_ne_bytes([entropy[2], entropy[3]]) | 1;
     for _ in 0..=u16::MAX {
-        let candidate = *next_id;
-        *next_id = next_id.wrapping_add(1);
         if !pending.contains_key(&candidate) {
-            return Some(candidate);
+            return Ok(Some(candidate));
         }
+        candidate = candidate.wrapping_add(stride);
     }
-    None
+    Ok(None)
 }
 
 fn public_txid_available(pending: &HashMap<u16, PendingQuery>) -> bool {
@@ -1992,7 +1997,6 @@ fn follow_canonical(
         query.record_type,
         query.cname_hops.saturating_add(hops),
         &state.pending,
-        &mut state.next_id,
         query.policy.clone(),
     ) {
         Ok((next, replacement)) => {
@@ -2063,7 +2067,6 @@ fn finish_http_answer(
                 DnsRecordType::AAAA,
                 query.cname_hops,
                 &state.pending,
-                &mut state.next_id,
                 query.policy.clone(),
             ) {
                 Ok((next, replacement)) => {
@@ -2188,14 +2191,14 @@ fn finish_public_answer(
             emit_failure(query, failure, results, result_waker);
         }
         Ok(ParsedAnswer::Answer(answer)) => {
-            let mut addresses = answer.addresses;
-            addresses.truncate(session.max_results);
+            // Cache the bounded wire answer independently of this caller's output limit.
+            // complete_public_session applies max_results to the delivered response.
             record_public_family(
                 &mut session,
                 PublicFamilyUpdate {
                     record_type: query.record_type,
                     status: ResolveStatus::Answer,
-                    addresses,
+                    addresses: answer.addresses,
                     ttl: Some(answer.ttl),
                     cacheable: query.cname_hops == 0,
                 },
@@ -2327,7 +2330,6 @@ fn continue_or_complete_public(
             record_type,
             0,
             &state.pending,
-            &mut state.next_id,
             QueryPolicy::Public(Box::new(session)),
         ) {
             Ok((next, replacement)) => {

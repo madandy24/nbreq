@@ -8,8 +8,8 @@ runtime.
 
 - Simple blocking HTTP requests for ordinary use, with callbacks, direct waiters, streaming
   uploads, and streaming responses for advanced scenarios.
-- Prompt cancellation across DNS, connection, TLS, upload, and download work—shutdown does not
-  wait for slow network timeouts.
+- Prompt cancellation across DNS, connection, TLS, upload, and download work. Shutdown closes
+  sockets before joining owned workers; an executing platform certificate check may delay completion.
 - Run networking on an owned background thread, or drive it manually from a single thread.
 - No Tokio or other async runtime required.
 - Bounded queues, resource limits, connection pooling, structured errors, and deterministic joined

@@ -28,6 +28,7 @@ fn public_resolver_is_not_compiled(engine: &Engine) {
 
 mod atomic;
 mod backend;
+mod body;
 mod callback;
 mod client;
 mod context;
@@ -52,9 +53,13 @@ pub mod fuzzing;
 #[cfg(test)]
 mod lifecycle_tests;
 
+#[cfg(test)]
+mod response_body_tests;
+
 #[cfg(all(test, feature = "native"))]
 mod dns_wiring_tests;
 
+pub use body::ResponseBody;
 pub use callback::{DetachedCallbacks, ShutdownOutcome};
 pub use client::{
     CancelOnDrop, Client, EngineRequestBuilder, PendingRequest, RequestHandle, WaitOutcome,

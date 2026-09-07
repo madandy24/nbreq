@@ -22,6 +22,8 @@ const WAKE_TOKEN: Token = Token(0);
 const FIRST_SOCKET_TOKEN: usize = 1;
 const READ_CHUNK: usize = 16 * 1024;
 const DEADLINE_COMPACTION_SLACK: usize = 64;
+const IDLE_SEND_RETAIN_BYTES: usize = 64 * 1024;
+const IDLE_SEND_TRIM_THRESHOLD: usize = 128 * 1024;
 pub(super) const NATIVE_SAFETY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -305,6 +307,14 @@ impl NativeReactor {
         Ok(connection.outbound.is_empty())
     }
 
+    #[cfg(test)]
+    pub(crate) fn outbound_storage_capacity(&mut self, id: SlotId) -> usize {
+        self.connection_mut(id)
+            .expect("observed connection exists")
+            .outbound
+            .capacity()
+    }
+
     pub(crate) fn local_addr(&mut self, id: SlotId) -> Result<SocketAddr, NativeFailure> {
         let connection = self.connection_mut(id).ok_or_else(|| {
             NativeFailure::internal("native local-address query targeted a stale or closed slot")
@@ -368,6 +378,27 @@ impl NativeReactor {
         }
         self.maybe_compact_deadlines();
         Ok(())
+    }
+
+    /// Parks a completed HTTP connection without retaining an unusually large send queue.
+    /// Keep ordinary windows untouched; the gap above the retained target avoids resizing
+    /// repeatedly around a 64 KiB body window plus its headers.
+    pub(crate) fn park_idle(&mut self, id: SlotId, deadline: Instant) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native idle parking targeted a stale or closed slot")
+        })?;
+        if connection.state != ConnectionState::Connected
+            || connection.peer_read_closed
+            || !connection.outbound.is_empty()
+        {
+            return Err(NativeFailure::internal(
+                "native idle parking requires a clean connection and drained output",
+            ));
+        }
+        if connection.outbound.capacity() > IDLE_SEND_TRIM_THRESHOLD {
+            connection.outbound.shrink_to(IDLE_SEND_RETAIN_BYTES);
+        }
+        self.set_deadline(id, Some(deadline))
     }
 
     pub(crate) fn prepare_reuse(
@@ -1167,6 +1198,107 @@ mod tests {
             }
         }
         panic!("native reactor fixture timed out: {all:?}");
+    }
+
+    fn retention_connection() -> (NativeReactor, SlotId, std::net::TcpStream) {
+        let (listener, address) = listener();
+        let mut reactor = NativeReactor::new(8).expect("reactor");
+        let id = reactor
+            .connect(address, None, 1024 * 1024, TEST_LIMIT)
+            .expect("connect");
+        drive_until(&mut reactor, Duration::from_secs(3), |events| {
+            events.contains(&NativeEvent::Connected(id))
+        });
+        let (peer, _) = listener.accept().expect("connected peer");
+        (reactor, id, peer)
+    }
+
+    #[test]
+    fn m24_idle_send_retention_preserves_small_buffers_and_trims_only_above_threshold() {
+        for requested in [
+            0,
+            1024,
+            50 * 1024,
+            64 * 1024,
+            128 * 1024,
+            128 * 1024 + 1,
+            512 * 1024,
+        ] {
+            let (mut reactor, id, _peer) = retention_connection();
+            let connection = reactor.connection_mut(id).expect("connection");
+            connection.outbound.reserve_exact(requested);
+            let before = connection.outbound.capacity();
+            let pointer = connection.outbound.as_slices().0.as_ptr();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            reactor.park_idle(id, deadline).expect("idle park");
+            let connection = reactor.connection_mut(id).expect("parked connection");
+            assert_eq!(connection.deadline, Some(deadline));
+            assert_eq!(
+                connection.outbound_limit,
+                1024 * 1024,
+                "retention is not admission"
+            );
+            if before > 128 * 1024 {
+                assert_eq!(connection.outbound.capacity(), 64 * 1024);
+            } else {
+                assert_eq!(connection.outbound.capacity(), before);
+                assert_eq!(
+                    connection.outbound.as_slices().0.as_ptr(),
+                    pointer,
+                    "ordinary small buffers must keep their allocation"
+                );
+            }
+            let capacity = connection.outbound.capacity();
+            let pointer = connection.outbound.as_slices().0.as_ptr();
+            reactor
+                .prepare_reuse(id, None, 1024 * 1024, TEST_LIMIT)
+                .expect("reuse");
+            reactor
+                .queue_write(id, &[7; 50 * 1024])
+                .expect("normal next request");
+            if capacity >= 50 * 1024 {
+                let connection = reactor.connection_mut(id).expect("reused connection");
+                assert_eq!(connection.outbound.capacity(), capacity);
+                assert_eq!(connection.outbound.as_slices().0.as_ptr(), pointer);
+            }
+            assert!(reactor.cancel(id));
+        }
+    }
+
+    #[test]
+    fn m24_idle_parking_never_discards_queued_output() {
+        let (mut reactor, id, _peer) = retention_connection();
+        let bytes = (0..512 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        reactor
+            .queue_write(id, &bytes)
+            .expect("queue active output");
+        let before = reactor.outbound_storage_capacity(id);
+        assert!(reactor.park_idle(id, Instant::now()).is_err());
+        let connection = reactor.connection_mut(id).expect("still active");
+        assert_eq!(connection.outbound.capacity(), before);
+        assert!(connection.outbound.iter().copied().eq(bytes));
+        assert_eq!(connection.deadline, None);
+        assert!(reactor.cancel(id));
+        assert_eq!(reactor.active_count(), 0);
+    }
+
+    #[test]
+    fn m24_idle_parking_rejects_unclean_and_stale_connections() {
+        let (mut reactor, id, _peer) = retention_connection();
+        let connection = reactor.connection_mut(id).expect("connection");
+        connection.outbound.reserve_exact(512 * 1024);
+        connection.state = ConnectionState::Connecting;
+        assert!(reactor.park_idle(id, Instant::now()).is_err());
+        assert_eq!(reactor.outbound_storage_capacity(id), 512 * 1024);
+        let connection = reactor.connection_mut(id).expect("connection");
+        connection.state = ConnectionState::Connected;
+        connection.peer_read_closed = true;
+        assert!(reactor.park_idle(id, Instant::now()).is_err());
+        assert_eq!(reactor.outbound_storage_capacity(id), 512 * 1024);
+        assert!(reactor.cancel(id));
+        assert!(reactor.park_idle(id, Instant::now()).is_err());
     }
 
     #[test]

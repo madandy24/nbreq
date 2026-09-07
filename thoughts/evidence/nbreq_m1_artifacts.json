@@ -1,0 +1,14 @@
+{
+  "nbreq-m1-source-c.tar.gz": {
+    "bytes": 401967,
+    "sha256": "d7707cc6bb170f3fafc64999c6642976fddb4b0c65e53b243bf12046a7d26a1f"
+  },
+  "nbreq-m1-evidence-20260905.tar.gz": {
+    "bytes": 1173543,
+    "sha256": "e5e7c939a16c3001718122b06ec1de22d02a5282d36a782ba7a06215b8ec5a9a"
+  },
+  "nbreq_m1_summary.json": {
+    "bytes": 624448,
+    "sha256": "35cb42b95a218426e0813def0b1dbe19bb55b3d9d1f5196335bf0a18bac125a4"
+  }
+}

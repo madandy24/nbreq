@@ -60,6 +60,38 @@ engine.shutdown()?;
 HTTP 4xx and 5xx statuses remain ordinary `Response` values. These blocking terminals reject a
 manually driven Engine with `WrongMode` rather than driving it implicitly.
 
+## Buffered response ownership (0.2 development API)
+
+`response.body()` still borrows a byte slice, and `response.body().to_vec()` explicitly copies it
+into independent application storage. Cloning a `Response` now shares its immutable body bytes;
+headers are still cloned. Completion delivery moves the response to its waiter or callback.
+
+Use consuming access to take the original buffer when it has no other owners:
+
+```rust
+use nbreq::Response;
+
+let response = Response::new(200, Vec::new(), b"hello".to_vec());
+let body = response.into_body();
+let bytes = match body.try_into_vec() {
+    Ok(bytes) => bytes, // Original allocation, including spare capacity; no byte copy.
+    Err(shared) => shared.as_bytes().to_vec(), // An explicit application choice to copy.
+};
+let text = String::from_utf8(bytes)?; // Reuses the Vec allocation for valid UTF-8.
+assert_eq!(text, "hello");
+# Ok::<(), std::string::FromUtf8Error>(())
+```
+
+`ResponseBody` is cloneable, immutable and shareable between threads. Its `as_bytes()` and
+`AsRef<[u8]>` accessors borrow bytes. `try_into_vec()` returns the original body owner in `Err`
+while any other response/body shares that allocation; it never silently copies. Instead of
+copying, callers can drop their other owners and retry. Taking a Vec transfers responsibility
+for its memory to the application. It does not free RAM. A retained body can outlive Engine
+shutdown without keeping sockets or workers alive.
+
+These APIs establish body ownership; an aggregate buffered-body budget is not implemented yet.
+Per-request body limits still apply. The API does not provide zero-copy network or TLS I/O.
+
 ## Spawned mode and explicit blocking requests
 
 Issue a cheap cloneable Client when code needs the explicit Request surface or will later use
@@ -90,6 +122,28 @@ engine.shutdown()?;
 transport, timeout, policy, and cancellation outcomes are errors. Total timeout begins when NBReq
 accepts the request, so queue time is included. TLS certificate and hostname verification is on by
 default. Disable it only through the deliberately explicit `TlsVerification` compatibility option.
+
+## Private certificate authorities
+
+Add DER-encoded root certificates to an Engine when an application uses a private CA. The roots
+supplement platform trust, without modifying the operating-system trust store. Hostname, validity
+and signature verification stay enabled:
+
+```rust,no_run
+use nbreq::{Engine, EngineConfig};
+
+let root_der = std::fs::read("company-root.der")?;
+let config = EngineConfig::spawned().with_additional_tls_root_certificate(root_der);
+let engine = Engine::new(config)?; // Rejects malformed certificates during construction.
+let response = engine.get("https://internal.example/").call()?;
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Call the configuration method once per root. An Engine's trust policy is fixed at construction and
+applies to all its HTTPS requests and redirects; use separate Engines for separate trust domains.
+Windows, Linux and macOS use the existing platform verifier with extra roots. The pinned Android
+verifier does not support this option and rejects a nonempty extra-root configuration explicitly.
 
 ## Callbacks and direct waiters
 
@@ -222,16 +276,30 @@ send owned results through the GUI framework's own message/channel mechanism. Do
 GUI work on NBReq's callback worker. Manual mode is useful only when the host can integrate regular
 `drive` calls and accepts that delaying them delays all network progress.
 
+Native TLS handshake processing uses an Engine-owned service, started lazily, with at most two
+workers and four queued steps. These workers process supplied TLS bytes; sockets and application
+callbacks stay with their existing owners. Established TLS traffic does not use the worker queue.
+In manual mode, worker completion becomes network progress only on a subsequent `drive` call.
+Saturated workers delay new handshakes within the existing connection limits and request deadlines.
+
 ## Shutdown, DLLs, and FFI ownership
 
 `Engine::shutdown` consumes the unique owner, rejects new work, cancels accepted requests, stops and
-joins network/resolver work, seals callback admission, and waits for callbacks. A callback that is
-itself currently running can therefore delay ordinary shutdown.
+joins network/resolver/TLS-worker work, seals callback admission, and waits for callbacks. A
+callback that is itself currently running can therefore delay ordinary shutdown.
+
+Cancellation and request deadlines close the request's NBReq socket without waiting for an
+executing platform certificate check. That check may not be interruptible: its worker and TLS
+state remain owned and bounded until it returns. Shutdown discards queued handshake work and
+closes sockets before joining executing checks, so a slow platform check can delay shutdown.
 
 `shutdown_for` can detach only the already-network-free callback domain and return
 `ShutdownOutcome::CallbacksRemaining`. Keep the resulting `DetachedCallbacks` handle and wait for
 it before unloading a module containing callback code. The handle owns no Engine, socket, resolver,
 TLS, or backend state.
+
+The `shutdown_for` duration bounds callback draining after network shutdown; it does not set a
+deadline for joining executing platform certificate checks.
 
 An FFI layer should expose opaque ownership handles: one unique Engine/service handle and separate
 cloneable Client/request-control handles. Destroy consumer objects, stop the Engine, resolve any

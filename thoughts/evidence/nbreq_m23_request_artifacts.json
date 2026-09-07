@@ -1,0 +1,42 @@
+{
+  "source_a": {
+    "path": "thoughts/evidence/nbreq-m23-request-20260907.tar.gz",
+    "sha256": "3f47a998d6252308215e52938e31fc7b426bd8a4f5839f903b1fd4b7b7488ecb",
+    "manifest_sha256": "bcd5a4f02a5c0156bda7c3224be376a69b0efed3dc530f2bc4e6fcf82ce95d81"
+  },
+  "source_b": {
+    "path": "thoughts/evidence/nbreq-m23-request-20260907-b.tar.gz",
+    "sha256": "21d81385b4a8dc4d0cd8ff357bd63d2c832b396b8689805f619dddf169e2ad04",
+    "manifest_sha256": "3a3c4ce23f6d05c94b5028cbbc75778ae44eccfaf2d1bcf2e117aa0b1131bf81"
+  },
+  "source_c": {
+    "path": "thoughts/evidence/nbreq-m23-request-20260907-c.tar.gz",
+    "sha256": "fee874fba626645b1f05772597b5c340bb16290496352f3a3d5c66263086e806",
+    "manifest_sha256": "003e80423d2eab3c70965384ae3615bd41c51f35f80922a9772b2ae22a418196"
+  },
+  "source_d": {
+    "path": "thoughts/evidence/nbreq-m23-request-20260907-d.tar.gz",
+    "sha256": "4aebf84a8ff15c07c60233e3a48658432c5bdcd3d70d725f7e59c9ce2e7bea98",
+    "manifest_sha256": "1c233f6a2627a1aea6383e6365d1a779ed5a6d2016eb31ba6321d5167e0afa62"
+  },
+  "evidence": {
+    "path": "thoughts/evidence/nbreq-m23-request-evidence-20260907.tar.gz",
+    "sha256": "b816eb8315e255b67f4ae266d17068a624ead79d742502bef57fd9de4e8fe5e7",
+    "files": 2270,
+    "bytes": 4942224
+  },
+  "final_comparison_cases": 120,
+  "preliminary_comparison_cases": 180,
+  "final_full_verifiers": 7,
+  "final_ownership_tests": 10,
+  "initial_red_tests": 6,
+  "additional_tls_record_red": 1,
+  "additional_shutdown_order_red": 1,
+  "shutdown_focused_tests": 24,
+  "arm_shutdown_repetitions": 30,
+  "dns_fixture_nonblocking_mode_corrected": true,
+  "measured_source_revision": "c",
+  "final_test_source_revision": "d",
+  "timing_followup_cases": 20,
+  "windows_dns_isolated_rechecks": 20
+}

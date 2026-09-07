@@ -1,0 +1,15 @@
+[package]
+name = "nbreq-f5-meter"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+warnings = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

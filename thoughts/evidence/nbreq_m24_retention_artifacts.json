@@ -1,0 +1,27 @@
+{
+  "source_a": {
+    "path": "thoughts/evidence/nbreq-m24-retention-20260908-a.tar.gz",
+    "sha256": "498addd47ded76b0b2fffce46ba60a6845cb6aadfc83a7c908c2a38ae299cf42",
+    "manifest_sha256": "d3103ccecef5a64b6878cafb7bd5c15eeaf76b10062789464f0a30a3cc87b887"
+  },
+  "source_b": {
+    "path": "thoughts/evidence/nbreq-m24-retention-20260908-b.tar.gz",
+    "sha256": "9d89ffe745b0f620569c3234edf658f48e15f85cf388399ff95997678cf11f00",
+    "manifest_sha256": "b1ddee56304a55f26f9ef0c7b215e9ca1d5f10632c47aa5bcd764965b15b519d"
+  },
+  "evidence": {
+    "path": "thoughts/evidence/nbreq-m24-retention-evidence-20260908.tar.gz",
+    "sha256": "7baf68213a03cce00cd25fe10a44deea110bcdf6ab9808420bcdace0425302ca",
+    "files": 1049,
+    "bytes": 1365217
+  },
+  "initial_red_tests": 3,
+  "final_memory_tests": 6,
+  "final_full_verifiers": 7,
+  "windows_x86_m2_tests": 29,
+  "paired_cases": 120,
+  "windows_longer_timing_cases": 30,
+  "superseded_failed_full_attempts": 4,
+  "final_source_revision": "b",
+  "a_to_b_only_idle_eviction_fixture": true
+}

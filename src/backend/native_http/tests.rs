@@ -10,6 +10,8 @@ use crate::{
     TransportStage, TryPushErrorKind, UploadBody,
 };
 
+mod retained_capacity;
+
 const LIMITS: HttpLimits = HttpLimits {
     body_bytes: 1024,
     header_bytes: 1024,
@@ -17,17 +19,314 @@ const LIMITS: HttpLimits = HttpLimits {
 };
 
 #[test]
+fn review_p2_http_tries_the_next_dns_address_before_failing_connect() {
+    use crate::backend::native_dns_wire::test_support::{A, RData, Record};
+    use crate::dns_wiring_tests::{DualStackDns, a_record};
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("healthy HTTP listener must bind");
+    let healthy = listener.local_addr().expect("healthy HTTP address");
+    // Darwin does not bind arbitrary 127/8 addresses without an owner-created loopback alias.
+    // Use an invalid TCP broadcast destination there, and prove it fails without timing out.
+    let refused_ip = if cfg!(target_os = "macos") {
+        Ipv4Addr::BROADCAST
+    } else {
+        Ipv4Addr::new(127, 0, 0, 2)
+    };
+    let refused = SocketAddr::from((refused_ip, healthy.port()));
+    // Keep the refused address bound, but never listen. No other test can take this endpoint
+    // between selecting a supposedly unused port and NBReq attempting to connect to it.
+    let reservation = if cfg!(target_os = "macos") {
+        None
+    } else {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .expect("refused endpoint socket must construct");
+        socket
+            .bind(&refused.into())
+            .expect("refused endpoint must remain reserved");
+        Some(socket)
+    };
+    // Windows can take about two seconds to report an active loopback refusal. Give that OS
+    // result time to arrive so this tests address fallback rather than deadline policy.
+    let refused_error = std::net::TcpStream::connect_timeout(&refused, Duration::from_secs(5))
+        .expect_err("the first DNS address must fail to connect");
+    if cfg!(target_os = "macos") {
+        assert_ne!(refused_error.kind(), std::io::ErrorKind::TimedOut);
+        assert_ne!(refused_error.kind(), std::io::ErrorKind::WouldBlock);
+    } else {
+        assert_eq!(refused_error.kind(), std::io::ErrorKind::ConnectionRefused);
+    }
+
+    listener
+        .set_nonblocking(true)
+        .expect("fixture accept must be bounded");
+    let (stop, stopped) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut served = 0;
+        while matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) => panic!("HTTP fallback fixture accept failed: {error}"),
+            };
+            // Windows accepts can inherit the listener's nonblocking mode. The accept loop is
+            // bounded separately; request reads here use a blocking socket with a timeout.
+            stream
+                .set_nonblocking(false)
+                .expect("fixture request reads must use their timeout");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("fixture read bound");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .expect("fixture write bound");
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).expect("fixture request must read");
+                assert_ne!(read, 0, "request must reach its header terminator");
+                request.extend_from_slice(&chunk[..read]);
+                assert!(
+                    request.len() <= 64 * 1024,
+                    "fixture request must stay bounded"
+                );
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .expect("fixture response must write");
+            served += 1;
+        }
+        served
+    });
+    let dns = DualStackDns::with_handler(move |request| {
+        let mut response = a_record(&request, refused_ip);
+        response.add_answer(Record::from_rdata(
+            request
+                .query()
+                .expect("fallback DNS question")
+                .name()
+                .clone(),
+            60,
+            RData::A(A(Ipv4Addr::LOCALHOST)),
+        ));
+        Some(response)
+    });
+    let engine =
+        crate::testing::native_http_engine_with_nameserver(EngineConfig::spawned(), dns.address())
+            .expect("fallback Engine must construct");
+    let request = |url| {
+        Request::get(url)
+            .connect_timeout(Duration::from_secs(5))
+            .total_timeout(Duration::from_secs(8))
+            .build()
+            .expect("fallback request must build")
+    };
+    let control = engine
+        .client()
+        .execute(request(format!("http://{healthy}/")));
+    let result = engine.client().execute(request(format!(
+        "http://review-fallback.test:{}/",
+        healthy.port()
+    )));
+    engine.shutdown().expect("fallback Engine must join");
+    stop.send(()).expect("fallback fixture must stop");
+    let served = server.join().expect("fallback fixture must join");
+    drop(reservation);
+
+    assert_eq!(
+        control
+            .expect("literal positive control must succeed")
+            .body(),
+        b"ok"
+    );
+    assert_eq!(
+        result
+            .expect("HTTP must connect to the healthy second DNS address")
+            .body(),
+        b"ok"
+    );
+    assert_eq!(
+        served, 2,
+        "both literal and hostname requests reach the healthy peer"
+    );
+}
+
+#[test]
+fn review_p2_205_buffered_consumes_empty_chunk_framing_before_the_next_response() {
+    let response = b"HTTP/1.1 205 Reset Content\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
+    let next = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    let wire = [response.as_slice(), next.as_slice()].concat();
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    let progress = decoder.ingest(&wire).expect("empty chunked 205 must parse");
+    let completed = progress
+        .response
+        .expect("205 must complete with its final chunk");
+    assert_eq!(completed.status(), 205);
+    assert!(completed.body().is_empty());
+    assert_eq!(
+        progress.consumed,
+        response.len(),
+        "205 must consume its terminating chunk, leaving precisely the next response"
+    );
+    let mut next_decoder = ResponseDecoder::new(false, LIMITS);
+    let next = next_decoder
+        .ingest(&wire[progress.consumed..])
+        .expect("next response must parse");
+    assert_eq!(
+        next.response.expect("next response completes").body(),
+        b"ok"
+    );
+}
+
+#[test]
+fn review_p2_205_buffered_does_not_complete_before_fragmented_final_chunk() {
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    let head = b"HTTP/1.1 205 Reset Content\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let progress = decoder.ingest(head).expect("205 response head must parse");
+    assert!(
+        progress.response.is_none(),
+        "205 is pending until its framing finishes"
+    );
+    for byte in b"0\r\n\r" {
+        assert!(
+            decoder
+                .ingest(&[*byte])
+                .expect("chunk fragment")
+                .response
+                .is_none()
+        );
+    }
+    let response = decoder
+        .ingest(b"\n")
+        .expect("final framing byte")
+        .response
+        .expect("205 completes after the final framing byte");
+    assert_eq!(response.status(), 205);
+    assert!(response.body().is_empty());
+}
+
+#[test]
+fn review_p2_205_streaming_reader_waits_for_empty_chunk_framing() {
+    let (engine, mut reader, mut decoder) = synthetic_stream_decoder(8);
+    let head = b"HTTP/1.1 205 Reset Content\r\nTransfer-Encoding: chunked\r\n\r\n";
+    assert!(matches!(
+        decoder.ingest(head).expect("205 streaming head"),
+        StreamDecodeProgress::Head { .. }
+    ));
+    let decision = decoder.decide_head(true).expect("205 head publication");
+    let early = reader
+        .try_read(&mut [0; 1])
+        .expect("205 reader before final chunk");
+    assert!(
+        !decision.complete,
+        "205 head must not prematurely complete the stream"
+    );
+    assert_eq!(early, crate::StreamRead::Pending);
+    assert!(matches!(
+        decoder.ingest(b"0\r\n\r\n").expect("205 final chunk"),
+        StreamDecodeProgress::Complete {
+            consumed: 5,
+            delivered: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        reader.try_read(&mut [0; 1]).expect("205 final EOF"),
+        crate::StreamRead::Eof
+    );
+    engine.cancel_all();
+    engine.shutdown().expect("synthetic Engine must join");
+}
+
+#[test]
+fn reset_content_uses_fixed_or_close_framing_and_preserves_head_exceptions() {
+    let fixed = b"HTTP/1.1 205 Reset Content\r\nContent-Length: 0\r\n\r\n";
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    let completed = decoder.ingest(fixed).expect("zero-length 205");
+    assert_eq!(completed.consumed, fixed.len());
+    assert!(
+        completed
+            .response
+            .expect("explicit zero completes")
+            .body()
+            .is_empty()
+    );
+    assert!(completed.permits_reuse);
+
+    let unframed = b"HTTP/1.1 205 Reset Content\r\n\r\n";
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    let pending = decoder.ingest(unframed).expect("unframed 205 head");
+    assert!(
+        pending.response.is_none(),
+        "close-delimited 205 waits for EOF"
+    );
+    assert!(!pending.permits_reuse);
+    assert!(
+        decoder
+            .eof()
+            .expect("close completes 205")
+            .expect("response")
+            .body()
+            .is_empty()
+    );
+
+    for (status, head) in [(205, true), (204, false), (304, false)] {
+        let wire = format!("HTTP/1.1 {status} Response\r\n\r\n");
+        let completed = ResponseDecoder::new(head, LIMITS)
+            .ingest(wire.as_bytes())
+            .expect("bodyless response");
+        assert_eq!(
+            completed
+                .response
+                .expect("bodyless status completes at head")
+                .status(),
+            status
+        );
+        assert!(completed.permits_reuse);
+    }
+}
+
+#[test]
+fn reset_content_rejects_incomplete_or_malformed_chunk_framing() {
+    let head = b"HTTP/1.1 205 Reset Content\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    decoder.ingest(head).expect("205 head");
+    decoder.ingest(b"0\r\n").expect("incomplete final chunk");
+    assert!(
+        decoder.eof().is_err(),
+        "missing trailer terminator is truncated"
+    );
+    let mut decoder = ResponseDecoder::new(false, LIMITS);
+    decoder.ingest(head).expect("205 head");
+    assert!(
+        decoder.ingest(b"z\r\n").is_err(),
+        "205 validates chunk syntax"
+    );
+}
+
+#[test]
 fn checked_in_fuzz_seeds_satisfy_the_fragmentation_oracle() {
     for seed in [
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/fixed.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/chunked.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/informational.seed")
+        include_bytes!("../../../tests/fixtures/fuzz/native_response_decoder/fixed.seed")
             .as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/close_delimited.seed")
+        include_bytes!("../../../tests/fixtures/fuzz/native_response_decoder/chunked.seed")
             .as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/conflicting_length.seed")
+        include_bytes!("../../../tests/fixtures/fuzz/native_response_decoder/informational.seed")
             .as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_response_decoder/malformed_chunk.seed")
+        include_bytes!("../../../tests/fixtures/fuzz/native_response_decoder/close_delimited.seed")
+            .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/fuzz/native_response_decoder/conflicting_length.seed"
+        )
+        .as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_response_decoder/malformed_chunk.seed")
             .as_slice(),
     ] {
         fuzz_response_decoder(seed);
@@ -38,21 +337,23 @@ fn checked_in_fuzz_seeds_satisfy_the_fragmentation_oracle() {
 fn checked_in_streaming_fuzz_seeds_cross_reader_backpressure() {
     for seed in [
         include_bytes!(
-            "../../../fuzz/corpus/native_streaming_response_decoder/fixed_tiny_queue.seed"
+            "../../../tests/fixtures/fuzz/native_streaming_response_decoder/fixed_tiny_queue.seed"
         )
         .as_slice(),
         include_bytes!(
-            "../../../fuzz/corpus/native_streaming_response_decoder/chunked_tiny_queue.seed"
-        )
-        .as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_streaming_response_decoder/no_body.seed")
-            .as_slice(),
-        include_bytes!(
-            "../../../fuzz/corpus/native_streaming_response_decoder/close_delimited.seed"
+            "../../../tests/fixtures/fuzz/native_streaming_response_decoder/chunked_tiny_queue.seed"
         )
         .as_slice(),
         include_bytes!(
-            "../../../fuzz/corpus/native_streaming_response_decoder/discard_redirect.seed"
+            "../../../tests/fixtures/fuzz/native_streaming_response_decoder/no_body.seed"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/fuzz/native_streaming_response_decoder/close_delimited.seed"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/fuzz/native_streaming_response_decoder/discard_redirect.seed"
         )
         .as_slice(),
     ] {
@@ -486,6 +787,7 @@ fn terminal_socket_failure_dominates_same_batch_write_progress() {
             body_bearing: true,
             response_started: false,
             connected: true,
+            connecting: None,
             tls: None,
             connect_deadline: None,
             total_deadline: Some(deadline),
@@ -499,6 +801,7 @@ fn terminal_socket_failure_dominates_same_batch_write_progress() {
             request: Request::get(format!("http://{address}/batch"))
                 .build()
                 .expect("batch request must build"),
+            request_body_offset: 0,
             redirect_hops: 0,
             upload: None,
             upload_aborted: false,
@@ -677,8 +980,9 @@ fn serializes_origin_form_host_lengths_and_binary_headers() {
     let serialized = serialize_request(&request, LIMITS).expect("request must serialize");
     assert_eq!(
         serialized.bytes,
-        b"POST /path?q=yes HTTP/1.1\r\nX-Binary: \x80x\r\nHost: example.test:8080\r\nContent-Length: 5\r\n\r\nhello"
+        b"POST /path?q=yes HTTP/1.1\r\nX-Binary: \x80x\r\nHost: example.test:8080\r\nContent-Length: 5\r\n\r\n"
     );
+    assert_eq!(request.body(), b"hello");
     assert!(!serialized.response_to_head);
     assert!(serialized.permits_reuse);
 
@@ -1945,7 +2249,7 @@ fn native_redirect_location_rejects_ambiguity_and_invalid_values() {
     let target = resolved_redirect_target(&request, &unsupported)
         .expect("absolute Location must resolve")
         .expect("Location must be present");
-    let error = redirected_request(&request, 302, 0, || Ok(Some(target)))
+    let error = plan_redirect(&request, 302, 0, || Ok(Some(target)))
         .expect_err("unsupported redirect scheme must fail closed");
     assert_eq!(error.kind(), ErrorKind::Redirect);
 }
@@ -2186,6 +2490,7 @@ fn idle_peer_close_is_evicted_before_the_next_request() {
         .set_nonblocking(true)
         .expect("idle-close fixture must become nonblocking");
     let address = listener.local_addr().expect("idle-close fixture address");
+    let (parked_tx, parked_rx) = std::sync::mpsc::channel();
     let (closed_tx, closed_rx) = std::sync::mpsc::channel();
     let server = thread::spawn(move || {
         for index in 0..2 {
@@ -2206,9 +2511,6 @@ fn idle_peer_close_is_evicted_before_the_next_request() {
             stream
                 .set_nonblocking(false)
                 .expect("idle-close fixture stream must be blocking");
-            stream
-                .set_nonblocking(false)
-                .expect("idle-close peer must become blocking");
             let mut request = Vec::new();
             let mut buffer = [0_u8; 256];
             while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -2225,6 +2527,11 @@ fn idle_peer_close_is_evicted_before_the_next_request() {
                 .expect("idle-close response must write");
             stream.flush().expect("idle-close response must flush");
             if index == 0 {
+                // Closing with the response can legitimately prevent idle parking altogether.
+                // This test specifically exercises a peer closing an already parked connection.
+                parked_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("client must park the first connection before peer close");
                 drop(stream);
                 closed_tx.send(()).expect("peer close barrier must signal");
             }
@@ -2244,10 +2551,21 @@ fn idle_peer_close_is_evicted_before_the_next_request() {
         )
         .expect("first idle-close request must complete");
     assert_eq!(first.body(), b"1");
+    assert_eq!(engine.metrics().current().idle_connections(), 1);
+    parked_tx
+        .send(())
+        .expect("idle parking barrier must signal");
     closed_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("server must close the idle peer");
-    thread::sleep(NATIVE_SAFETY_POLL * 3);
+    let eviction_deadline = Instant::now() + Duration::from_secs(2);
+    while engine.metrics().idle_connections_evicted() == 0 {
+        assert!(
+            Instant::now() < eviction_deadline,
+            "idle peer was not evicted"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     let second = engine
         .client()
         .execute(
@@ -2259,12 +2577,12 @@ fn idle_peer_close_is_evicted_before_the_next_request() {
         .expect("second idle-close request must use a replacement socket");
     assert_eq!(second.body(), b"2");
     let metrics = engine.metrics();
+    engine.shutdown().expect("idle-close Engine must stop");
+    server.join().expect("idle-close fixture must join");
     assert_eq!(metrics.connections_opened(), 2);
     assert_eq!(metrics.connections_reused(), 0);
     assert!(metrics.connections_closed() >= 1);
     assert!(metrics.idle_connections_evicted() >= 1);
-    engine.shutdown().expect("idle-close Engine must stop");
-    server.join().expect("idle-close fixture must join");
 }
 
 #[test]
@@ -3752,10 +4070,11 @@ fn cancel_and_shutdown_wake_blocked_upload_producers() {
             .expect_err("blocked upload producer must wake closed");
         assert_eq!(error.kind(), TryPushErrorKind::Closed);
         assert!(!error.into_chunk().is_empty());
-        assert!(matches!(
-            reader.try_head(),
-            Err(crate::StreamError::Cancelled)
-        ));
+        let terminal = reader.try_head();
+        assert!(
+            matches!(terminal, Err(crate::StreamError::Cancelled)),
+            "shutdown={shutdown}, actual terminal={terminal:?}"
+        );
         server.join().expect("upload stop fixture must join");
     }
 }
@@ -4188,3 +4507,6 @@ fn cancellation_closes_every_http_parse_boundary() {
     }
     engine.shutdown().expect("native HTTP Engine must stop");
 }
+mod address_fallback;
+mod request_ownership;
+mod tls_lifecycle;

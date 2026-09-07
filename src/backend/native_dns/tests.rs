@@ -39,6 +39,98 @@ fn public_transaction_ids_leave_an_http_reserve() {
 }
 
 #[test]
+fn transaction_id_allocation_draws_fresh_entropy_and_fails_closed() {
+    let pending = HashMap::new();
+    for seed in [41_u16, 902, 17] {
+        let id = allocate_id_with_random(&pending, false, |bytes| {
+            bytes[..2].copy_from_slice(&seed.to_ne_bytes());
+            bytes[2..].copy_from_slice(&6_u16.to_ne_bytes());
+            Ok(())
+        })
+        .expect("random source succeeds");
+        assert_eq!(id, Some(seed), "each allocation uses its own random draw");
+    }
+    let failure = allocate_id_with_random(&pending, false, |_| Err(getrandom::Error::UNSUPPORTED))
+        .expect_err("entropy failure cannot fall back to sequential IDs");
+    assert!(failure.message.contains("randomization failed"));
+}
+
+#[test]
+fn transaction_id_collision_walk_finds_the_last_free_id_without_reuse() {
+    let mut pending = HashMap::new();
+    let vacant = 12345_u16;
+    for id in 0..=u16::MAX {
+        if id == vacant {
+            continue;
+        }
+        pending.insert(
+            id,
+            PendingQuery {
+                key: ResolveKey(u64::from(id)),
+                host: dns_name("occupied.test"),
+                record_type: DnsRecordType::A,
+                cname_hops: 0,
+                wire: Vec::new(),
+                attempts_sent: 0,
+                attempt_limit: DEFAULT_ATTEMPTS,
+                attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+                servers_tried: 1,
+                last_udp_generation: 0,
+                next_attempt: Instant::now(),
+                transport: QueryTransport::Udp,
+                policy: QueryPolicy::Http(RetryPolicy {
+                    attempt_limit: DEFAULT_ATTEMPTS,
+                    attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+                }),
+            },
+        );
+    }
+    for (start, stride) in [(65535_u16, 0_u16), (0, 2), (3, 65534)] {
+        let id = allocate_id_with_random(&pending, false, |bytes| {
+            bytes[..2].copy_from_slice(&start.to_ne_bytes());
+            bytes[2..].copy_from_slice(&stride.to_ne_bytes());
+            Ok(())
+        })
+        .expect("bounded collision search");
+        assert_eq!(id, Some(vacant));
+    }
+    let mut query = pending.remove(&0).expect("occupied query");
+    query.key = ResolveKey(u64::from(vacant));
+    pending.insert(vacant, query);
+    assert_eq!(
+        allocate_id_with_random(&pending, false, |bytes| {
+            bytes.fill(0);
+            Ok(())
+        })
+        .expect("released ID can be reused"),
+        Some(0)
+    );
+    // Restore full occupancy without a second large fixture allocation.
+    let (_, query) = prepare_name_query(
+        ResolveKey(0),
+        dns_name("full.test"),
+        DnsRecordType::A,
+        0,
+        &HashMap::new(),
+        QueryPolicy::Http(RetryPolicy {
+            attempt_limit: 1,
+            attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+        }),
+    )
+    .expect("fixture query");
+    pending.insert(0, query);
+    for public in [false, true] {
+        assert_eq!(
+            allocate_id_with_random(&pending, public, |_| panic!(
+                "exhaustion must not draw entropy"
+            ))
+            .expect("exhausted space"),
+            None
+        );
+    }
+}
+
+#[test]
 fn public_search_candidates_follow_fq10_exact_and_suffix_placement() {
     let suffixes = ["corp.test", "lab.test"];
     assert_eq!(
@@ -71,12 +163,14 @@ fn public_search_candidates_follow_fq10_exact_and_suffix_placement() {
 #[test]
 fn checked_in_dns_fuzz_seeds_reach_the_policy_parser() {
     for seed in [
-        include_bytes!("../../../fuzz/corpus/native_dns_response/a.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_dns_response/aaaa.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_dns_response/cname.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_dns_response/nxdomain.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_dns_response/root-cname.seed").as_slice(),
-        include_bytes!("../../../fuzz/corpus/native_dns_response/truncated.seed").as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/a.seed").as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/aaaa.seed").as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/cname.seed").as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/nxdomain.seed").as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/root-cname.seed")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/fuzz/native_dns_response/truncated.seed")
+            .as_slice(),
     ] {
         let (bytes, id, name, record_type) =
             fuzz_dns_input(seed).expect("DNS fuzz seed must decode");
@@ -363,14 +457,12 @@ fn parse_fixture_wire(
 #[test]
 fn production_query_encoder_has_one_question_and_no_records() {
     let name = dns_name("bounded-query.test");
-    let mut next_id = 41;
     let (id, query) = prepare_name_query(
         ResolveKey(9),
         name.clone(),
         DnsRecordType::A,
         0,
         &HashMap::new(),
-        &mut next_id,
         QueryPolicy::Http(RetryPolicy {
             attempt_limit: DEFAULT_ATTEMPTS,
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
@@ -2762,8 +2854,10 @@ fn resolved_https_verifies_hostname_and_preserves_explicit_bypass() {
 }
 
 #[test]
-fn synchronous_certificate_verification_blocks_unrelated_owner_work() {
-    const OBSERVATION: Duration = Duration::from_millis(75);
+fn review_p1_certificate_verification_allows_unrelated_http_to_progress() {
+    // The verifier signals entry before we submit the unrelated request. Its release is explicit;
+    // elapsed wall time is only the allowance for otherwise healthy loopback HTTP to complete.
+    const OBSERVATION: Duration = Duration::from_millis(500);
 
     let key = KeyPair::generate().expect("HTTPS fixture key must generate");
     let params = CertificateParams::new(vec!["slow-verify.test".to_owned()])
@@ -2867,13 +2961,14 @@ fn synchronous_certificate_verification_blocks_unrelated_owner_work() {
                 .expect("HTTP request must build"),
         )
         .expect("unrelated HTTP request must submit");
-    let plain_pending = match plain_pending.wait_for(OBSERVATION) {
-        crate::WaitOutcome::TimedOut(pending) => pending,
-        crate::WaitOutcome::Completed(completion) => {
-            panic!("unrelated owner work escaped gated verification: {completion:?}")
-        }
-    };
+    let observation = plain_pending.wait_for(OBSERVATION);
+    let progressed_while_gated = matches!(
+        &observation,
+        crate::WaitOutcome::Completed(Completion::Completed(_))
+    );
 
+    // Release and join every fixture before the intentionally red assertion. A regression must
+    // fail normally rather than hang while Engine::drop tries to join the blocked verifier.
     release_tx
         .send(())
         .expect("certificate verifier must release");
@@ -2881,13 +2976,21 @@ fn synchronous_certificate_verification_blocks_unrelated_owner_work() {
         panic!("HTTPS request must complete after verifier release")
     };
     assert_eq!(tls_response.body(), b"tls");
-    let Completion::Completed(plain_response) = plain_pending.wait() else {
+    let plain_completion = match observation {
+        crate::WaitOutcome::TimedOut(pending) => pending.wait(),
+        crate::WaitOutcome::Completed(completion) => completion,
+    };
+    let Completion::Completed(plain_response) = plain_completion else {
         panic!("unrelated HTTP request must complete after verifier release")
     };
     assert_eq!(plain_response.body(), b"plain");
     engine.shutdown().expect("gated HTTPS Engine must stop");
     tls_server.join().expect("HTTPS fixture must join");
     plain_server.join().expect("HTTP fixture must join");
+    assert!(
+        progressed_while_gated,
+        "unrelated loopback HTTP remained blocked until certificate verification was released"
+    );
 }
 
 #[test]

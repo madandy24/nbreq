@@ -1,6 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Determines who progresses an [`Engine`](crate::Engine).
@@ -42,6 +43,7 @@ pub enum CallbackDispatch {
 /// Backend-neutral Engine configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineConfig {
+    additional_tls_roots: Vec<Arc<[u8]>>,
     run_mode: RunMode,
     callback_dispatch: CallbackDispatch,
     max_inflight_requests: NonZeroUsize,
@@ -92,6 +94,7 @@ impl EngineConfig {
     #[must_use]
     pub fn spawned() -> Self {
         Self {
+            additional_tls_roots: Vec::new(),
             run_mode: RunMode::Spawned,
             callback_dispatch: CallbackDispatch::Workers(nonzero(1)),
             max_inflight_requests: nonzero(1_024),
@@ -120,6 +123,7 @@ impl EngineConfig {
     #[must_use]
     pub fn manual() -> Self {
         Self {
+            additional_tls_roots: Vec::new(),
             run_mode: RunMode::Manual,
             callback_dispatch: CallbackDispatch::Inline,
             max_inflight_requests: nonzero(1_024),
@@ -142,6 +146,27 @@ impl EngineConfig {
             max_resolve_results: nonzero(DEFAULT_MAX_RESOLVE_RESULTS),
             max_tcp_queue_bytes_per_connection: DEFAULT_TCP_QUEUE_LIMIT,
         }
+    }
+
+    /// Adds one DER-encoded CA certificate to this Engine's TLS trust roots.
+    ///
+    /// Additional roots supplement platform trust; hostname, validity and signature checks
+    /// remain enabled. The certificate is validated when the Engine is constructed. No host
+    /// trust store is modified. Trust is immutable for the Engine's lifetime and applies to
+    /// all its HTTPS requests, including redirects. Use separate Engines for separate trust
+    /// domains. Configuration clones share the immutable certificate bytes.
+    /// The pinned Android verifier does not support this option; nonempty additional roots
+    /// return [`ErrorKind::Unsupported`] there rather than being ignored.
+    #[must_use]
+    pub fn with_additional_tls_root_certificate(mut self, der: impl Into<Vec<u8>>) -> Self {
+        self.additional_tls_roots.push(Arc::from(der.into()));
+        self
+    }
+
+    /// Returns the additional DER certificates configured for this Engine.
+    #[must_use]
+    pub fn additional_tls_root_certificates(&self) -> &[Arc<[u8]>] {
+        &self.additional_tls_roots
     }
 
     /// Selects a spawned callback worker count.
@@ -669,7 +694,7 @@ impl Request {
 
     #[cfg(any(feature = "native", test))]
     pub(crate) fn redirected(
-        &self,
+        self,
         url: String,
         method: Method,
         keep_body: bool,
@@ -677,7 +702,7 @@ impl Request {
     ) -> Self {
         let headers = self
             .headers
-            .iter()
+            .into_iter()
             .filter(|header| {
                 let name = header.name();
                 let body_header = name.eq_ignore_ascii_case("content-length")
@@ -688,29 +713,42 @@ impl Request {
                     || name.eq_ignore_ascii_case("host");
                 (keep_body || !body_header) && (!cross_origin || !origin_bound)
             })
-            .cloned()
             .collect();
         Self {
             method,
             url,
             headers,
-            body: if keep_body {
-                self.body.clone()
-            } else {
-                Vec::new()
-            },
-            options: self.options.clone(),
+            body: if keep_body { self.body } else { Vec::new() },
+            options: self.options,
         }
     }
 }
 
 #[cfg(any(feature = "native", test))]
-pub(crate) fn redirected_request(
+#[derive(Debug)]
+pub(crate) struct RequestRedirect {
+    url: String,
+    method: Method,
+    keep_body: bool,
+    cross_origin: bool,
+}
+
+#[cfg(any(feature = "native", test))]
+impl RequestRedirect {
+    pub(crate) fn apply(self, request: Request) -> Request {
+        request.redirected(self.url, self.method, self.keep_body, self.cross_origin)
+    }
+}
+
+// Plan at the response head, but move ownership only after that response completes. An early
+// redirect must not take the body away from an upload that is still being transmitted.
+#[cfg(any(feature = "native", test))]
+pub(crate) fn plan_redirect(
     request: &Request,
     status: u16,
     redirect_hops: u8,
     target: impl FnOnce() -> Result<Option<String>, Error>,
-) -> Result<Option<Request>, Error> {
+) -> Result<Option<RequestRedirect>, Error> {
     let (method, keep_body) = match status {
         301 | 302 => match request.method() {
             Method::Get | Method::Head => (request.method().clone(), true),
@@ -746,12 +784,12 @@ pub(crate) fn redirected_request(
         ));
     }
     let cross_origin = source_origin != target_origin;
-    Ok(Some(request.redirected(
-        target,
+    Ok(Some(RequestRedirect {
+        url: target,
         method,
         keep_body,
         cross_origin,
-    )))
+    }))
 }
 
 /// Builder for an owned [`Request`].
@@ -934,21 +972,24 @@ fn parse_port(port: &str, error_kind: ErrorKind) -> Result<u16, Error> {
 }
 
 /// An owned, backend-neutral HTTP response.
+///
+/// Cloning shares immutable body storage and clones the headers. Use [`Self::into_body`] for
+/// consuming access, or explicitly copy [`Self::body`] for independent mutable bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Response {
     status: u16,
     headers: Vec<Header>,
-    body: Vec<u8>,
+    body: crate::ResponseBody,
 }
 
 impl Response {
-    /// Creates a buffered response value.
+    /// Creates a buffered response value, taking its byte allocation without copying.
     #[must_use]
     pub fn new(status: u16, headers: Vec<Header>, body: Vec<u8>) -> Self {
         Self {
             status,
             headers,
-            body,
+            body: crate::ResponseBody::from_vec(body),
         }
     }
 
@@ -970,7 +1011,17 @@ impl Response {
     /// Returns the buffered response body.
     #[must_use]
     pub fn body(&self) -> &[u8] {
-        &self.body
+        self.body.as_bytes()
+    }
+
+    /// Consumes the response and returns its body owner without copying the bytes.
+    ///
+    /// The body may still be shared with response clones. Use
+    /// [`ResponseBody::try_into_vec`](crate::ResponseBody::try_into_vec) for explicit transfer
+    /// to an application-owned vector when no other body owner remains.
+    #[must_use]
+    pub fn into_body(self) -> crate::ResponseBody {
+        self.body
     }
 }
 
@@ -1395,7 +1446,7 @@ mod tests {
             .body(b"payload".to_vec())
             .build()
             .expect("redirect source must build");
-        let not_followed = redirected_request(&post, 302, 0, || {
+        let not_followed = plan_redirect(&post, 302, 0, || {
             panic!("a non-followed redirect must not inspect Location")
         })
         .expect("302 POST must remain a response");
@@ -1405,7 +1456,7 @@ mod tests {
             .redirect_limit(0)
             .build()
             .expect("disabled redirect source must build");
-        let not_followed = redirected_request(&disabled, 302, 0, || {
+        let not_followed = plan_redirect(&disabled, 302, 0, || {
             panic!("disabled redirects must not inspect Location")
         })
         .expect("disabled redirect must remain a response");
@@ -1414,15 +1465,16 @@ mod tests {
         let head = Request::head("https://example.test/start")
             .build()
             .expect("HEAD redirect source must build");
-        let redirected = redirected_request(&head, 303, 0, || {
+        let redirected = plan_redirect(&head, 303, 0, || {
             Ok(Some("https://example.test/final".to_owned()))
         })
         .expect("303 HEAD policy must succeed")
-        .expect("303 HEAD must follow");
+        .expect("303 HEAD must follow")
+        .apply(head.clone());
         assert_eq!(redirected.method(), &Method::Head);
         assert!(redirected.body().is_empty());
 
-        let downgrade = redirected_request(&head, 307, 0, || {
+        let downgrade = plan_redirect(&head, 307, 0, || {
             Ok(Some("http://example.test/final".to_owned()))
         })
         .expect_err("HTTPS downgrade must be blocked");

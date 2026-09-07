@@ -3,16 +3,19 @@
 //! Private sans-I/O rustls client state.
 //!
 //! The native HTTP owner supplies encrypted bytes and owns the socket. This module owns only the
-//! per-request TLS state and configuration; it never polls, spawns, waits, or calls user code.
+//! per-request TLS state and configuration. Handshake packet processing may block in platform
+//! verification; the HTTP owner runs those steps through the bounded worker service.
+
+pub(super) mod worker;
 
 use std::fmt;
 use std::io::{self, Cursor, Read, Write};
 use std::sync::Arc;
 
 #[cfg(test)]
-use std::sync::Mutex;
+use std::collections::VecDeque;
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::mpsc::{Receiver, Sender};
 #[cfg(test)]
@@ -37,6 +40,10 @@ const TLS_PLAINTEXT_CHUNK: usize = 16 * 1024;
 // overhead without teaching the HTTP owner how to parse TLS records itself. A streaming socket
 // grants at most this much encrypted input before returning to its owner.
 const TLS_STREAM_WIRE_ALLOWANCE: usize = 18 * 1024;
+// A new wire window can finish a record partially buffered by the previous window before
+// decoding further records. TLS has no application-data compression: at most one extra
+// 16 KiB record of plaintext can come from that carry. Keep socket input at 18 KiB.
+const TLS_STREAM_PLAINTEXT_LIMIT: usize = TLS_STREAM_WIRE_ALLOWANCE + TLS_PLAINTEXT_CHUNK;
 
 #[derive(Clone)]
 pub(super) struct NativeTlsConfigs {
@@ -55,6 +62,37 @@ impl NativeTlsConfigs {
             .map_err(|error| tls_config_error("platform verifier", error))?
             .with_no_client_auth();
         Self::from_verified(provider, verified)
+    }
+
+    pub(super) fn platform_with_extra_roots(roots: &[Arc<[u8]>]) -> Result<Self, Error> {
+        if roots.is_empty() {
+            return Self::platform();
+        }
+        #[cfg(target_os = "android")]
+        {
+            // The pinned verifier delegates Android trust to application/network policy and
+            // does not expose additional per-verifier roots. Never silently ignore this input.
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                "additional TLS roots are not supported by the Android platform verifier",
+            ))
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots(
+                roots.iter().map(|root| CertificateDer::from(root.to_vec())),
+                Arc::clone(&provider),
+            )
+            .map_err(|error| tls_config_error("additional trust roots", error))?;
+            let verified = ClientConfig::builder_with_provider(Arc::clone(&provider))
+                .with_safe_default_protocol_versions()
+                .map_err(|error| tls_config_error("protocol versions", error))?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            Self::from_verified(provider, verified)
+        }
     }
 
     pub(super) fn with_test_root(root: CertificateDer<'static>) -> Result<Self, Error> {
@@ -77,6 +115,14 @@ impl NativeTlsConfigs {
         entered: Sender<()>,
         release: Receiver<()>,
     ) -> Result<Self, Error> {
+        Self::with_test_root_and_verification_gates(root, vec![(entered, release)])
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_root_and_verification_gates(
+        root: CertificateDer<'static>,
+        gates: Vec<(Sender<()>, Receiver<()>)>,
+    ) -> Result<Self, Error> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -88,11 +134,9 @@ impl NativeTlsConfigs {
         )
         .build()
         .map_err(|error| tls_config_error("test verifier", error))?;
-        let verifier = Arc::new(GatedFirstVerification {
+        let verifier = Arc::new(GatedVerification {
             inner: verifier,
-            entered,
-            release: Mutex::new(release),
-            first: AtomicBool::new(true),
+            gates: Mutex::new(gates.into()),
         });
         let verified = ClientConfig::builder_with_provider(Arc::clone(&provider))
             .with_safe_default_protocol_versions()
@@ -150,7 +194,10 @@ impl NativeTlsConfigs {
             )
         })?;
         Ok(NativeTls {
-            connection,
+            session: Some(TlsSession {
+                connection,
+                handshake_received: 0,
+            }),
             request: Some(PendingPlaintext {
                 bytes: request,
                 offset: 0,
@@ -159,53 +206,23 @@ impl NativeTlsConfigs {
                 bytes: Vec::new(),
                 offset: 0,
             },
-            handshake_received: 0,
         })
     }
 }
 
 pub(super) struct NativeTls {
-    connection: ClientConnection,
+    session: Option<TlsSession>,
     request: Option<PendingPlaintext>,
     retained_response: PendingPlaintext,
+}
+
+// Worker ownership excludes HTTP request bytes and response delivery state.
+pub(super) struct TlsSession {
+    connection: ClientConnection,
     handshake_received: usize,
 }
 
-struct PendingPlaintext {
-    bytes: Vec<u8>,
-    offset: usize,
-}
-
-impl PendingPlaintext {
-    fn remaining(&self) -> &[u8] {
-        &self.bytes[self.offset..]
-    }
-
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct TlsProgress {
-    pub(super) outbound: Vec<u8>,
-    pub(super) plaintext: Vec<u8>,
-    pub(super) handshake_complete: bool,
-    pub(super) peer_closed: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct TlsStreamProgress {
-    pub(super) outbound: Vec<u8>,
-    pub(super) handshake_complete: bool,
-    pub(super) peer_closed: bool,
-}
-
-impl NativeTls {
-    pub(super) fn start(&mut self) -> Result<Vec<u8>, Error> {
-        self.take_outbound()
-    }
-
+impl TlsSession {
     pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
         let started_handshaking = self.connection.is_handshaking();
         if started_handshaking {
@@ -259,76 +276,6 @@ impl NativeTls {
         })
     }
 
-    /// Consumes one bounded encrypted streaming window and retains any resulting application
-    /// plaintext until the HTTP owner explicitly consumes it.
-    ///
-    /// Buffered responses may drain a large reactor event in one pass. Streaming responses must
-    /// not accept a second window until reader backpressure has released all plaintext from the
-    /// first.
-    pub(super) fn receive_streaming(
-        &mut self,
-        encrypted: &[u8],
-    ) -> Result<TlsStreamProgress, Error> {
-        if !self.retained_response.is_empty() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS accepted another streaming window before retained plaintext drained",
-            ));
-        }
-        if encrypted.len() > TLS_STREAM_WIRE_ALLOWANCE {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS streaming input exceeded its advertised socket allowance",
-            ));
-        }
-        let progress = self.receive(encrypted)?;
-        if progress.plaintext.len() > TLS_STREAM_WIRE_ALLOWANCE {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS produced more streaming plaintext than its bounded input window",
-            ));
-        }
-        self.retained_response = PendingPlaintext {
-            bytes: progress.plaintext,
-            offset: 0,
-        };
-        Ok(TlsStreamProgress {
-            outbound: progress.outbound,
-            handshake_complete: progress.handshake_complete,
-            peer_closed: progress.peer_closed,
-        })
-    }
-
-    /// Returns the absolute encrypted read allowance for the next streaming socket pass.
-    pub(super) fn streaming_read_allowance(&self, response_capacity: usize) -> usize {
-        if !self.retained_response.is_empty()
-            || (!self.connection.is_handshaking() && response_capacity == 0)
-        {
-            0
-        } else {
-            TLS_STREAM_WIRE_ALLOWANCE
-        }
-    }
-
-    pub(super) fn retained_plaintext(&self) -> &[u8] {
-        self.retained_response.remaining()
-    }
-
-    pub(super) fn consume_retained_plaintext(&mut self, consumed: usize) -> Result<(), Error> {
-        if consumed > self.retained_response.remaining().len() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native HTTP consumed beyond retained TLS plaintext",
-            ));
-        }
-        self.retained_response.offset += consumed;
-        if self.retained_response.is_empty() {
-            self.retained_response.bytes.clear();
-            self.retained_response.offset = 0;
-        }
-        Ok(())
-    }
-
     fn drain_plaintext(&mut self, plaintext: &mut Vec<u8>) -> Result<(), Error> {
         let mut buffer = [0_u8; TLS_PLAINTEXT_CHUNK];
         loop {
@@ -340,86 +287,6 @@ impl NativeTls {
             }
         }
         Ok(())
-    }
-
-    pub(super) fn is_handshaking(&self) -> bool {
-        self.connection.is_handshaking()
-    }
-
-    pub(super) fn begin_request(&mut self, request: Vec<u8>) -> Result<(), Error> {
-        if self.connection.is_handshaking() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS tried to reuse a connection before its handshake completed",
-            ));
-        }
-        if self.request.is_some() || self.connection.wants_write() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "native TLS tried to begin a request while prior output remained",
-            ));
-        }
-        self.request = Some(PendingPlaintext {
-            bytes: request,
-            offset: 0,
-        });
-        Ok(())
-    }
-
-    pub(super) fn pump_request(&mut self, ciphertext_limit: usize) -> Result<Vec<u8>, Error> {
-        if self.connection.is_handshaking() || ciphertext_limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut output = Vec::new();
-        self.drain_outbound_up_to(ciphertext_limit, &mut output)?;
-        while output.len() < ciphertext_limit {
-            if self.connection.wants_write() {
-                break;
-            }
-            let Some(request) = self.request.as_mut() else {
-                break;
-            };
-            if request.offset == request.bytes.len() {
-                self.request = None;
-                break;
-            }
-            let end = request
-                .offset
-                .saturating_add(TLS_PLAINTEXT_CHUNK)
-                .min(request.bytes.len());
-            let written = self
-                .connection
-                .writer()
-                .write(&request.bytes[request.offset..end])
-                .map_err(|_| {
-                    Error::tls(
-                        TransportStage::Send,
-                        TlsFailure::Io,
-                        "native TLS request encryption failed",
-                    )
-                })?;
-            if written == 0 {
-                return Err(Error::new(
-                    ErrorKind::Internal,
-                    "native TLS made no progress while accepting request plaintext",
-                ));
-            }
-            request.offset += written;
-            self.drain_outbound_up_to(ciphertext_limit, &mut output)?;
-        }
-        if self
-            .request
-            .as_ref()
-            .is_some_and(|request| request.offset == request.bytes.len())
-            && !self.connection.wants_write()
-        {
-            self.request = None;
-        }
-        Ok(output)
-    }
-
-    pub(super) fn request_fully_encrypted(&self) -> bool {
-        self.request.is_none() && !self.connection.wants_write()
     }
 
     fn drain_outbound_up_to(
@@ -459,6 +326,293 @@ impl NativeTls {
             }
         }
         Ok(output.into_inner())
+    }
+}
+
+struct PendingPlaintext {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+impl PendingPlaintext {
+    fn remaining(&self) -> &[u8] {
+        &self.bytes[self.offset..]
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct TlsProgress {
+    pub(super) outbound: Vec<u8>,
+    pub(super) plaintext: Vec<u8>,
+    pub(super) handshake_complete: bool,
+    pub(super) peer_closed: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct TlsStreamProgress {
+    pub(super) outbound: Vec<u8>,
+    pub(super) handshake_complete: bool,
+    pub(super) peer_closed: bool,
+}
+
+pub(super) struct TlsWriteProgress {
+    pub(super) outbound: Vec<u8>,
+    pub(super) consumed_body: usize,
+}
+
+impl NativeTls {
+    #[cfg(test)]
+    pub(super) fn request_plaintext_capacity(&self) -> usize {
+        self.request
+            .as_ref()
+            .map_or(0, |request| request.bytes.capacity())
+    }
+
+    pub(super) fn start(&mut self) -> Result<Vec<u8>, Error> {
+        self.session
+            .as_mut()
+            .expect("TLS session owned at start")
+            .take_outbound()
+    }
+
+    pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
+        self.session
+            .as_mut()
+            .expect("TLS receive owns session")
+            .receive(encrypted)
+    }
+
+    pub(super) fn take_handshake(&mut self) -> Option<TlsSession> {
+        if self.is_handshaking() {
+            self.session.take()
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn restore_handshake(&mut self, session: TlsSession) {
+        debug_assert!(self.session.is_none());
+        self.session = Some(session);
+    }
+
+    pub(super) fn handshake_in_worker(&self) -> bool {
+        self.session.is_none()
+    }
+
+    /// Consumes one bounded encrypted streaming window and retains any resulting application
+    /// plaintext until the HTTP owner explicitly consumes it.
+    ///
+    /// Buffered responses may drain a large reactor event in one pass. Streaming responses must
+    /// not accept a second window until reader backpressure has released all plaintext from the
+    /// first.
+    pub(super) fn receive_streaming(
+        &mut self,
+        encrypted: &[u8],
+    ) -> Result<TlsStreamProgress, Error> {
+        if !self.retained_response.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS accepted another streaming window before retained plaintext drained",
+            ));
+        }
+        if encrypted.len() > TLS_STREAM_WIRE_ALLOWANCE {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS streaming input exceeded its advertised socket allowance",
+            ));
+        }
+        let progress = self.receive(encrypted)?;
+        self.retain_stream_progress(progress)
+    }
+
+    pub(super) fn retain_stream_progress(
+        &mut self,
+        progress: TlsProgress,
+    ) -> Result<TlsStreamProgress, Error> {
+        if !self.retained_response.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "TLS streaming plaintext was not drained",
+            ));
+        }
+        if progress.plaintext.len() > TLS_STREAM_PLAINTEXT_LIMIT {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS produced more streaming plaintext than its bounded input window",
+            ));
+        }
+        self.retained_response = PendingPlaintext {
+            bytes: progress.plaintext,
+            offset: 0,
+        };
+        Ok(TlsStreamProgress {
+            outbound: progress.outbound,
+            handshake_complete: progress.handshake_complete,
+            peer_closed: progress.peer_closed,
+        })
+    }
+
+    /// Returns the absolute encrypted read allowance for the next streaming socket pass.
+    pub(super) fn streaming_read_allowance(&self, response_capacity: usize) -> usize {
+        if self.session.is_none()
+            || !self.retained_response.is_empty()
+            || (!self.is_handshaking() && response_capacity == 0)
+        {
+            0
+        } else {
+            TLS_STREAM_WIRE_ALLOWANCE
+        }
+    }
+
+    pub(super) fn retained_plaintext(&self) -> &[u8] {
+        self.retained_response.remaining()
+    }
+
+    pub(super) fn consume_retained_plaintext(&mut self, consumed: usize) -> Result<(), Error> {
+        if consumed > self.retained_response.remaining().len() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native HTTP consumed beyond retained TLS plaintext",
+            ));
+        }
+        self.retained_response.offset += consumed;
+        if self.retained_response.is_empty() {
+            // The next receive supplies a new Vec; this empty allocation cannot be reused.
+            self.retained_response.bytes = Vec::new();
+            self.retained_response.offset = 0;
+        }
+        Ok(())
+    }
+
+    pub(super) fn is_handshaking(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_none_or(|session| session.connection.is_handshaking())
+    }
+
+    pub(super) fn begin_request(&mut self, request: Vec<u8>) -> Result<(), Error> {
+        if self.is_handshaking() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS tried to reuse a connection before its handshake completed",
+            ));
+        }
+        if self.request.is_some()
+            || self
+                .session
+                .as_ref()
+                .expect("established TLS")
+                .connection
+                .wants_write()
+        {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "native TLS tried to begin a request while prior output remained",
+            ));
+        }
+        self.request = Some(PendingPlaintext {
+            bytes: request,
+            offset: 0,
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn pump_request(&mut self, ciphertext_limit: usize) -> Result<Vec<u8>, Error> {
+        self.pump_request_body(&[], ciphertext_limit)
+            .map(|progress| progress.outbound)
+    }
+
+    /// Encrypts queued headers/upload chunks before borrowing buffered body bytes. The caller
+    /// advances its body cursor by exactly consumed_body; TLS never owns a copy of that body.
+    pub(super) fn pump_request_body(
+        &mut self,
+        body: &[u8],
+        ciphertext_limit: usize,
+    ) -> Result<TlsWriteProgress, Error> {
+        if self.is_handshaking() || ciphertext_limit == 0 {
+            return Ok(TlsWriteProgress {
+                outbound: Vec::new(),
+                consumed_body: 0,
+            });
+        }
+        let session = self.session.as_mut().expect("established TLS");
+        let mut output = Vec::new();
+        let mut consumed_body = 0;
+        session.drain_outbound_up_to(ciphertext_limit, &mut output)?;
+        while output.len() < ciphertext_limit {
+            if session.connection.wants_write() {
+                break;
+            }
+            if self
+                .request
+                .as_ref()
+                .is_some_and(PendingPlaintext::is_empty)
+            {
+                self.request = None;
+            }
+            let head = self
+                .request
+                .as_ref()
+                .map_or(&[][..], PendingPlaintext::remaining);
+            let head_count = head.len().min(TLS_PLAINTEXT_CHUNK);
+            let body_count = (body.len() - consumed_body).min(TLS_PLAINTEXT_CHUNK - head_count);
+            if head_count == 0 && body_count == 0 {
+                break;
+            }
+            let head = &head[..head_count];
+            let body_chunk = &body[consumed_body..consumed_body + body_count];
+            let mut writer = session.connection.writer();
+            // Preserve a single TLS record across the head/body boundary without assembling a
+            // second plaintext buffer. rustls consumes these borrowed slices synchronously.
+            let written = match (head_count, body_count) {
+                (0, _) => writer.write(body_chunk),
+                (_, 0) => writer.write(head),
+                _ => writer.write_vectored(&[io::IoSlice::new(head), io::IoSlice::new(body_chunk)]),
+            }
+            .map_err(|_| {
+                Error::tls(
+                    TransportStage::Send,
+                    TlsFailure::Io,
+                    "native TLS request encryption failed",
+                )
+            })?;
+            if written == 0 {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "native TLS made no progress while accepting request plaintext",
+                ));
+            }
+            if let Some(request) = self.request.as_mut() {
+                request.offset += written.min(head_count);
+            }
+            consumed_body += written.saturating_sub(head_count);
+            session.drain_outbound_up_to(ciphertext_limit, &mut output)?;
+        }
+        if self
+            .request
+            .as_ref()
+            .is_some_and(|request| request.offset == request.bytes.len())
+            && !session.connection.wants_write()
+        {
+            self.request = None;
+        }
+        Ok(TlsWriteProgress {
+            outbound: output,
+            consumed_body,
+        })
+    }
+
+    pub(super) fn request_fully_encrypted(&self) -> bool {
+        self.request.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.connection.wants_write())
     }
 }
 
@@ -575,15 +729,13 @@ impl ServerCertVerifier for NoCertificateVerification {
 
 #[cfg(test)]
 #[derive(Debug)]
-struct GatedFirstVerification {
+struct GatedVerification {
     inner: Arc<dyn ServerCertVerifier>,
-    entered: Sender<()>,
-    release: Mutex<Receiver<()>>,
-    first: AtomicBool,
+    gates: Mutex<VecDeque<(Sender<()>, Receiver<()>)>>,
 }
 
 #[cfg(test)]
-impl ServerCertVerifier for GatedFirstVerification {
+impl ServerCertVerifier for GatedVerification {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -592,13 +744,14 @@ impl ServerCertVerifier for GatedFirstVerification {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if self.first.swap(false, Ordering::AcqRel) {
-            let _ignored = self.entered.send(());
-            let _ignored = self
-                .release
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .recv_timeout(Duration::from_secs(2));
+        let gate = self
+            .gates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front();
+        if let Some((entered, release)) = gate {
+            let _ignored = entered.send(());
+            let _ignored = release.recv_timeout(Duration::from_secs(10));
         }
         self.inner
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
@@ -770,6 +923,70 @@ mod tests {
     }
 
     #[test]
+    fn m24_consumed_stream_plaintext_releases_storage_without_losing_partial_bytes() {
+        let (cert, _) = identity();
+        let configs = NativeTlsConfigs::with_test_root(cert).expect("TLS configs");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("TLS state");
+        let mut plaintext = Vec::with_capacity(TLS_STREAM_PLAINTEXT_LIMIT * 2);
+        plaintext.extend((0..TLS_PLAINTEXT_CHUNK).map(|index| (index % 251) as u8));
+        let pointer = plaintext.as_ptr();
+        client
+            .retain_stream_progress(TlsProgress {
+                outbound: Vec::new(),
+                plaintext,
+                handshake_complete: true,
+                peer_closed: false,
+            })
+            .expect("retain plaintext");
+        client
+            .consume_retained_plaintext(7)
+            .expect("partial consumption");
+        assert_eq!(
+            client.retained_plaintext().as_ptr(),
+            pointer.wrapping_add(7)
+        );
+        assert!(
+            client
+                .retained_plaintext()
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == ((index + 7) % 251) as u8)
+        );
+        client
+            .consume_retained_plaintext(TLS_PLAINTEXT_CHUNK - 7)
+            .expect("finish consumption");
+        assert!(client.retained_plaintext().is_empty());
+        assert_eq!(
+            client.retained_response.bytes.capacity(),
+            0,
+            "the next TLS window replaces this Vec; retaining its empty storage buys no reuse"
+        );
+        client
+            .consume_retained_plaintext(0)
+            .expect("empty consumption is idempotent");
+        client
+            .retain_stream_progress(TlsProgress {
+                outbound: Vec::new(),
+                plaintext: b"next window".to_vec(),
+                handshake_complete: true,
+                peer_closed: false,
+            })
+            .expect("next plaintext window");
+        assert!(client.consume_retained_plaintext(12).is_err());
+        assert_eq!(
+            client.retained_plaintext(),
+            b"next window",
+            "invalid consumption must preserve bytes"
+        );
+        client
+            .consume_retained_plaintext(11)
+            .expect("next window consumed");
+        assert_eq!(client.retained_response.bytes.capacity(), 0);
+    }
+
+    #[test]
     fn verified_sans_io_handshake_encrypts_request_and_decrypts_response() {
         let (cert, key) = identity();
         let configs =
@@ -906,6 +1123,139 @@ mod tests {
     }
 
     #[test]
+    fn m23_small_borrowed_request_preserves_one_tls_record() {
+        let (cert, key) = identity();
+        let configs = NativeTlsConfigs::with_test_root(cert.clone()).expect("client config");
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, Vec::new())
+            .expect("client");
+        let mut server = ServerConnection::new(server_config(cert, key)).expect("server");
+        let mut to_server = client.start().expect("ClientHello");
+        for _ in 0..16 {
+            if !to_server.is_empty() {
+                server
+                    .read_tls(&mut Cursor::new(&to_server))
+                    .expect("server handshake input");
+                server
+                    .process_new_packets()
+                    .expect("server handshake packets");
+                to_server.clear();
+            }
+            let mut to_client = Vec::new();
+            while server.wants_write() {
+                server
+                    .write_tls(&mut to_client)
+                    .expect("server handshake output");
+            }
+            if to_client.is_empty() && !client.is_handshaking() && !server.is_handshaking() {
+                break;
+            }
+            if !to_client.is_empty() {
+                to_server = client
+                    .receive(&to_client)
+                    .expect("client handshake")
+                    .outbound;
+            }
+        }
+        assert!(!client.is_handshaking() && !server.is_handshaking());
+        assert!(
+            client
+                .pump_request(TLS_FLIGHT_LIMIT)
+                .expect("empty initial output")
+                .is_empty()
+        );
+        let head = b"POST / HTTP/1.1\r\nHost: resolved.test\r\nContent-Length: 1024\r\n\r\n";
+        client.begin_request(head.to_vec()).expect("request head");
+        let body = vec![0x5a; 1024];
+        let progress = client
+            .pump_request_body(&body, TLS_FLIGHT_LIMIT)
+            .expect("small request");
+        assert_eq!(progress.consumed_body, body.len());
+        let mut wire = progress.outbound.as_slice();
+        let mut records = 0;
+        while !wire.is_empty() {
+            assert!(wire.len() >= 5, "complete TLS record header");
+            assert_eq!(wire[0], 23, "application-data record");
+            let length = usize::from(u16::from_be_bytes([wire[3], wire[4]]));
+            assert!(wire.len() >= 5 + length, "complete TLS record");
+            wire = &wire[5 + length..];
+            records += 1;
+        }
+        assert_eq!(
+            records, 1,
+            "separate header/body ownership must not fragment a small request into extra TLS records"
+        );
+    }
+
+    #[test]
+    fn m23_borrowed_body_progress_survives_tiny_ciphertext_windows_and_reuse() {
+        let (cert, key) = identity();
+        let configs = NativeTlsConfigs::with_test_root(cert.clone()).expect("client config");
+        let head = b"POST /borrowed HTTP/1.1\r\nHost: resolved.test\r\n\r\n";
+        let mut client = configs
+            .connection("resolved.test", TlsVerification::Verify, head.to_vec())
+            .expect("client");
+        let mut server = ServerConnection::new(server_config(cert, key)).expect("server");
+        let mut to_server = client.start().expect("ClientHello");
+        for size in [128 * 1024 + 137, 50 * 1024, 0] {
+            let body = (0..size)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+            let mut consumed = 0;
+            let mut received = Vec::new();
+            for iteration in 0..2048 {
+                if !to_server.is_empty() {
+                    let mut input = Cursor::new(&to_server);
+                    while usize::try_from(input.position()).expect("position") < to_server.len() {
+                        assert_ne!(server.read_tls(&mut input).expect("TLS input"), 0);
+                        server.process_new_packets().expect("server packets");
+                        let mut chunk = [0; 997];
+                        loop {
+                            match server.reader().read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(count) => received.extend_from_slice(&chunk[..count]),
+                                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                                Err(error) => panic!("server plaintext: {error}"),
+                            }
+                        }
+                    }
+                    to_server.clear();
+                }
+                if received.len() == head.len() + body.len() {
+                    break;
+                }
+                let mut to_client = Vec::new();
+                while server.wants_write() {
+                    server.write_tls(&mut to_client).expect("server output");
+                }
+                if !to_client.is_empty() {
+                    to_server.extend(client.receive(&to_client).expect("client packets").outbound);
+                }
+                let limit = [0, 1, 7, 31, 4093, 16384][iteration % 6];
+                let was_handshaking = client.is_handshaking();
+                let progress = client
+                    .pump_request_body(&body[consumed..], limit)
+                    .expect("borrowed pump");
+                assert!(progress.outbound.len() <= limit);
+                assert!(progress.consumed_body <= body.len() - consumed);
+                if limit == 0 || was_handshaking {
+                    assert_eq!(progress.consumed_body, 0);
+                }
+                consumed += progress.consumed_body;
+                assert!(client.request_plaintext_capacity() <= head.len());
+                to_server.extend(progress.outbound);
+            }
+            assert_eq!(consumed, body.len());
+            assert_eq!(&received[..head.len()], head);
+            assert_eq!(&received[head.len()..], body);
+            assert!(client.request_fully_encrypted());
+            client
+                .begin_request(head.to_vec())
+                .expect("reusable TLS session");
+        }
+    }
+
+    #[test]
     fn verified_wrong_host_fails_but_explicit_bypass_still_handshakes() {
         let (cert, key) = identity();
         let configs =
@@ -1039,7 +1389,14 @@ mod tests {
             .receive(&oversized)
             .expect_err("oversized peer handshake must fail before rustls input");
         assert_eq!(error.kind(), ErrorKind::Limit);
-        assert_eq!(client.handshake_received, TLS_FLIGHT_LIMIT + 1);
+        assert_eq!(
+            client
+                .session
+                .as_ref()
+                .expect("TLS session")
+                .handshake_received,
+            TLS_FLIGHT_LIMIT + 1
+        );
     }
 
     #[test]
@@ -1103,6 +1460,17 @@ mod tests {
 
     #[test]
     fn streaming_tls_retains_one_bounded_wire_window_before_reopening_reads() {
+        assert_streaming_windows(64 * 1024);
+    }
+
+    #[test]
+    fn streaming_tls_partial_record_carry_can_finish_two_records_in_one_window() {
+        // Four 16 KiB records never build enough wire-boundary drift to finish two records
+        // in one 18 KiB read. A longer stream reaches that valid record split repeatedly.
+        assert_streaming_windows(512 * 1024);
+    }
+
+    fn assert_streaming_windows(body_bytes: usize) {
         let (cert, key) = identity();
         let configs =
             NativeTlsConfigs::with_test_root(cert.clone()).expect("TLS client config must build");
@@ -1141,19 +1509,22 @@ mod tests {
         assert!(!client.is_handshaking());
         assert!(!server.is_handshaking());
 
-        let expected = vec![b's'; 64 * 1024];
-        server
-            .writer()
-            .write_all(&expected)
-            .expect("server plaintext must buffer");
+        let expected: Vec<u8> = (0..body_bytes).map(|index| (index % 251) as u8).collect();
         let mut encrypted = Vec::new();
-        while server.wants_write() {
+        for chunk in expected.chunks(TLS_PLAINTEXT_CHUNK) {
             server
-                .write_tls(&mut encrypted)
-                .expect("server records must encode");
+                .writer()
+                .write_all(chunk)
+                .expect("one server record must buffer");
+            while server.wants_write() {
+                server
+                    .write_tls(&mut encrypted)
+                    .expect("server records must encode");
+            }
         }
 
         let mut received = Vec::new();
+        let mut largest_plaintext = 0;
         for wire_window in encrypted.chunks(TLS_STREAM_WIRE_ALLOWANCE) {
             assert_eq!(
                 client.streaming_read_allowance(100),
@@ -1166,6 +1537,8 @@ mod tests {
             assert!(progress.outbound.is_empty());
             assert!(progress.handshake_complete);
             assert!(!progress.peer_closed);
+            largest_plaintext = largest_plaintext.max(client.retained_plaintext().len());
+            assert!(client.retained_plaintext().len() <= TLS_STREAM_PLAINTEXT_LIMIT);
             while !client.retained_plaintext().is_empty() {
                 assert_eq!(
                     client.streaming_read_allowance(100),
@@ -1180,6 +1553,12 @@ mod tests {
             }
         }
         assert_eq!(received, expected);
+        if body_bytes >= 512 * 1024 {
+            assert!(
+                largest_plaintext > TLS_STREAM_WIRE_ALLOWANCE,
+                "the regression must exercise plaintext carried across wire windows"
+            );
+        }
         assert_eq!(client.streaming_read_allowance(0), 0);
         assert_eq!(
             client.streaming_read_allowance(1),
