@@ -12,7 +12,7 @@ failure evidence; the [GDS handoff](gds_memory_handoff.md) owns broader consumer
 | Field | Current state |
 | --- | --- |
 | Current package | **M2 in progress; M2.1/M2.2 verified — E-09; M2.3 verified — E-10; M2.4 verified — E-11.** MQ-02 accepted — MD-13. |
-| Next implementation step | M2.5: inspect GDS's current version/build workflow before applying the light consuming-response conversion; preserve status/size/UTF-8 rules. M2.4 is complete with archived evidence and no running jobs. MQ-03 precedes M3 aggregate budgeting; broader GDS work remains in the handoff. |
+| Next implementation step | M2.5 is scoped below after reading the live GDS adapter/build helpers. Develop against the explicit 0.2 dependency in an isolated GDS development checkout using the existing local NBReq override; then prove unique-buffer transfer before changing conversion. GDS remains pinned to 0.1.0 in its main checkout and no GDS code was changed in this inspection. MQ-03 precedes M3 budgets. |
 | Last proven test state | Final M2.4 B passes seven full verifiers across Windows/Linux/Intel Mac/ARM Mac, 29 x86 M2 tests, 120 paired Windows/Linux cases and 30 longer Windows timing cases. Three intended memory reds resolved; six companions pass. A failed the existing idle-eviction fixture on all hosts; B synchronizes its intended state. All failed attempts remain archived; none is unresolved. |
 | Source identity | M2.4 B manifest `b1ddee56304a55f26f9ef0c7b215e9ca1d5f10632c47aa5bcd764965b15b519d` hashes 120 files; five production/test files differ from M2.3 D. A-to-B changes only the idle-eviction test. Final checkout matches B; both sources and evidence are archived under E-11. Before binaries are M2.3 C, whose production equals D. Validation used base `b4c4d74cea0e` plus the recorded changes. The review/memory checkpoint excludes the older F5 registry-comparison edits, which remain intact in the working tree. |
 | Memory implementation | M0.1 bounds TLS workers/jobs/input; M1 adds observation/private-CA roots/TLS carry fix; M2.1/M2.2 share response bodies and move delivery; M2.3 borrows bounded request transmission and moves redirects. M2.4 releases consumed TLS plaintext and trims oversized HTTP idle send storage. Mixed-workload post-large idle live heap falls 1.88→0.94 MiB Windows / 1.95→1.01 MiB Linux. Ordinary retention/churn barely changes; timing has explicit limits. Budgets, profiles and GDS changes remain unstarted. |
@@ -115,6 +115,47 @@ in its own session but does not expand the M0 correctness pass.
 | M2.3 | Verified — E-10 | Header-only preparation, bounded borrowed HTTP/TLS transmission, consuming redirect bodies; original request API/ceilings preserved. Six ownership reds, TLS-record red and deterministic shutdown-order red resolved. Ten memory tests, seven final full verifiers, x86, 120 paired cases and 20 timing cases pass. Large-transfer peaks fall; retained capacity remains M2.4. |
 | M2.4 | Verified — E-11 | Release fully consumed TLS plaintext; trim reusable HTTP idle send capacity above 128 KiB to 64 KiB. Three intended reds resolved, six companions, seven full verifiers, x86, 120 paired cases and 30 timing follow-ups pass. Preserve partial data, small buffers, connections and valid ceilings. Post-workload retention falls; allocation churn is essentially unchanged. |
 | M2.5 | Open | Apply light GDS consuming conversion after checking its current version/build workflow; preserve status/size/UTF-8 handling. Early network enforcement belongs to M3; broad GDS budgeting remains in the handoff. |
+
+### M2.5 inspected scope — 2026-09-08
+
+Checkpoint commit `2f89bef` records review fixes and M0–M2.4, including evidence. The older
+F5 registry-comparison edits remain intact outside that commit. This subsection is inspection
+and a proposed implementation outline; no GDS production/test/dependency change or GDS build ran.
+
+The current GDS `gds/rust/gds/src/dplib/dphttpclient.rs` has two copying sites: `execute_text`
+and `nbreq_response_to_dp`. Both synchronous typed responses and `NbreqHttpWaiter::wait` already
+use the latter, so one small consuming helper can cover those paths. Proposed changes:
+
+1. Preserve the response status, check the existing byte limit while borrowing the body, then
+   consume `Response::into_body().try_into_vec()`. On the normal unique-owner path, pass that
+   allocation directly to `String::from_utf8`. On an unexpectedly shared body, explicitly copy
+   the returned owner as a compatibility fallback; sharing must not create a new request failure.
+2. Use the same ownership extraction for `execute_text`, preserving its current status-first
+   rejection and detailed UTF-8 error string. The typed response path must still expose non-2xx
+   status/body and preserve limit/UTF-8 error precedence. Avoid a universal success-only helper.
+3. Leave `post_json`'s borrowed `serde_json::from_slice` path intact: it already avoids the body
+   copy. Request bodies, transport policy, cancellation, Engine lifecycle and 24 MiB ceilings
+   need no change for this item. Oversize checking here is after download but before conversion;
+   early network enforcement remains M3.
+4. Start with a red pointer/capacity test proving the unique Vec becomes the returned String
+   without allocating another payload buffer. Cover spare capacity and empty bodies, shared-owner
+   fallback, exact/over limits, invalid UTF-8, status handling, and synchronous/waiter delivery.
+   Retain the HTTP wire-format, WebRPC retry/cancellation/join tests and ureq-only compatibility.
+
+Version/build finding: GDS's manifest **and lockfile** select registry nbreq `=0.1.0`. Its existing
+`test_rust.py --local-nbreq` and `build.ps1 -LocalNbreq` create a temporary sibling crate/private
+lockfile and verify that Cargo actually selected the requested path. They deliberately do not
+override the manifest's version requirement, so pointing them at this 0.2 checkout is insufficient.
+Recommend an isolated GDS development checkout with an explicit 0.2 requirement and those local
+overrides while release work is pending. Do not relabel nbreq as 0.1.0, widen the version range
+across incompatible APIs, or commit a machine-specific absolute dependency path.
+
+The wrappers' ordinary-build source descriptions also hard-code 0.1.0; update those labels when
+the dependency transition lands. Windows acceptance uses the existing 32-bit Rust test wrapper
+and a DLL compile with `-SkipCopy`. Resolve the selected dependency graph and compatible lockfile
+before claiming integration; use a Linux adapter check where supported. The registry release
+transition, including the recorded nbreq-darwin prerequisite, is separate from local verification.
+Broader GDS queue/encoding admission and actual-device acceptance remain in the handoff.
 
 ### M0 item register
 
@@ -751,6 +792,7 @@ Append concise entries. Keep the resume checkpoint and item status current as we
 | 2026-09-07 · M2.3 verified | Seven final D full verifiers, x86 companions, 120 C paired cases and 20 timing follow-ups pass. Roughly 100 KiB less allocation per 50 KiB request; 4 MiB phase peaks fall 14.4→10.5 MiB Windows / 14.5→12.0 MiB Linux. | E-10. Four source snapshots and 2,270 evidence files archived with checksums; all jobs/processes finished. Small-call peaks and retained capacity barely change; timing is noisy and HTTPS allocation count rises by roughly one. Next M2.4, then light M2.5; M3 budgets and actual-device acceptance remain open. |
 | 2026-09-08 · M2.4 implementation / validation | Three intended capacity reds resolved; six companions cover partial bytes, clean idle parking, threshold boundaries, large-to-small connection reuse and cancellation. A full gates exposed an existing fixture that closed before idle parking. B synchronizes the intended state and keeps all eviction assertions. | E-11, MD-14. A failures retained on every host; B production is unchanged from A. Windows and both Macs pass; Windows comparison/timing complete. Finish Linux gates/measurements and archive final evidence. |
 | 2026-09-08 · M2.4 verified | Seven B full verifiers, 29 x86 M2 tests, 120 paired cases and 30 longer timing cases pass. Mixed-workload post-large idle heap falls 1.88→0.94 MiB Windows / 1.95→1.01 MiB Linux; ordinary churn and small-call retention remain essentially unchanged. | E-11. Two source snapshots and 1,049 evidence files archived and checked; all jobs finished. Timing remains qualified; repeated large uploads may regrow/retrim buffers. Next M2.5 light GDS conversion; MQ-03 before M3 budgets. |
+| 2026-09-08 · checkpoint and M2.5 inspection | Commit 2f89bef records review/memory work through M2.4; older F5 edits remain outside it. Read GDS's adapter, manifest/lockfile and build/test helpers. Scoped two consuming conversion sites, pointer/capacity reds, shared fallback and error-precedence companions. | M2.5 outline above. GDS still pins 0.1.0; existing local overrides require an explicit compatible version constraint. Recommend isolated 0.2 integration first. No GDS code, dependency, build or deployed DLL changed. |
 
 ## 9. Update and handoff discipline
 

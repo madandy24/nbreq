@@ -90,6 +90,19 @@ No GDS source, dependency pin or deployed build changed. M2.5 is next: reconcile
 preserving status/size/UTF-8 handling. M3's early limits and aggregate retained-body charges are
 still unimplemented; broad GDS admission/encoding and actual-device acceptance remain here.
 
+M2.5 inspection on 2026-09-08 confirms two copying sites in `dphttpclient.rs`: `execute_text`
+and the shared synchronous/waiter `nbreq_response_to_dp` conversion. Check byte limits before
+extraction, transfer unique storage into String, and explicitly copy if another response shares
+the body. Preserve typed non-2xx responses and the text convenience path's status-first errors.
+The `post_json` response parser already borrows bytes. Details and test gates are in the tracker.
+
+Both GDS manifest and lockfile still select 0.1.0. Existing `--local-nbreq`/`-LocalNbreq` helpers
+keep a private temporary lock and check the selected package, but deliberately require a matching
+manifest version. Recommend a separate GDS development checkout with an explicit 0.2 requirement
+and those local overrides; registry integration follows its release prerequisites. Update the
+wrappers' hard-coded 0.1.0 source labels with the transition, and compile with `-SkipCopy` during
+validation. This inspection made no GDS changes and did not run GDS tests or replace its DLL.
+
 ## Observed source facts
 
 | Location under `C:\User\SecuritasNew` | Finding |
