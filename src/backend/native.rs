@@ -6,11 +6,13 @@
 //! byte queues, readiness registration, deadlines, cancellation, and teardown. Later native
 //! protocol layers consume its events without moving sockets or callbacks off the reactor owner.
 
+use crate::body_budget::{BodyBudget, BodyBuffer};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mio::net::TcpStream;
@@ -39,6 +41,7 @@ pub(crate) enum NativeFailureKind {
     Write,
     OutboundQueueFull,
     ReceiveLimit,
+    BodyBudget,
     Internal,
 }
 
@@ -78,12 +81,12 @@ impl NativeFailure {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum NativeEvent {
     Connected(SlotId),
     WriteProgress(SlotId, usize),
     WriteDrained(SlotId),
-    Data(SlotId, Vec<u8>),
+    Data(SlotId, BodyBuffer),
     PeerClosed(SlotId),
     Failed(SlotId, NativeFailure),
     DeadlineExpired(SlotId),
@@ -102,11 +105,22 @@ struct Connection {
     state: ConnectionState,
     peer_read_closed: bool,
     outbound: VecDeque<u8>,
+    body: Option<(Arc<BodyBuffer>, std::ops::Range<usize>)>,
+    body_budget: Option<Arc<BodyBudget>>,
     outbound_limit: usize,
     received: usize,
     receive_limit: usize,
     read_allowance: Option<usize>,
     deadline: Option<Instant>,
+}
+
+impl Connection {
+    fn outbound_len(&self) -> usize {
+        self.outbound.len() + self.body.as_ref().map_or(0, |(_, range)| range.len())
+    }
+    fn outbound_empty(&self) -> bool {
+        self.outbound_len() == 0
+    }
 }
 
 struct Slot {
@@ -119,7 +133,7 @@ fn connection_interest(connection: &Connection) -> Option<Interest> {
         return Some(Interest::READABLE.add(Interest::WRITABLE));
     }
     let readable = !connection.peer_read_closed && !matches!(connection.read_allowance, Some(0));
-    let writable = !connection.outbound.is_empty();
+    let writable = !connection.outbound_empty();
     match (readable, writable) {
         (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
         (true, false) => Some(Interest::READABLE),
@@ -260,6 +274,8 @@ impl NativeReactor {
             state: ConnectionState::Connecting,
             peer_read_closed: false,
             outbound: VecDeque::new(),
+            body: None,
+            body_budget: None,
             outbound_limit,
             received: 0,
             receive_limit,
@@ -276,10 +292,15 @@ impl NativeReactor {
         let connection = self.connection_mut(id).ok_or_else(|| {
             NativeFailure::internal("native write targeted a stale or closed slot")
         })?;
+        if connection.body.is_some() && !bytes.is_empty() {
+            return Err(NativeFailure::internal(
+                "owned output cannot overtake a queued body window",
+            ));
+        }
         if bytes.len()
             > connection
                 .outbound_limit
-                .saturating_sub(connection.outbound.len())
+                .saturating_sub(connection.outbound_len())
         {
             return Err(NativeFailure {
                 kind: NativeFailureKind::OutboundQueueFull,
@@ -291,20 +312,65 @@ impl NativeReactor {
         self.reregister(id)
     }
 
+    /// Buffered HTTP queues a slice of the admitted allocation, with no body-bearing copy.
+    pub(crate) fn queue_body(
+        &mut self,
+        id: SlotId,
+        bytes: Arc<BodyBuffer>,
+        range: std::ops::Range<usize>,
+    ) -> Result<(), NativeFailure> {
+        let connection = self
+            .connection_mut(id)
+            .ok_or_else(|| NativeFailure::internal("stale body slot"))?;
+        if range.start > range.end
+            || range.end > bytes.len()
+            || range.len()
+                > connection
+                    .outbound_limit
+                    .saturating_sub(connection.outbound_len())
+        {
+            return Err(NativeFailure::internal("invalid buffered body window"));
+        }
+        match &mut connection.body {
+            Some((owner, queued)) if Arc::ptr_eq(owner, &bytes) && queued.end == range.start => {
+                queued.end = range.end
+            }
+            None => connection.body = Some((bytes, range)),
+            _ => {
+                return Err(NativeFailure::internal(
+                    "buffered body windows are not contiguous",
+                ));
+            }
+        }
+        self.reregister(id)
+    }
+
+    pub(crate) fn set_body_budget(
+        &mut self,
+        id: SlotId,
+        budget: Option<Arc<BodyBudget>>,
+    ) -> Result<(), NativeFailure> {
+        let connection = self
+            .connection_mut(id)
+            .ok_or_else(|| NativeFailure::internal("stale budget slot"))?;
+        connection.body_budget = budget;
+        Ok(())
+    }
+
     pub(crate) fn outbound_capacity(&mut self, id: SlotId) -> Result<usize, NativeFailure> {
         let connection = self.connection_mut(id).ok_or_else(|| {
             NativeFailure::internal("native outbound capacity targeted a stale or closed slot")
         })?;
         Ok(connection
             .outbound_limit
-            .saturating_sub(connection.outbound.len()))
+            .saturating_sub(connection.outbound_len()))
     }
 
     pub(crate) fn outbound_is_empty(&mut self, id: SlotId) -> Result<bool, NativeFailure> {
         let connection = self.connection_mut(id).ok_or_else(|| {
             NativeFailure::internal("native outbound state targeted a stale or closed slot")
         })?;
-        Ok(connection.outbound.is_empty())
+        Ok(connection.outbound_empty())
     }
 
     #[cfg(test)]
@@ -337,7 +403,7 @@ impl NativeReactor {
         let connection = self.connection_mut(id).ok_or_else(|| {
             NativeFailure::internal("native write shutdown targeted a stale or closed slot")
         })?;
-        if !connection.outbound.is_empty() {
+        if !connection.outbound_empty() {
             return Err(NativeFailure::internal(
                 "native write shutdown requires a drained outbound queue",
             ));
@@ -389,7 +455,7 @@ impl NativeReactor {
         })?;
         if connection.state != ConnectionState::Connected
             || connection.peer_read_closed
-            || !connection.outbound.is_empty()
+            || !connection.outbound_empty()
         {
             return Err(NativeFailure::internal(
                 "native idle parking requires a clean connection and drained output",
@@ -413,7 +479,7 @@ impl NativeReactor {
         })?;
         if connection.state != ConnectionState::Connected
             || connection.peer_read_closed
-            || !connection.outbound.is_empty()
+            || !connection.outbound_empty()
         {
             return Err(NativeFailure::internal(
                 "native reuse targeted a connection that was not clean and idle",
@@ -437,7 +503,7 @@ impl NativeReactor {
         })?;
         if connection.state != ConnectionState::Connected
             || connection.peer_read_closed
-            || !connection.outbound.is_empty()
+            || !connection.outbound_empty()
         {
             return Ok(false);
         }
@@ -617,23 +683,53 @@ impl NativeReactor {
         let Some(connection) = self.connection_mut(id) else {
             return false;
         };
-        if connection.state != ConnectionState::Connected || connection.outbound.is_empty() {
+        if connection.state != ConnectionState::Connected || connection.outbound_empty() {
             return true;
         }
-        let had_data = !connection.outbound.is_empty();
+        let had_data = !connection.outbound_empty();
         let mut wrote_bytes = 0_usize;
         loop {
             #[cfg(test)]
             if remaining_test_budget == 0 {
                 break;
             }
-            let (front, _) = connection.outbound.as_slices();
-            if front.is_empty() {
+            let (front, back) = connection.outbound.as_slices();
+            let body = connection
+                .body
+                .as_ref()
+                .map_or(&[][..], |(bytes, range)| &bytes[range.clone()]);
+            if front.is_empty() && body.is_empty() {
                 break;
             }
+            let header_bytes = connection.outbound.len();
             #[cfg(test)]
-            let front = &front[..front.len().min(remaining_test_budget)];
-            match connection.stream.write(front) {
+            let mut allowance = remaining_test_budget;
+            #[cfg(not(test))]
+            let mut allowance = usize::MAX;
+            let mut limit_slice = |bytes: &[u8]| {
+                let count = bytes.len().min(allowance);
+                allowance -= count;
+                count
+            };
+            let front_count = limit_slice(front);
+            let back_count = limit_slice(back);
+            let body_count = limit_slice(body);
+            // Keep headers and a borrowed upload window in one socket write without making a
+            // combined body-bearing buffer. Account for short writes across all three slices.
+            let written = if !body.is_empty() && !front.is_empty() {
+                connection.stream.write_vectored(&[
+                    io::IoSlice::new(&front[..front_count]),
+                    io::IoSlice::new(&back[..back_count]),
+                    io::IoSlice::new(&body[..body_count]),
+                ])
+            } else {
+                connection.stream.write(if front.is_empty() {
+                    &body[..body_count]
+                } else {
+                    &front[..front_count]
+                })
+            };
+            match written {
                 Ok(0) => {
                     let failure = NativeFailure {
                         kind: NativeFailureKind::Write,
@@ -646,7 +742,16 @@ impl NativeReactor {
                 }
                 Ok(written) => {
                     wrote_bytes = wrote_bytes.saturating_add(written);
-                    connection.outbound.drain(..written);
+                    let header_written = written.min(header_bytes);
+                    connection.outbound.drain(..header_written);
+                    if written > header_written {
+                        if let Some((_, range)) = &mut connection.body {
+                            range.start += written - header_written;
+                            if range.start == range.end {
+                                connection.body = None;
+                            }
+                        }
+                    }
                     #[cfg(test)]
                     {
                         remaining_test_budget = remaining_test_budget.saturating_sub(written);
@@ -661,7 +766,7 @@ impl NativeReactor {
                 }
             }
         }
-        if had_data && connection.outbound.is_empty() {
+        if had_data && connection.outbound_empty() {
             output.push(NativeEvent::WriteDrained(id));
         } else if wrote_bytes != 0 {
             output.push(NativeEvent::WriteProgress(id, wrote_bytes));
@@ -676,7 +781,10 @@ impl NativeReactor {
         let bounded = self
             .connection_mut(id)
             .is_some_and(|connection| connection.read_allowance.is_some());
-        let mut bounded_data = Vec::new();
+        let budget = self
+            .connection_mut(id)
+            .and_then(|connection| connection.body_budget.clone());
+        let mut bounded_data = BodyBuffer::new(budget.clone());
         loop {
             let allowed = self
                 .connection_mut(id)
@@ -730,9 +838,37 @@ impl NativeReactor {
                         return;
                     }
                     if bounded {
-                        bounded_data.extend_from_slice(&buffer[..read]);
+                        if let Err(error) = bounded_data.extend(&buffer[..read], usize::MAX) {
+                            self.remove(id);
+                            output.push(NativeEvent::Failed(
+                                id,
+                                NativeFailure {
+                                    kind: NativeFailureKind::BodyBudget,
+                                    message: error.to_string(),
+                                    io_kind: None,
+                                },
+                            ));
+                            return;
+                        }
                     } else {
-                        output.push(NativeEvent::Data(id, buffer[..read].to_vec()));
+                        let mut bytes = BodyBuffer::new(budget.clone());
+                        if let Err(error) = bytes.extend(&buffer[..read], read) {
+                            self.remove(id);
+                            output.push(NativeEvent::Failed(
+                                id,
+                                NativeFailure {
+                                    kind: NativeFailureKind::BodyBudget,
+                                    message: error.to_string(),
+                                    io_kind: None,
+                                },
+                            ));
+                            return;
+                        }
+                        output.push(NativeEvent::Data(id, bytes));
+                        // Let HTTP consume and free this window before allocating another.
+                        if budget.as_ref().is_some_and(|budget| budget.is_limited()) {
+                            return;
+                        }
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -762,7 +898,7 @@ impl NativeReactor {
             Ok(Some(error)) => Some(NativeFailure::io(
                 if connection.state == ConnectionState::Connecting {
                     NativeFailureKind::Connect
-                } else if !connection.outbound.is_empty() {
+                } else if !connection.outbound_empty() {
                     NativeFailureKind::Write
                 } else {
                     NativeFailureKind::Read
@@ -921,6 +1057,71 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn m3_short_vectored_writes_preserve_header_body_order_and_release_after_drain() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let mut reactor = NativeReactor::new(8).expect("reactor");
+        let slot = reactor
+            .connect(listener.local_addr().expect("address"), None, 64, 64)
+            .expect("slot");
+        let (mut peer, _) = listener.accept().expect("accept");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        let mut events = Vec::new();
+        assert!(reactor.finish_connect(slot, &mut events));
+        // Force both VecDeque slices to be nonempty, then append the shared body.
+        let connection = reactor.connection_mut(slot).expect("connection");
+        connection.outbound = VecDeque::with_capacity(8);
+        connection.outbound.extend(b"ABCDEFGH");
+        connection.outbound.drain(..6);
+        connection.outbound.extend(b"IJK");
+        assert!(!connection.outbound.as_slices().1.is_empty());
+        let budget = BodyBudget::new(Some(5));
+        let bytes = Arc::new(BodyBuffer::admit(b"lmnop".to_vec(), budget.clone()).expect("body"));
+        reactor.queue_body(slot, bytes, 0..5).expect("queue");
+        reactor.limit_writes_for_test(3);
+        for expected_used in [5, 5, 5, 0] {
+            assert!(reactor.flush_write(slot, &mut events));
+            assert_eq!(budget.used(), expected_used);
+        }
+        let mut received = [0; 10];
+        peer.read_exact(&mut received).expect("all bytes");
+        assert_eq!(&received, b"GHIJKlmnop");
+        assert!(matches!(events.last(), Some(NativeEvent::WriteDrained(id)) if *id == slot));
+        assert!(
+            reactor
+                .connection_mut(slot)
+                .expect("connection")
+                .outbound_empty()
+        );
+    }
+
+    #[test]
+    fn m3_socket_body_window_shares_original_allocation_and_keeps_its_charge() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let mut reactor = NativeReactor::new(8).expect("reactor");
+        let slot = reactor
+            .connect(listener.local_addr().expect("address"), None, 65536, 65536)
+            .expect("slot");
+        let budget = BodyBudget::new(Some(1024 * 1024));
+        let bytes =
+            Arc::new(BodyBuffer::admit(vec![1; 1024 * 1024], budget.clone()).expect("admit"));
+        let pointer = bytes.as_ptr();
+        reactor
+            .queue_body(slot, bytes.clone(), 0..65536)
+            .expect("queue without copy");
+        drop(bytes);
+        let connection = reactor.connection_mut(slot).expect("connection");
+        assert_eq!(
+            connection.body.as_ref().expect("body owner").0.as_ptr(),
+            pointer
+        );
+        assert_eq!(connection.outbound.capacity(), 0);
+        assert_eq!(budget.used(), 1024 * 1024);
+        reactor.cancel(slot);
+        assert_eq!(budget.used(), 0);
+    }
     use crate::backend::{Backend, BackendCompletion, BackendFactory, PollMode};
     use crate::registry::Shared;
     use crate::types::http_origin;
@@ -1103,7 +1304,7 @@ mod tests {
                     NativeEvent::Data(slot, bytes) => {
                         if let Some(request_id) = self.slot_to_request.get(&slot) {
                             if let Some(body) = self.bodies.get_mut(request_id) {
-                                body.extend(bytes);
+                                body.extend_from_slice(&bytes);
                             }
                         }
                     }
@@ -1170,6 +1371,7 @@ mod tests {
             NativeFailureKind::Read => TransportStage::Receive,
             NativeFailureKind::OutboundQueueFull => TransportStage::Send,
             NativeFailureKind::ReceiveLimit => TransportStage::Receive,
+            NativeFailureKind::BodyBudget => TransportStage::Receive,
             NativeFailureKind::Internal => TransportStage::Receive,
         };
         Error::transport(stage, failure.message)

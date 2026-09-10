@@ -51,6 +51,7 @@ pub struct EngineConfig {
     callback_queue_capacity: NonZeroUsize,
     max_request_body_bytes: usize,
     max_response_body_bytes: usize,
+    max_buffered_body_bytes: Option<usize>,
     max_stream_queue_bytes_per_request: usize,
     max_stream_queued_bytes: usize,
     max_queued_bytes: usize,
@@ -90,6 +91,21 @@ const DEFAULT_MAX_RESOLVE_RESULTS: usize = 32;
 const DEFAULT_TCP_QUEUE_LIMIT: usize = 256 * 1024;
 
 impl EngineConfig {
+    /// Caps aggregate retained buffered HTTP body capacity. Disabled by default.
+    /// Includes spare capacity and staging; excludes application-owned bytes and non-payload
+    /// overhead. Exhaustion fails explicitly and never waits for another response to be dropped.
+    #[must_use]
+    pub fn with_max_buffered_body_bytes(mut self, bytes: usize) -> Self {
+        self.max_buffered_body_bytes = Some(bytes);
+        self
+    }
+
+    /// Returns the optional aggregate buffered HTTP capacity limit.
+    #[must_use]
+    pub fn max_buffered_body_bytes(&self) -> Option<usize> {
+        self.max_buffered_body_bytes
+    }
+
     /// Returns the convenient default: an owned reactor and one callback worker.
     #[must_use]
     pub fn spawned() -> Self {
@@ -102,6 +118,7 @@ impl EngineConfig {
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_buffered_body_bytes: None,
             max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
@@ -131,6 +148,7 @@ impl EngineConfig {
             callback_queue_capacity: nonzero(1_024),
             max_request_body_bytes: DEFAULT_BODY_LIMIT,
             max_response_body_bytes: DEFAULT_BODY_LIMIT,
+            max_buffered_body_bytes: None,
             max_stream_queue_bytes_per_request: DEFAULT_STREAM_QUEUE_LIMIT,
             max_stream_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
             max_queued_bytes: DEFAULT_STREAM_QUEUED_LIMIT,
@@ -556,6 +574,12 @@ pub enum TlsVerification {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct RequestOptions {
+    /// Optional request body ceiling in bytes, further restricting the Engine ceiling.
+    /// Zero permits only an empty body; `None` inherits the Engine limit.
+    pub max_request_body_bytes: Option<usize>,
+    /// Optional response body ceiling in bytes, further restricting the Engine ceiling.
+    /// Enforced during receipt, including redirects. Zero permits only an empty body.
+    pub max_response_body_bytes: Option<usize>,
     /// Maximum time allowed to establish a connection.
     pub connect_timeout: Option<Duration>,
     /// Maximum time allowed without useful I/O progress across resolution, connection, and transfer.
@@ -573,6 +597,8 @@ pub struct RequestOptions {
 impl Default for RequestOptions {
     fn default() -> Self {
         Self {
+            max_request_body_bytes: None,
+            max_response_body_bytes: None,
             connect_timeout: None,
             inactivity_timeout: None,
             total_timeout: None,
@@ -582,17 +608,53 @@ impl Default for RequestOptions {
     }
 }
 
+impl RequestOptions {
+    pub(crate) fn request_body_limit(&self, engine_limit: usize) -> usize {
+        self.max_request_body_bytes
+            .unwrap_or(engine_limit)
+            .min(engine_limit)
+    }
+
+    pub(crate) fn response_body_limit(&self, engine_limit: usize) -> usize {
+        self.max_response_body_bytes
+            .unwrap_or(engine_limit)
+            .min(engine_limit)
+    }
+}
+
 /// An owned, backend-neutral HTTP request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Request {
     method: Method,
     url: String,
     headers: Vec<Header>,
-    body: Vec<u8>,
+    body: Arc<crate::body_budget::BodyBuffer>,
     options: RequestOptions,
 }
 
 impl Request {
+    pub(crate) fn admit_body(
+        &mut self,
+        budget: Arc<crate::body_budget::BodyBudget>,
+    ) -> Result<(), Error> {
+        let body = Arc::try_unwrap(std::mem::take(&mut self.body))
+            .map_err(|_| Error::new(ErrorKind::Internal, "unadmitted request storage is shared"))?;
+        self.body = Arc::new(crate::body_budget::BodyBuffer::admit(
+            body.into_vec(),
+            budget,
+        )?);
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    pub(crate) fn body_owner(&self) -> Arc<crate::body_budget::BodyBuffer> {
+        Arc::clone(&self.body)
+    }
+
+    #[cfg(feature = "native")]
+    pub(crate) fn body_budget(&self) -> Option<Arc<crate::body_budget::BodyBudget>> {
+        self.body.budget()
+    }
     /// Starts a request builder.
     #[must_use]
     pub fn builder(method: Method, url: impl Into<String>) -> RequestBuilder {
@@ -601,7 +663,7 @@ impl Request {
                 method,
                 url: url.into(),
                 headers: Vec::new(),
-                body: Vec::new(),
+                body: Arc::default(),
                 options: RequestOptions::default(),
             },
         }
@@ -718,8 +780,28 @@ impl Request {
             method,
             url,
             headers,
-            body: if keep_body { self.body } else { Vec::new() },
+            body: if keep_body {
+                self.body
+            } else {
+                Arc::new(crate::body_budget::BodyBuffer::new(self.body.budget()))
+            },
             options: self.options,
+        }
+    }
+}
+
+impl Clone for Request {
+    fn clone(&self) -> Self {
+        // Requests exposed to callers have not been admitted. Their independent copies belong
+        // to the application until separately submitted; admitted requests are never exposed.
+        Self {
+            method: self.method.clone(),
+            url: self.url.clone(),
+            headers: self.headers.clone(),
+            body: Arc::new(crate::body_budget::BodyBuffer::from_vec(
+                self.body().to_vec(),
+            )),
+            options: self.options.clone(),
         }
     }
 }
@@ -799,6 +881,21 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
+    /// Further restricts the Engine's request body ceiling for this operation.
+    #[must_use]
+    pub fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.request.options.max_request_body_bytes = Some(bytes);
+        self
+    }
+
+    /// Further restricts the Engine's response body ceiling for this operation.
+    /// Zero permits only an empty body. The limit also applies to followed redirects.
+    #[must_use]
+    pub fn max_response_body_bytes(mut self, bytes: usize) -> Self {
+        self.request.options.max_response_body_bytes = Some(bytes);
+        self
+    }
+
     /// Adds an owned header.
     #[must_use]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
@@ -809,7 +906,7 @@ impl RequestBuilder {
     /// Sets the buffered body.
     #[must_use]
     pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
-        self.request.body = body.into();
+        self.request.body = Arc::new(crate::body_budget::BodyBuffer::from_vec(body.into()));
         self
     }
 
@@ -983,6 +1080,18 @@ pub struct Response {
 }
 
 impl Response {
+    #[cfg(feature = "native")]
+    pub(crate) fn from_buffer(
+        status: u16,
+        headers: Vec<Header>,
+        body: crate::body_budget::BodyBuffer,
+    ) -> Self {
+        Self {
+            status,
+            headers,
+            body: crate::ResponseBody::from_buffer(body),
+        }
+    }
     /// Creates a buffered response value, taking its byte allocation without copying.
     #[must_use]
     pub fn new(status: u16, headers: Vec<Header>, body: Vec<u8>) -> Self {
@@ -1001,8 +1110,8 @@ impl Response {
 
     /// Returns the response headers.
     ///
-    /// The curl pilot buffers the final response head. Portable trailer representation is not yet
-    /// defined; callers must not rely on trailers appearing here.
+    /// Contains the final response head. Portable trailer representation is not defined;
+    /// callers must not rely on trailers appearing here.
     #[must_use]
     pub fn headers(&self) -> &[Header] {
         &self.headers
@@ -1174,6 +1283,9 @@ pub enum DnsFailure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum LimitKind {
+    /// Aggregate retained buffered HTTP body capacity, including charged staging, is exhausted.
+    /// A response-side failure can follow server-side effects; it does not imply retry safety.
+    BufferedBodyBytes,
     /// Buffered request body bytes.
     RequestBodyBytes,
     /// Request header bytes.

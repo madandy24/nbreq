@@ -1,0 +1,32 @@
+{
+  "status": "verified",
+  "source_archive": {
+    "path": "nbreq-m25-darwin-20260908.tar.gz",
+    "sha256": "c80bbed011871946810cab284251f7edfdf0c4d7f9165ee62ec38fd00321e7d8"
+  },
+  "mac_evidence_archive": {
+    "path": "nbreq-m25-darwin-evidence-20260908.tar.gz",
+    "sha256": "384e2f42e26e9211efd00b45e0af9e573ebb6f7efb33580ea2581b8bbd8526bb",
+    "files": 25
+  },
+  "gds_private_evidence": {
+    "path": "C:/User/SecuritasNew/gds/doc/evidence/nbreq-m25-20260908.tar.gz",
+    "sha256": "96c6f76f63833d038a57923f42b1362da80a26f1b006d89935d1ecbdad00a517",
+    "files": 89
+  },
+  "gds_adapter_sha256": "2efc09dc123ce602217999d8ca3af85950ca372786f5fb8e0332528c2bc5e45f",
+  "mac_tests_per_host_per_toolchain": {
+    "nbreq": 393,
+    "darwin": 5
+  },
+  "gds_windows_tests": {
+    "http": 14,
+    "webrpc": 74,
+    "ureq_http": 2,
+    "ureq_webrpc": 73
+  },
+  "gds_linux_adapter_tests": {
+    "native": 14,
+    "ureq": 2
+  }
+}

@@ -7,11 +7,15 @@ use std::sync::Arc;
 /// A body can outlive its Engine without keeping network workers or sockets alive.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResponseBody {
-    bytes: Arc<Vec<u8>>,
+    bytes: Arc<crate::body_budget::BodyBuffer>,
 }
 
 impl ResponseBody {
     pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
+        Self::from_buffer(crate::body_budget::BodyBuffer::from_vec(bytes))
+    }
+
+    pub(crate) fn from_buffer(bytes: crate::body_budget::BodyBuffer) -> Self {
         Self {
             bytes: Arc::new(bytes),
         }
@@ -32,7 +36,9 @@ impl ResponseBody {
     /// The returned vector belongs to the application; consumers must budget its storage and
     /// any subsequent decoded data. Taking ownership does not free that memory.
     pub fn try_into_vec(self) -> Result<Vec<u8>, Self> {
-        Arc::try_unwrap(self.bytes).map_err(|bytes| Self { bytes })
+        Arc::try_unwrap(self.bytes)
+            .map(crate::body_budget::BodyBuffer::into_vec)
+            .map_err(|bytes| Self { bytes })
     }
 }
 

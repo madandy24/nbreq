@@ -1,0 +1,163 @@
+{
+  "date": "2026-09-10",
+  "archive": "nbreq-020-consumer-20260910.tar.gz",
+  "sha256": "e2425b7b46abed9a7a9d673da03b95d80e85efed64c5e2feaafed52d5f1a7f85",
+  "bytes": 1977401,
+  "files": 162,
+  "packages": {
+    "nbreq-0.2.0.crate": "010b75a333e2648d32ed780d090eeee2365cf0f8bb80242d09d0d05029737228",
+    "nbreq-darwin-0.1.0.crate": "77ff052182129c74490e86c7b2f4a1b51ecf4073f23b03617d3feb049302de5e"
+  },
+  "platforms": {
+    "windows": {
+      "verifier_toolchain": "1.97.1",
+      "consumer_toolchains": [
+        "1.97.1",
+        "1.85.0"
+      ],
+      "consumer": {
+        "temporary_workspace": "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-020-consumer-5_et4k29",
+        "registry_gate_closed": false,
+        "support_override": "Explicit unpacked nbreq-darwin archive; not registry-only proof",
+        "dependency_resolution": "fresh online index",
+        "packages": {
+          "nbreq-0.2.0.crate": "010b75a333e2648d32ed780d090eeee2365cf0f8bb80242d09d0d05029737228",
+          "nbreq-darwin-0.1.0.crate": "77ff052182129c74490e86c7b2f4a1b51ecf4073f23b03617d3feb049302de5e"
+        },
+        "status": "passed"
+      }
+    },
+    "putty_bridge": {
+      "platform": {
+        "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.29",
+        "machine": "x86_64"
+      },
+      "verifier_seconds": {
+        "stable": 407.856,
+        "1.85.0": 467.195
+      },
+      "consumer": {
+        "temporary_workspace": "/tmp/nbreq-020-consumer-7wafge3v",
+        "registry_gate_closed": false,
+        "support_override": "Explicit unpacked nbreq-darwin archive; not registry-only proof",
+        "dependency_resolution": "fresh online index",
+        "packages": {
+          "nbreq-0.2.0.crate": "010b75a333e2648d32ed780d090eeee2365cf0f8bb80242d09d0d05029737228",
+          "nbreq-darwin-0.1.0.crate": "77ff052182129c74490e86c7b2f4a1b51ecf4073f23b03617d3feb049302de5e"
+        },
+        "status": "passed"
+      }
+    },
+    "putty_bridge_intel_mac": {
+      "platform": {
+        "platform": "macOS-15.7.9-x86_64-i386-64bit",
+        "machine": "x86_64"
+      },
+      "verifier_seconds": {
+        "stable": 166.582,
+        "1.85.0": 201.98
+      },
+      "consumer": {
+        "temporary_workspace": "/var/folders/06/wwrm28dd7dq3_ll8vhpzqc7w0000gn/T/nbreq-020-consumer-twlka4pl",
+        "registry_gate_closed": false,
+        "support_override": "Explicit unpacked nbreq-darwin archive; not registry-only proof",
+        "dependency_resolution": "fresh online index",
+        "packages": {
+          "nbreq-0.2.0.crate": "010b75a333e2648d32ed780d090eeee2365cf0f8bb80242d09d0d05029737228",
+          "nbreq-darwin-0.1.0.crate": "77ff052182129c74490e86c7b2f4a1b51ecf4073f23b03617d3feb049302de5e"
+        },
+        "status": "passed"
+      }
+    },
+    "putty_bridge_scaleway_nbreq": {
+      "platform": {
+        "platform": "macOS-26.6.1-arm64-arm-64bit",
+        "machine": "arm64"
+      },
+      "verifier_seconds": {
+        "stable": 79.198,
+        "1.85.0": 82.888
+      },
+      "consumer": {
+        "temporary_workspace": "/var/folders/40/4w95_t450jbbt2dt46tdp0740000gn/T/nbreq-020-consumer-_ghoyebs",
+        "registry_gate_closed": false,
+        "support_override": "Explicit unpacked nbreq-darwin archive; not registry-only proof",
+        "dependency_resolution": "fresh online index",
+        "packages": {
+          "nbreq-0.2.0.crate": "010b75a333e2648d32ed780d090eeee2365cf0f8bb80242d09d0d05029737228",
+          "nbreq-darwin-0.1.0.crate": "77ff052182129c74490e86c7b2f4a1b51ecf4073f23b03617d3feb049302de5e"
+        },
+        "status": "passed"
+      }
+    }
+  },
+  "registry_gate_closed": false,
+  "publication_performed": false,
+  "source_manifest_verified": true,
+  "scope": "R1 documentation/examples and R2 independent consumer rehearsal; explicit Darwin support override",
+  "full_verifiers": 7,
+  "consumer_suite_test_executions": 256,
+  "feature_import_checks": 32,
+  "packaged_example_runs": 28,
+  "advisory_database_commit": "b50980aad8b8f14f77e25a97b32dd94bf008b0af",
+  "advisory_exception": "Existing RUSTSEC-2026-0009 exception: dev-only time, affected parsing feature absent",
+  "root_advisory_scan": {
+    "database": {
+      "advisory-count": 1243,
+      "last-commit": "b50980aad8b8f14f77e25a97b32dd94bf008b0af",
+      "last-updated": "2026-09-09T12:49:52+02:00"
+    },
+    "lockfile": {
+      "dependency-count": 120
+    },
+    "settings": {
+      "target_arch": [],
+      "target_os": [],
+      "severity": null,
+      "ignore": [
+        "RUSTSEC-2026-0009"
+      ],
+      "informational_warnings": [
+        "unmaintained",
+        "unsound",
+        "notice"
+      ]
+    },
+    "vulnerabilities": {
+      "found": false,
+      "count": 0,
+      "list": []
+    },
+    "warnings": {}
+  },
+  "consumer_advisory_scan": {
+    "database": {
+      "advisory-count": 1243,
+      "last-commit": null,
+      "last-updated": null
+    },
+    "lockfile": {
+      "dependency-count": 111
+    },
+    "settings": {
+      "target_arch": [],
+      "target_os": [],
+      "severity": null,
+      "ignore": [
+        "RUSTSEC-2026-0009"
+      ],
+      "informational_warnings": [
+        "unmaintained",
+        "unsound",
+        "notice"
+      ]
+    },
+    "vulnerabilities": {
+      "found": false,
+      "count": 0,
+      "list": []
+    },
+    "warnings": {}
+  },
+  "darwin_rehearsals": "Both Macs: five tests on stable/MSRV, stable warning-denied lint, Cargo publication dry run"
+}

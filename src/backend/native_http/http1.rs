@@ -328,7 +328,7 @@ pub(super) struct ResponseDecoder {
     pub(super) scratch: Vec<u8>,
     status: Option<u16>,
     headers: Vec<Header>,
-    pub(super) body: Vec<u8>,
+    pub(super) body: crate::body_budget::BodyBuffer,
     informational_responses: u8,
     framing_bytes: usize,
     pub(super) permits_reuse: bool,
@@ -350,7 +350,7 @@ impl ResponseDecoder {
             scratch: Vec::new(),
             status: None,
             headers: Vec::new(),
-            body: Vec::new(),
+            body: crate::body_budget::BodyBuffer::default(),
             informational_responses: 0,
             framing_bytes: 0,
             permits_reuse: false,
@@ -364,11 +364,60 @@ impl ResponseDecoder {
                 "native HTTP decoder received bytes after completion",
             ));
         }
-        for (index, byte) in bytes.iter().enumerate() {
-            if let Some(response) = self.consume(*byte)? {
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            // Framing still advances byte by byte. Payload already has a validated framing
+            // state, so enforce its limit and acquire any growth once for the available span.
+            let (count, remaining, fixed) = match self.state {
+                DecodeState::Fixed { remaining } => (
+                    (bytes.len() - consumed).min(remaining),
+                    Some(remaining),
+                    true,
+                ),
+                DecodeState::ChunkData { remaining } => (
+                    (bytes.len() - consumed).min(remaining),
+                    Some(remaining),
+                    false,
+                ),
+                DecodeState::CloseDelimited => (bytes.len() - consumed, None, false),
+                _ => (0, None, false),
+            };
+            let response = if count != 0 {
+                if count > self.limits.body_bytes.saturating_sub(self.body.len()) {
+                    return Err(response_body_limit(self.limits.body_bytes));
+                }
+                self.body
+                    .extend(&bytes[consumed..consumed + count], self.limits.body_bytes)?;
+                consumed += count;
+                match remaining {
+                    Some(remaining) if fixed && count == remaining => Some(self.complete()?),
+                    Some(remaining) if fixed => {
+                        self.state = DecodeState::Fixed {
+                            remaining: remaining - count,
+                        };
+                        None
+                    }
+                    Some(remaining) => {
+                        self.state = if count == remaining {
+                            DecodeState::ChunkEnd { matched: 0 }
+                        } else {
+                            DecodeState::ChunkData {
+                                remaining: remaining - count,
+                            }
+                        };
+                        None
+                    }
+                    None => None,
+                }
+            } else {
+                let response = self.consume(bytes[consumed])?;
+                consumed += 1;
+                response
+            };
+            if let Some(response) = response {
                 return Ok(DecodeProgress {
                     response: Some(response),
-                    consumed: index + 1,
+                    consumed,
                     permits_reuse: self.permits_reuse,
                 });
             }
@@ -433,6 +482,7 @@ impl ResponseDecoder {
                                     return self.complete().map(Some);
                                 }
                                 BodyFraming::Fixed(remaining) => {
+                                    self.body.plan_capacity(remaining)?;
                                     self.state = DecodeState::Fixed { remaining };
                                 }
                                 BodyFraming::Chunked => {
@@ -555,7 +605,7 @@ impl ResponseDecoder {
         if self.body.len() >= self.limits.body_bytes {
             return Err(response_body_limit(self.limits.body_bytes));
         }
-        self.body.push(byte);
+        self.body.push(byte, self.limits.body_bytes)?;
         Ok(())
     }
 
@@ -567,7 +617,7 @@ impl ResponseDecoder {
             )
         })?;
         self.state = DecodeState::Complete;
-        Ok(Response::new(
+        Ok(Response::from_buffer(
             status,
             std::mem::take(&mut self.headers),
             std::mem::take(&mut self.body),

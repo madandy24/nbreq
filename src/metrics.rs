@@ -8,6 +8,7 @@ use crate::Completion;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ResourceMetrics {
+    reserved_buffered_body_bytes: usize,
     inflight_requests: usize,
     queued_commands: usize,
     queued_callbacks: usize,
@@ -21,6 +22,12 @@ pub struct ResourceMetrics {
 }
 
 impl ResourceMetrics {
+    /// Returns buffered HTTP capacity retained or reserved, including spare capacity and staging.
+    /// This can remain nonzero after requests complete while callers retain response bodies.
+    pub fn reserved_buffered_body_bytes(&self) -> usize {
+        self.reserved_buffered_body_bytes
+    }
+
     /// Returns requests that are accepted but not fully released.
     ///
     /// A terminal callback remains inflight until its callback job returns.
@@ -106,6 +113,11 @@ pub struct EngineMetrics {
 }
 
 impl EngineMetrics {
+    pub(crate) fn with_body_budget(mut self, used: usize, peak: usize) -> Self {
+        self.current.reserved_buffered_body_bytes = used;
+        self.high_water.reserved_buffered_body_bytes = peak;
+        self
+    }
     /// Reports whether this Engine owns and measures physical connection/pool lifecycles.
     ///
     /// When false, connection counters and connection-specific gauges remain zero because the
@@ -420,6 +432,7 @@ impl Metrics {
             tcp_connects_failed: self.tcp_connects_failed.load(Ordering::Acquire),
             tcp_connects_cancelled: self.tcp_connects_cancelled.load(Ordering::Acquire),
             current: ResourceMetrics {
+                reserved_buffered_body_bytes: 0,
                 inflight_requests: inflight,
                 queued_commands: self.queued_commands.load(Ordering::Acquire),
                 queued_callbacks: self.queued_callbacks.load(Ordering::Acquire),
@@ -432,6 +445,7 @@ impl Metrics {
                 connection_waiters: self.connection_waiters.load(Ordering::Acquire),
             },
             high_water: ResourceMetrics {
+                reserved_buffered_body_bytes: 0,
                 inflight_requests: self.high_inflight_requests.load(Ordering::Acquire),
                 queued_commands: self.high_queued_commands.load(Ordering::Acquire),
                 queued_callbacks: self.high_queued_callbacks.load(Ordering::Acquire),

@@ -98,7 +98,8 @@ pub fn native_http_engine_manual_with_nameserver(
 
 /// Creates a private Rust-native HTTP proving Engine using host DNS.
 ///
-/// Host DNS discovery is Windows and Linux only. Other targets fail
+/// Host DNS discovery follows the ordinary Engine's supported platform/configuration boundary.
+/// Unsupported targets or resolver topologies fail
 /// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported). This remains a WP8 system-integration
 /// seam rather than public backend selection.
 #[cfg(feature = "native")]
@@ -122,7 +123,8 @@ pub fn native_https_engine_with_nameserver(
 
 /// Creates a private Rust-native HTTPS proving Engine using host DNS and platform trust.
 ///
-/// Host DNS discovery is Windows and Linux only. Other targets fail
+/// Host DNS discovery follows the ordinary Engine's supported platform/configuration boundary.
+/// Unsupported targets or resolver topologies fail
 /// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported). This remains a WP8 proving seam.
 #[cfg(feature = "native")]
 pub fn native_https_engine_with_system_dns(config: EngineConfig) -> Result<Engine, Error> {

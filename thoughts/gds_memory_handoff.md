@@ -5,10 +5,22 @@ This is a handoff document for a later session; no separate session has been sta
 
 ## Objective and entry point
 
-Reduce GDS's network/RPC peak and retained memory within its usual 50–100 MB application budget.
-Target Windows and Linux, roughly 16–32 communicating connections, mostly 1–50 KiB messages,
-and constrained 128/256 MB devices. Establish actual incoming/outgoing concurrency, engine count,
-queue occupancy, and encoded/decoded sizes before choosing limits.
+Reduce GDS's network/RPC peak and retained memory. The owner clarified after M3 that the comms
+server normally uses about 50–70 MB, but a large installation using 512 MB remains manageable.
+Roughly 1 MiB is a usual message target, not a hard compatibility limit; retain the existing
+24 MiB per-body ceilings. Target Windows and Linux, roughly 16–32 communicating connections
+in the typical workload previously discussed, while allowing installation-specific scale.
+Constrained 128/256 MB devices remain a separate profile requiring appropriate admission and
+headroom. Establish actual incoming/outgoing concurrency, engine count, queue occupancy, and
+encoded/decoded sizes before choosing limits.
+
+The owner identifies GDS's control of simultaneous activity as the primary flexible control.
+M4.1 workload admission is now implemented and verified; automatic
+largest-connection eviction is not implemented or accepted. Distinguish HTTP socket count,
+accepted/queued requests, and decoded work retained after HTTP completion. The current GDS
+adapter exposes 32 sockets, 8 per origin, and 64 accepted/inflight requests per Engine; the last
+replaces the inherited 1,024. The aggregate buffered-body cap is available but disabled unless
+configured. Shared WebRPC controls sit ahead of the Engine; see the M4.1 return checkpoint.
 
 Workspace: `C:\User\SecuritasNew`. Read its `AGENTS.md` and `PROJECT_OVERVIEW.md`, then the relevant
 build/test workflow before changing or running GDS. Preserve the user's existing work. NBReq's
@@ -90,20 +102,89 @@ No GDS source, dependency pin or deployed build changed. M2.5 is next: reconcile
 preserving status/size/UTF-8 handling. M3's early limits and aggregate retained-body charges are
 still unimplemented; broad GDS admission/encoding and actual-device acceptance remain here.
 
-M2.5 inspection on 2026-09-08 confirms two copying sites in `dphttpclient.rs`: `execute_text`
-and the shared synchronous/waiter `nbreq_response_to_dp` conversion. Check byte limits before
-extraction, transfer unique storage into String, and explicitly copy if another response shares
-the body. Preserve typed non-2xx responses and the text convenience path's status-first errors.
-The `post_json` response parser already borrows bytes. Details and test gates are in the tracker.
+## M2.5 GDS conversion return checkpoint — 2026-09-08
 
-Both GDS manifest and lockfile still select 0.1.0. Existing `--local-nbreq`/`-LocalNbreq` helpers
-keep a private temporary lock and check the selected package, but deliberately require a matching
-manifest version. Recommend a separate GDS development checkout with an explicit 0.2 requirement
-and those local overrides; registry integration follows its release prerequisites. Update the
-wrappers' hard-coded 0.1.0 source labels with the transition, and compile with `-SkipCopy` during
-validation. This inspection made no GDS changes and did not run GDS tests or replace its DLL.
+M2.5 is complete; see the [conversion report](nbreq_m25_gds_conversion.md). The owner
+explicitly chose main-checkout nbreq 0.2 with local builds, superseding the earlier
+isolated-checkout recommendation. GDS's manifest/lock now use 0.2. Build/test through
+the existing local overrides until publication and a registry lock refresh.
 
-## Observed source facts
+Typed synchronous/waiter and legacy text conversion transfer unique response storage
+into String, with an explicit copy when shared. Status, byte-limit and UTF-8 semantics
+are preserved; JSON parsing continues to borrow. Early network enforcement remains M3.
+Core Foundation dependency pins initially blocked resolution; the nbreq Darwin helper
+now allows compatible patches, verified with 0.10.0 on both Mac toolchains.
+
+Three allocation reds resolved. X86 GDS passes 14 HTTP/74 WebRPC tests, plus 2/73 in
+ureq-only mode; both DLL configurations build without installation. Linux's exact
+adapter harness passes 14/2 tests. Both Macs pass 393 library and 5 helper tests each
+on stable and MSRV. Installed DLL SHA256 is unchanged; final cache is the native build.
+Private GDS evidence is in gds/doc/evidence/nbreq-m25-20260908.tar.gz, alongside its
+report and artifact identities. Unrelated WAL/optimiser edits remain outside this work.
+
+M2 is accepted for its scope. No whole-GDS RAM or actual-device acceptance measurement
+was made. Strings and decoded frames now owned by GDS still need admission budgeting;
+broad queues/encoding remain here, and MQ-03 precedes M3 accounting.
+
+## M3 controls return checkpoint — 2026-09-08
+
+MQ-03 Option C is accepted. NBReq now has optional per-operation request/response ceilings and
+an opt-in aggregate retained-buffer budget with a distinct `BufferedBodyBytes` limit reason.
+The ledger covers buffered uploads, retained/shared replies, receive windows and extracted TLS
+plaintext, including old/new allocation overlap; explicit unique transfer into GDS ends the
+charge without freeing the resulting String. Exhaustion fails promptly without automatic replay.
+Streaming queues and TLS session/record output overhead retain their separate budgets/headroom.
+
+Light GDS integration is implemented in `dphttpclient.rs`. Existing request-specific response
+ceilings reach nbreq before receipt. Startup environment knobs are
+`GDS_NBREQ_MAX_REQUEST_BODY_BYTES`, `GDS_NBREQ_MAX_RESPONSE_BODY_BYTES` and
+`GDS_NBREQ_MAX_BUFFERED_BODY_BYTES`; defaults remain 24 MiB per body with no aggregate cap.
+Values are strict decimal byte counts; invalid values fail initialization. GDS's private
+`gds/doc/nbreq_memory_controls.md` explains use and ownership. The existing retry classifier
+continues to exclude Limit failures. No Delphi settings UI or app deployment was added.
+
+The user says GDS generally limits responses to roughly 1 MiB because large Delphi allocations
+and fragmentation are troublesome. Treat this as tuning guidance, not a replacement for valid
+exceptional 24 MiB ceilings. Final values and large-operation policy remain M4/MQ-04. Numerical
+acceptance must include GDS-owned Strings, encoding, queues and Delphi data after ownership
+transfer. M3 is accepted: final E passes all seven nbreq full gates, x86 companions, 120 paired
+memory cases and 36 longer timing cases. GDS native HTTP 16/WebRPC 74 and ureq-only 2/73 tests
+pass; both DLL configurations build with SkipCopy and the installed DLL is unchanged. The
+[M3 report](nbreq_m3_memory_controls.md) and E-13 artifact manifest retain measurements and limits.
+Private GDS verification is in `gds/doc/nbreq_m3_verification.md` and its 45-file evidence archive.
+All jobs finished. MQ-04 large-operation policy and MQ-05 whole-GDS/device acceptance remain open.
+
+## M4.1 workload admission return checkpoint — 2026-09-08
+
+The owner authorized this bounded GDS slice in the current session. Implementation B tracks
+queued capacity through fetch/handoff, pauses heavy peers and shared intake, and reserves
+outbound pipeline space before Rust formatting/encryption. It limits large deliveries and
+protects small-work byte/worker headroom. A shared poll gate orders eligible waiting origins;
+incoming work also slows when outgoing replies back up. Existing wire/body compatibility,
+retry classification and shutdown behavior remain. No eviction, automatic response replay,
+Delphi UI change or installed DLL replacement occurred.
+
+Defaults: inbound pause/resume 32/16 MiB shared and 8/4 MiB per peer; outbound reservation
+128 MiB with 8 MiB protected for frames up to 1 MiB plaintext; three large deliveries; 16 active
+polls and four per origin. Reservations are not preallocated RAM. Native HTTP sockets/inflight
+defaults are now 32/8/64 with startup checks that leave room beyond polls and large deliveries.
+All are startup environment controls described in private `gds/doc/nbreq_m4_admission.md` and
+`gds/doc/nbreq_memory_controls.md`. The nbreq body-capacity ledger stays optional and separate.
+
+Seven runtime reds now pass. Windows x86 native HTTP/WebRPC 17/90 and ureq-only 2/89 tests pass;
+both DLL configurations build with local nbreq and SkipCopy. Nine portable admission tests pass
+on Windows x86 and Linux stable/MSRV. Component benchmarks measure bookkeeping only; full GDS
+Linux integration and actual-device RAM/pickup-latency acceptance are not established by them.
+Source/logs and corrected measurements are recorded by E-14 in the main tracker.
+
+Next: run a representative GDS workload including idle/slow peers, same-origin bursts and mixed
+small/large responses. Measure queue peaks, inbound pickup latency, outbound refusal and memory
+retained after transfer to Delphi. Four same-origin long polls may increase pickup latency; tune
+poll/socket capacity together. Soft inbound watermarks allow already active replies and decoding
+to overshoot. The 128 MiB outbound allowance is not a total process cap or a 128 MiB device profile.
+Choose an installation-specific nbreq aggregate cap only with headroom and valid-operation policy.
+
+## Initial source facts (before M2.5/M3; see return checkpoints above)
 
 | Location under `C:\User\SecuritasNew` | Finding |
 | --- | --- |
@@ -130,7 +211,8 @@ The NBReq session may make light adapter/configuration changes: tune existing en
 use a consuming body API when available, and propagate the existing per-request limits for early
 enforcement. Those changes must preserve valid requests, wire formats, and shutdown behavior.
 
-This handoff owns broader changes: RPC workload scheduling, byte-based queue admission, batching,
+M4.1 completed the explicitly authorized queue admission/poll scheduling slice above. This
+handoff owns further RPC scheduling, batching,
 poll/backoff policy, encoded/decoded/frame ceilings, and incremental large-frame processing.
 Do not silently lower protocol limits to typical observed sizes. Determine exceptional operations
 and compatibility needs, then choose explicit small-device policy, splitting/streaming, or bounded

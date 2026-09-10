@@ -77,6 +77,30 @@ fn observe(reactor: &mut NativeReactor, mut predicate: impl FnMut() -> bool) {
 }
 
 #[test]
+fn m3_cancelled_worker_keeps_input_capacity_charged_until_execution_ends() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let mut reactor = NativeReactor::new(8).expect("reactor");
+    let mut workers = HandshakeWorkers::new(reactor.waker());
+    let (mut client, flight, gate) = handshake();
+    let capacity = flight.capacity();
+    let budget = crate::body_budget::BodyBudget::new(Some(capacity));
+    let input = crate::body_budget::BodyBuffer::admit(flight, budget.clone()).expect("input");
+    let id = slot(&mut reactor, &listener);
+    workers
+        .submit(id, client.take_handshake().expect("session"), input, None)
+        .expect("submit");
+    gate.entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker running");
+    workers.cancel(id);
+    assert_eq!(budget.used(), capacity);
+    assert!(budget.acquire(1).is_err());
+    drop(gate);
+    workers.shutdown().expect("joined shutdown");
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
 fn saturation_and_cancel_keep_executing_jobs_charged_and_bodies_outside_workers() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     let mut reactor = NativeReactor::new(8).expect("reactor");

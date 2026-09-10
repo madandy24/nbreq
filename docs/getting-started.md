@@ -8,11 +8,11 @@ responsible for stopping HTTP.
 The default Cargo features are `native` and `resolver`. They provide NBReq's Rust-native HTTP/1.1,
 DNS, TCP, public Resolver, and rustls implementation without Tokio or another async runtime.
 
-Add the released crate with the native backend enabled by default:
+This guide targets NBReq 0.2. Add the dependency below to use the default native backend:
 
 ```toml
 [dependencies]
-nbreq = "0.1"
+nbreq = "0.2"
 ```
 
 An HTTP-only consumer can omit the public Resolver API and its Windows search-suffix registry
@@ -20,7 +20,7 @@ reader while retaining native HTTP and exact-name DNS for HTTP and hostname `Tcp
 
 ```toml
 [dependencies]
-nbreq = { version = "0.1", default-features = false, features = ["native"] }
+nbreq = { version = "0.2", default-features = false, features = ["native"] }
 ```
 
 The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
@@ -60,7 +60,7 @@ engine.shutdown()?;
 HTTP 4xx and 5xx statuses remain ordinary `Response` values. These blocking terminals reject a
 manually driven Engine with `WrongMode` rather than driving it implicitly.
 
-## Buffered response ownership (0.2 development API)
+## Buffered response ownership
 
 `response.body()` still borrows a byte slice, and `response.body().to_vec()` explicitly copies it
 into independent application storage. Cloning a `Response` now shares its immutable body bytes;
@@ -89,8 +89,8 @@ copying, callers can drop their other owners and retry. Taking a Vec transfers r
 for its memory to the application. It does not free RAM. A retained body can outlive Engine
 shutdown without keeping sockets or workers alive.
 
-These APIs establish body ownership; an aggregate buffered-body budget is not implemented yet.
-Per-request body limits still apply. The API does not provide zero-copy network or TLS I/O.
+These APIs also define how the optional aggregate buffered-body budget retains and releases
+charges. See the memory controls below. The API does not promise zero-copy network or TLS I/O.
 
 ## Spawned mode and explicit blocking requests
 
@@ -318,18 +318,209 @@ metrics are portable. Check `connection_metrics_available` before interpreting p
 connection/pool counters; the native owner supplies them, while internal non-networking test
 backends report honest unavailable zeroes.
 
+## DNS resolution
+
+With the default-on `resolver` feature, `Engine::resolver()` issues a cheap cloneable ticket
+into the Engine's existing DNS service. Use `execute` in spawned mode, `submit` for a direct
+waiter, or `start` for a callback. A valid negative DNS answer is a `ResolveResponse`, not a
+transport error:
+
+```rust,no_run
+# #[cfg(feature = "resolver")]
+# {
+use std::time::Duration;
+use nbreq::{Engine, ResolveRequest, ResolveStatus};
+
+let engine = Engine::builder().build()?;
+let answer = engine.resolver().execute(
+    ResolveRequest::hostname("example.com")
+        .total_timeout(Duration::from_secs(10))
+        .build()?,
+)?;
+match answer.status() {
+    ResolveStatus::Answer => {
+        for address in answer.addresses() {
+            println!("{}", address.address());
+        }
+    }
+    ResolveStatus::NameNotFound => println!("name does not exist"),
+    ResolveStatus::NoData => println!("no addresses in the requested families"),
+    _ => {}
+}
+engine.shutdown()?;
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Names must be ASCII or already punycode-encoded. Lookups are exact by default; search-suffix
+expansion is explicit through `use_search_suffixes(true)`, and a trailing dot keeps the lookup
+absolute. This is a DNS API, not a replacement for every OS name service such as mDNS or hosts-file
+lookup. `AddressFamily::Both` collects A and AAAA; failure of either required family fails the
+operation instead of presenting a partial answer. It does not promise Happy Eyeballs.
+
+`CacheMode::Use` reads/populates the shared Engine cache; `Refresh` skips the read and replaces
+the network result, and `Bypass` neither reads nor populates it. Public refreshes can affect later
+HTTP lookups. HTTP and hostname TCP remain exact-name even when public search expansion is enabled.
+In manual mode, pass a submitted `PendingResolve` to `engine.drive_until(pending)` or drive and
+poll it explicitly. Blocking `execute` rejects manual mode. Direct waiters never drive the
+Engine: use `wait_for(Duration::ZERO)` to poll and recover a pending waiter from `TimedOut`;
+calling `wait()` on its undriven owner thread cannot make network progress.
+
+## Cleartext TCP connections
+
+`Engine::tcp_connector()` provides literal-address and exact-hostname connects on the same
+reactor. It is available with `native`, even when the public Resolver feature is disabled.
+It provides a byte stream, with no TLS wrapping or message framing:
+
+```rust,no_run
+use std::time::Duration;
+use nbreq::{Engine, TcpConnectRequest};
+
+let engine = Engine::builder().build()?;
+let request = TcpConnectRequest::literal("127.0.0.1:9000".parse()?)
+    .connect_timeout(Duration::from_secs(5))
+    .read_inactivity_timeout(Duration::from_secs(10))
+    .write_inactivity_timeout(Duration::from_secs(10))
+    .send_queue_bytes(16 * 1024)
+    .receive_queue_bytes(16 * 1024)
+    .build()?;
+let mut connection = engine.tcp_connector().execute(request)?;
+connection.send(b"hello\n".to_vec())?;
+connection.finish()?; // Drain output and half-close; keep reading the reply.
+let mut buffer = [0_u8; 1024];
+while let Some(count) = connection.read(&mut buffer)? {
+    println!("received {count} bytes");
+}
+drop(connection);
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This example expects a local server that replies and closes after client EOF. For a hostname,
+use `TcpConnectRequest::hostname("server.example", port)`; address attempts are serial, not
+parallel Happy Eyeballs. Connect timeout includes queueing and DNS. Read/write inactivity timers
+apply after connection; consumer backpressure pauses read inactivity, and write inactivity runs
+only while accepted output waits for socket progress.
+
+`try_send` returns refused input unchanged; blocking `send` can accept a prefix before failing,
+so `TcpSendError::into_remaining()` returns only the unaccepted suffix. Retrying the original whole
+message can duplicate its accepted prefix. A successful send means bytes were queued, not that
+the peer processed them. Bound each chunk to the configured send window for passive `try_send`.
+
+For manual driving use `submit`/`drive_until` to connect and passive `try_read`, `try_send` and
+`try_finish` between drive calls. Blocking connected methods reject manual mode. `split` moves
+one connection into unique reader/writer halves; each is Send but not Sync. Dropping a reader
+before EOF or a writer before requesting finish aborts the connection. A successful `try_finish`
+or `finish_with` requests drain-then-half-close; the split writer may then be dropped, but the
+reader still needs to drain to EOF. Dropping an unsplit connection before EOF also aborts it.
+Use a cloned connection handle to cancel from another thread.
+
 ## Backend and feature selection
 
-- Default features: native backend, ordinary `Engine::new` and unqualified builder construction.
-- `--no-default-features`: compiles the public types, but ordinary network construction returns
-  `Unsupported`.
-- `test-support`: deterministic downstream conformance controls, not required by consumers.
+| Cargo selection | Available behavior |
+| --- | --- |
+| Default | Native HTTP/1.1, TLS, internal DNS, standalone TCP and public Resolver |
+| `default-features = false, features = ["native"]` | Native HTTP/TLS/TCP and internal exact-name DNS; no public Resolver or Windows search-suffix registry reader |
+| No features | Portable configuration/HTTP/TCP types compile; public Resolver is absent and Engine construction returns `Unsupported` |
+| `test-support` | Additional deterministic test controls; does not select a network backend or add production capabilities |
 
 The historical curl Multi pilot is not part of the public crate feature matrix. It required a
 locally patched binding and remains project-history/reference evidence rather than a supported
 transport choice.
 
-NBReq 0.1.0 supports Windows 10 x64 or later and native Linux x64 built against an Ubuntu 20.04 ABI
-baseline. The Windows x86 GDS integration also passes its controlled compatibility workload under
-Ubuntu 20.04's stock Wine 5; that is compatibility evidence for the Windows build, not a claim that
-every Wine release and host combination is supported.
+## Platform scope
+
+NBReq 0.2 targets Rust 1.85 or later with Rust 2024 edition. The verified target set is:
+
+| Target | Tested scope |
+| --- | --- |
+| Windows x64 MSVC | Windows 10 or later; native HTTP/TLS, DNS, TCP and lifecycle gates |
+| Linux x64 GNU | Ubuntu 20.04 ABI baseline; native HTTP/TLS, DNS, TCP and lifecycle gates |
+| macOS Intel and Apple Silicon | macOS 15 CI on both architectures, physical Intel macOS 15 and Apple Silicon macOS 26; ordinary default DNS topology, Keychain trust and lifecycle gates |
+| Windows x86 MSVC | Additional focused memory/lifecycle and consumer-integration evidence; not a claim of every x64 test on x86 |
+
+Other operating systems, architectures and older macOS versions are not covered by this release's
+support claim. Windows x86 also has focused compatibility evidence under Ubuntu 20.04's stock
+Wine 5. This does not establish support for every Wine/host combination.
+
+macOS discovery accepts a bounded ordinary default System Configuration view. Supplemental
+`/etc/resolver` entries, split/scoped routing, conflicting primary services and other unrepresented
+topologies return `Unsupported` instead of sending DNS queries to a guessed server. This can reject
+Engine construction, including a native-only HTTP consumer; disabling the public Resolver does
+not bypass internal DNS discovery. Accepted system configuration changes are rediscovered by the
+existing DNS owner. Windows/Linux discovery likewise uses the Engine's bounded configuration
+model; NBReq does not promise every OS resolver extension.
+
+## Buffered HTTP memory controls
+
+Engine body ceilings remain 16 MiB by default. A request can further restrict either ceiling
+using `max_request_body_bytes` and `max_response_body_bytes`, or the corresponding optional
+fields in `RequestOptions`. `None` inherits the Engine ceiling; zero allows only an empty body.
+These limits follow redirects and apply to total streaming bodies as well as buffered bodies.
+They are separate from streaming queue windows. An upload is checked before admission; a reply
+is checked at validated framing and during receipt, before buffering an oversized body.
+
+An optional `EngineBuilder::max_buffered_body_bytes` / `EngineConfig::with_max_buffered_body_bytes`
+caps aggregate retained buffered payload capacity. No aggregate cap is enabled by default.
+For example (values are illustrative, not a recommended device profile):
+
+```no_run
+use nbreq::Engine;
+
+let engine = Engine::builder()
+    .max_buffered_body_bytes(8 * 1024 * 1024)
+    .build()?;
+let response = engine.get("https://example.com/status")
+    .max_response_body_bytes(1024 * 1024)
+    .call()?;
+// Borrow or explicitly copy response.body(), as before. Response clones share one charge.
+let body = response.into_body();
+let application_bytes = body.try_into_vec().expect("no other body owner");
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The aggregate scope includes admitted request Vec capacity (also buffered uploads with streamed
+responses), returned/unread/queued response bodies, spare capacity, transient old and new body
+allocations during growth, receive-event storage and extracted TLS plaintext. Cleartext buffered
+uploads queue shared slices of the original allocation, so they need no copied body send buffer.
+Receive windows are conservatively charged in full even when they also contain HTTP framing.
+Separately parsed headers and other metadata remain governed by their existing limits. TLS
+session/record output buffers, socket buffers, stacks, allocator bookkeeping/rounding and
+application-owned allocations need additional headroom. This is not a process RAM cap.
+
+Known response lengths reserve capacity at the head without allocating it until payload arrives.
+HEAD/no-body responses do not reserve the advertised representation size. Unknown-length bodies
+grow in bounded steps, acquiring the replacement's capacity while the old allocation is still
+charged. The budget must therefore leave room for staging and growth, not just final body length.
+There is no full maximum-response reservation for each queued request or quiet long poll.
+
+Insufficient capacity produces `ErrorKind::Limit` with `LimitKind::BufferedBodyBytes`, distinct
+from `RequestBodyBytes` / `ResponseBodyBytes`. NBReq fails the exchange rather than waiting for
+other partial replies, and never automatically replays it. A response-side failure may occur
+after a POST has taken effect; the error does not imply that retrying is safe.
+
+Completed responses remain charged until the last body owner drops, including after Engine
+shutdown. Successful unique `try_into_vec` transfers the existing allocation into application
+ownership and ends its NBReq charge; the memory still exists and must be budgeted by the caller.
+Public `Response::new` and explicit streaming collection create application-owned bodies.
+The ledger retains no sockets or workers. `engine.metrics().current().reserved_buffered_body_bytes()`
+reports retained/reserved capacity, and `high_water()` exposes its observed peak.
+
+Configure concurrent-work admission as well as byte limits. The native defaults are 32 HTTP
+connection slots, eight per origin and 1,024 accepted HTTP requests. These are ceilings, not
+allocations made for every slot. Reduce accepted work for an application that can queue it more
+cheaply elsewhere. Low per-origin connection counts can delay short calls behind long polls;
+application scheduling should leave room for time-sensitive traffic.
+
+There are three distinct byte controls:
+
+| Control | Charged work |
+| --- | --- |
+| `max_buffered_body_bytes` (optional) | Retained/reserved buffered HTTP payload capacity and its charged receive staging |
+| `max_stream_queued_bytes` | HTTP streaming response windows |
+| `max_queued_bytes` | Shared parent for HTTP streaming response windows and reserved standalone TCP send/receive windows |
+
+Per-stream and per-TCP-connection windows also apply. A buffered upload with a streamed response
+participates in the buffered-body cap as well as its response's streaming window. These limits
+do not include all application, TLS, kernel, thread-stack or allocator memory.

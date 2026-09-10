@@ -25,10 +25,12 @@ fn public_resolver_is_not_compiled(engine: &Engine) {
 "#
 )]
 #![doc = include_str!("../docs/getting-started.md")]
+#![doc = include_str!("../docs/migrating-to-0.2.md")]
 
 mod atomic;
 mod backend;
 mod body;
+mod body_budget;
 mod callback;
 mod client;
 mod context;
@@ -55,6 +57,9 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod response_body_tests;
+
+#[cfg(all(test, feature = "native"))]
+mod memory_limits_tests;
 
 #[cfg(all(test, feature = "native"))]
 mod dns_wiring_tests;

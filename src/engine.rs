@@ -701,6 +701,13 @@ impl EngineBuilder {
         self
     }
 
+    /// Caps aggregate retained buffered HTTP body capacity; disabled by default.
+    #[must_use]
+    pub fn max_buffered_body_bytes(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_max_buffered_body_bytes(bytes);
+        self
+    }
+
     /// Selects the maximum per-request streaming upload or response queue window.
     #[must_use]
     pub fn max_stream_queue_bytes_per_request(mut self, bytes: usize) -> Self {

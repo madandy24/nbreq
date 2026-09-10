@@ -1,0 +1,58 @@
+{
+  "status": "verified",
+  "final_source": "e",
+  "sources": {
+    "a": {
+      "path": "thoughts/evidence/nbreq-m3-20260908-a.tar.gz",
+      "sha256": "a0d54e41e5f6854769e26f915139326d5c8ee7763509e37a0857feaf22c8a8c1",
+      "manifest_sha256": "c78bcd3677bf63d876a01f5e27e69f3ce1b7ab4d3bad61a675387c6439b5dac5"
+    },
+    "b": {
+      "path": "thoughts/evidence/nbreq-m3-20260908-b.tar.gz",
+      "sha256": "5b45f8884c167094809d05a026ec908245ab8de478c74adeddca3e56d1744f42",
+      "manifest_sha256": "bad452bf91b67b3ea9fb6722174eaa710ef890ad030750fda05a801365794f71"
+    },
+    "c": {
+      "path": "thoughts/evidence/nbreq-m3-20260908-c.tar.gz",
+      "sha256": "313ad940e6c780c780930271f9d4870716705cd8b018da9c7e2cfc3534a74f26",
+      "manifest_sha256": "98786288c2e96ff07fead196b256a8eb4bc98c5e7b36b99204e5d1fdd8020834"
+    },
+    "d": {
+      "path": "thoughts/evidence/nbreq-m3-20260908-d.tar.gz",
+      "sha256": "b3278be6eb6eda1c03d77989e9ff0750e8844ebce73018a79dda9d1b097e359e",
+      "manifest_sha256": "0552696999f6d21221236fc06d9a5dbd85a30bef0057e6aa8a634e08dcc0d44b"
+    },
+    "e": {
+      "path": "thoughts/evidence/nbreq-m3-20260908-e.tar.gz",
+      "sha256": "8e25bf4edfe1a8d2f1fd7e119a6b26c03bf409852f57fa413f94c3b0364e7157",
+      "manifest_sha256": "a96770653e711daa096aa44d33767d2a55210f0228c0a152a1d251aee81de170"
+    }
+  },
+  "evidence": {
+    "path": "thoughts/evidence/nbreq-m3-memory-evidence-20260908.tar.gz",
+    "sha256": "59e4b0bec65cc1f0529467c79b35b84aa350a4a0ca1f9304440530536e6f68c2",
+    "files": 2696,
+    "bytes": 2061098
+  },
+  "gds_private_evidence": {
+    "path": "C:/User/SecuritasNew/gds/doc/evidence/nbreq-m3-memory-20260908.tar.gz",
+    "sha256": "8342227c76db95d022d43524e6ab15b1e17eecfb06436f950505e348bb54d620",
+    "files": 45,
+    "bytes": 488544
+  },
+  "final_full_verifiers": 7,
+  "windows_x86_m3_tests": 17,
+  "paired_memory_cases": 120,
+  "longer_timing_cases": 36,
+  "configured_cap_cases": 4,
+  "gds_native_tests": {
+    "http": 16,
+    "webrpc": 74
+  },
+  "gds_ureq_only_tests": {
+    "http": 2,
+    "webrpc": 73
+  },
+  "installed_dll_sha256": "d2ff8d800abc6eccef95396a9b43d1c70677129e8844b4b2ed9abd73f6ea5aa6",
+  "gds_adapter_sha256": "e0b306598c427b3d99b2618be2f12c74f68c97763dd2a33d4e7a91e0a312b627"
+}

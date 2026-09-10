@@ -278,6 +278,10 @@ impl SourceGenerationDnsFixture {
                     {
                         continue;
                     }
+                    // Winsock can report a late reply to a closed resolver port here.
+                    // The shared fixture socket can still serve subsequent queries.
+                    #[cfg(windows)]
+                    Err(error) if error.kind() == io::ErrorKind::ConnectionReset => continue,
                     Err(error) => {
                         panic!("source-generation DNS fixture receive failed: {error}")
                     }
@@ -374,6 +378,10 @@ impl DnsFixture {
                     {
                         continue;
                     }
+                    // Winsock can report a late reply to a closed resolver port here.
+                    // The shared fixture socket can still serve subsequent queries.
+                    #[cfg(windows)]
+                    Err(error) if error.kind() == io::ErrorKind::ConnectionReset => continue,
                     Err(error) => panic!("DNS fixture receive failed: {error}"),
                 };
                 let request =

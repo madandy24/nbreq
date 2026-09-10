@@ -4,6 +4,9 @@ NBReq is a Rust HTTP client for programs that need concurrent network access, pr
 deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async
 runtime.
 
+This guide covers NBReq 0.2. See the [migration notes](docs/migrating-to-0.2.md) when upgrading
+an application from 0.1.1.
+
 ## Highlights
 
 - Simple blocking HTTP requests for ordinary use, with callbacks, direct waiters, streaming
@@ -14,7 +17,9 @@ runtime.
 - No Tokio or other async runtime required.
 - Bounded queues, resource limits, connection pooling, structured errors, and deterministic joined
   shutdown.
-- Rust-native HTTP/1.1 and TLS, supporting Windows and Linux.
+- Rust-native HTTP/1.1 and TLS on Windows, Linux, and Intel/Apple Silicon macOS.
+- Public DNS resolution and cleartext TCP connections using the same Engine ownership and shutdown.
+- Shared buffered responses, optional consuming buffer transfer, and opt-in retained-body limits.
 
 ## Quick start
 
@@ -52,11 +57,14 @@ retaining native HTTP plus exact-name DNS for HTTP and hostname `TcpConnector`:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.1", default-features = false, features = ["native"] }
+nbreq = { version = "0.2", default-features = false, features = ["native"] }
 ```
 
 The `resolver` feature implies `native`; disabling it never selects a blocking OS resolver or a
 second network owner.
+
+macOS supports the ordinary default System Configuration resolver topology. Richer split/scoped
+DNS configurations are rejected explicitly. See the guide's platform matrix for the tested scope.
 
 Security issues should be reported privately as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
@@ -121,6 +129,10 @@ than a second public runtime.
 ## Documentation
 
 - [Consumer guide](docs/getting-started.md)
+- [Upgrading from 0.1.1](docs/migrating-to-0.2.md)
+- Runnable examples: [bounded HTTP](examples/bounded_http.rs), [DNS resolution](examples/resolve.rs),
+  [TCP echo client](examples/tcp_echo.rs), [manual HTTP](examples/manual.rs), and
+  [callbacks](examples/spawned.rs).
 
 `test-support` exposes deterministic controls for downstream conformance tests; it is not needed
 by ordinary consumers.
@@ -137,7 +149,7 @@ NBReq is licensed under either of the following, at your option:
 - MIT License ([LICENSE-MIT](LICENSE-MIT)).
 
 The generated [component and dependency license report](THIRD_PARTY_LICENSES.html) records the
-locked Windows and Linux release graph.
+locked Windows, Linux, and macOS release graph.
 
 ## Contribution
 

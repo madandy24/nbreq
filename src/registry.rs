@@ -867,6 +867,7 @@ pub(crate) struct Shared {
     pub(crate) run_mode: RunMode,
     pub(crate) queue: CommandQueue,
     pub(crate) metrics: Arc<Metrics>,
+    pub(crate) body_budget: Arc<crate::body_budget::BodyBudget>,
     callback_domain: Arc<CallbackDomain>,
     core: Mutex<CoreState>,
     inflight: Arc<AtomicUsize>,
@@ -959,6 +960,7 @@ impl Shared {
             streaming_supported,
             max_request_body_bytes: config.max_request_body_bytes(),
             max_response_body_bytes: config.max_response_body_bytes(),
+            body_budget: crate::body_budget::BodyBudget::new(config.max_buffered_body_bytes()),
             max_stream_queue_bytes_per_request: config.max_stream_queue_bytes_per_request(),
             stream_queued_bytes: Arc::new(AtomicUsize::new(0)),
             max_stream_queued_bytes: config.max_stream_queued_bytes(),
@@ -982,7 +984,7 @@ impl Shared {
 
     pub(crate) fn accept(
         self: &Arc<Self>,
-        request: Request,
+        mut request: Request,
         callback: Option<CompletionCallback>,
     ) -> Result<AcceptedRequest, Error> {
         let has_callback = callback.is_some();
@@ -1000,6 +1002,7 @@ impl Shared {
             ));
         }
         self.validate_request_limits(&request)?;
+        request.admit_body(Arc::clone(&self.body_budget))?;
 
         let inflight_permit = AdmissionPermit::try_acquire(&self.inflight, self.inflight_limit)
             .ok_or_else(|| {
@@ -1380,7 +1383,7 @@ impl Shared {
 
     pub(crate) fn accept_stream(
         self: &Arc<Self>,
-        request: StreamRequest,
+        mut request: StreamRequest,
     ) -> Result<ResponseReader, Error> {
         if !self.streaming_supported {
             return Err(Error::new(
@@ -1404,6 +1407,7 @@ impl Shared {
         }
         request.validate()?;
         self.validate_request_limits(request.request())?;
+        request.admit_buffered_body(Arc::clone(&self.body_budget))?;
         let response_window = self.max_stream_queue_bytes_per_request;
         if response_window == 0 {
             return Err(Error::limit(
@@ -1473,9 +1477,15 @@ impl Shared {
                 shared.queue.wake();
             }
         });
+        let request_body_limit = request
+            .options()
+            .request_body_limit(self.max_request_body_bytes);
+        let response_body_limit = request
+            .options()
+            .response_body_limit(self.max_response_body_bytes);
         request.bind_upload(
             response_window,
-            self.max_request_body_bytes,
+            request_body_limit,
             self.run_mode,
             Arc::clone(&stream_waker),
         )?;
@@ -1484,7 +1494,7 @@ impl Shared {
             handle,
             self.run_mode,
             response_window,
-            self.max_response_body_bytes,
+            response_body_limit,
             Some(stream_waker),
             Some(Arc::clone(&self.metrics)),
         )?;
@@ -2011,20 +2021,25 @@ impl Shared {
     }
 
     pub(crate) fn metrics_snapshot(&self) -> EngineMetrics {
-        self.metrics.snapshot(
-            self.inflight.load(Ordering::Acquire),
-            self.stream_queued_bytes.load(Ordering::Acquire),
-            self.resolution_inflight.load(Ordering::Acquire),
-        )
+        self.metrics
+            .snapshot(
+                self.inflight.load(Ordering::Acquire),
+                self.stream_queued_bytes.load(Ordering::Acquire),
+                self.resolution_inflight.load(Ordering::Acquire),
+            )
+            .with_body_budget(self.body_budget.used(), self.body_budget.peak())
     }
 
     fn validate_request_limits(&self, request: &Request) -> Result<(), Error> {
-        if request.body().len() > self.max_request_body_bytes {
+        let body_limit = request
+            .options()
+            .request_body_limit(self.max_request_body_bytes);
+        if request.body().len() > body_limit {
             return Err(Error::limit(
                 LimitKind::RequestBodyBytes,
                 format!(
                     "request body exceeds the configured {} byte limit",
-                    self.max_request_body_bytes
+                    body_limit
                 ),
             ));
         }

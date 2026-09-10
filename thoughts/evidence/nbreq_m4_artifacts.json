@@ -1,0 +1,85 @@
+{
+  "status": "verified",
+  "final_source": "b",
+  "final_measurement": "c",
+  "gds_source_sha256": {
+    "src/dplib/dpwebrpc/admission.rs": "3947a1e6cebe08282bba397bd749a62ce6c796a14b1e97c126082f31ac986fdd",
+    "src/dplib/dpwebrpc.rs": "0f92b327998f6e2ebae1a7b4ba81b6475a04c46ba7e157df62c258ce8168d07f",
+    "src/dplib/dphttpclient.rs": "bb0e6692b8eff06ec79c6abe38c46ae9cd748d029a9b3bdbf253da11a463d599"
+  },
+  "runtime_reds": 7,
+  "windows_suites": {
+    "final-native-webrpc": 90,
+    "final-native-http": 17,
+    "final-ureq-webrpc": 89,
+    "final-ureq-http": 2
+  },
+  "windows_dll_builds": [
+    "native",
+    "ureq"
+  ],
+  "portable_tests_per_host_toolchain": 9,
+  "linux_toolchains": [
+    "stable",
+    "1.85.0"
+  ],
+  "nbreq_m3_e_files_unchanged": 119,
+  "installed_dll_sha256": "d2ff8d800abc6eccef95396a9b43d1c70677129e8844b4b2ed9abd73f6ea5aa6",
+  "superseded_measurement_note": "A/B time individual workers and can undercount aggregate elapsed time when worker starts are delayed. C times all workers from one common clock; admission production source is B unchanged.",
+  "gds_private_evidence": {
+    "path": "C:/User/SecuritasNew/gds/doc/evidence/nbreq-m4-admission-20260908.tar.gz",
+    "sha256": "0c48b565568b7e5f5aa6733a0f40dd2eeb0d6eb516c814fe4ec3a6a3d6bda6a5",
+    "manifest_sha256": "2d2ef1c17680a288f55c3a4e5265b38c541caf14f88658ae0a91cc0156a38cf0",
+    "files": 191,
+    "bytes": 1199529
+  },
+  "final_component_benchmarks": {
+    "windows_x86": {
+      "1_threads": {
+        "before_median_ns_per_op": 18.4717,
+        "after_median_ns_per_op": 66.7028,
+        "increment_ns_per_op": 48.2311,
+        "unit": "elapsed time / total operations; contended value is a throughput cost, not individual latency"
+      },
+      "8_threads": {
+        "before_median_ns_per_op": 163.550625,
+        "after_median_ns_per_op": 438.025,
+        "increment_ns_per_op": 274.474375,
+        "unit": "elapsed time / total operations; contended value is a throughput cost, not individual latency"
+      },
+      "poll_queue_cycle_ns": 271.2265
+    },
+    "linux_x64": {
+      "1_threads": {
+        "before_median_ns_per_op": 12.222807,
+        "after_median_ns_per_op": 47.062292,
+        "increment_ns_per_op": 34.839484999999996,
+        "unit": "elapsed time / total operations; contended value is a throughput cost, not individual latency"
+      },
+      "8_threads": {
+        "before_median_ns_per_op": 12.36004125,
+        "after_median_ns_per_op": 46.8712925,
+        "increment_ns_per_op": 34.51125125,
+        "unit": "elapsed time / total operations; contended value is a throughput cost, not individual latency"
+      },
+      "poll_queue_cycle_ns": 594.014283
+    }
+  },
+  "portable_source_bundles": {
+    "a": {
+      "path": "C:\\User\\projects\\nbreq\\target\\m4\\a\\gds-m4-admission-20260908-a.tar.gz",
+      "sha256": "af12f832347345aaae1195f25a1f1e717eae291457abe5b120391475c478d111",
+      "manifest_sha256": "8d9adad2fc8a8929640cebe534196da5e1b99f9237b48ffd262462a3b40311e1"
+    },
+    "b": {
+      "path": "C:\\User\\projects\\nbreq\\target\\m4\\b\\gds-m4-admission-20260908-b.tar.gz",
+      "sha256": "f82331be84815a2020f9f86337c6b9491ba190e7ae5b4858ad26dd90423485ab",
+      "manifest_sha256": "948737478660343036ed7e1e1487f95062e5c38016ae9959bb40ab2f8096ec4c"
+    },
+    "c": {
+      "path": "C:\\User\\projects\\nbreq\\target\\m4\\c\\gds-m4-admission-20260908-c.tar.gz",
+      "sha256": "397c93b30f8adf1a030830e6ef1b37bea4fd06e00c350381626e755dc6202e13",
+      "manifest_sha256": "85c2f087e9b55a780a3d6d2e63984b88d904e6174bf527a759d7be35766fc365"
+    }
+  }
+}

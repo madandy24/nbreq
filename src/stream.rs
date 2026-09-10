@@ -1301,6 +1301,13 @@ impl StreamRequest {
         &self.request
     }
 
+    pub(crate) fn admit_buffered_body(
+        &mut self,
+        budget: Arc<crate::body_budget::BodyBudget>,
+    ) -> Result<(), Error> {
+        self.request.admit_body(budget)
+    }
+
     pub(crate) fn upload_queue_capacity(&self) -> usize {
         self.stream_body
             .as_ref()
@@ -1345,6 +1352,20 @@ pub struct StreamRequestBuilder {
 }
 
 impl StreamRequestBuilder {
+    /// Further restricts the Engine's total upload body ceiling (not the queue window).
+    #[must_use]
+    pub fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.request = self.request.max_request_body_bytes(bytes);
+        self
+    }
+
+    /// Further restricts the Engine's total response body ceiling (not the queue window).
+    #[must_use]
+    pub fn max_response_body_bytes(mut self, bytes: usize) -> Self {
+        self.request = self.request.max_response_body_bytes(bytes);
+        self
+    }
+
     fn new(request: RequestBuilder) -> Self {
         Self {
             request,

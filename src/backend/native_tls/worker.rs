@@ -29,7 +29,7 @@ impl Drop for Ticket {
 struct Job {
     slot: SlotId,
     session: TlsSession,
-    input: Vec<u8>,
+    input: crate::body_budget::BodyBuffer,
     deadline: Option<Instant>,
     cancelled: Arc<AtomicBool>,
     ticket: Ticket,
@@ -88,9 +88,10 @@ impl HandshakeWorkers {
         &mut self,
         slot: SlotId,
         session: TlsSession,
-        input: Vec<u8>,
+        input: impl Into<crate::body_budget::BodyBuffer>,
         deadline: Option<Instant>,
     ) -> Result<(), Error> {
+        let input = input.into();
         if input.len() > INPUT_WINDOW {
             return Err(Error::new(
                 ErrorKind::Internal,

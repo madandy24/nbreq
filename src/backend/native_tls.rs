@@ -197,6 +197,7 @@ impl NativeTlsConfigs {
             session: Some(TlsSession {
                 connection,
                 handshake_received: 0,
+                body_budget: None,
             }),
             request: Some(PendingPlaintext {
                 bytes: request,
@@ -220,6 +221,7 @@ pub(super) struct NativeTls {
 pub(super) struct TlsSession {
     connection: ClientConnection,
     handshake_received: usize,
+    body_budget: Option<Arc<crate::body_budget::BodyBudget>>,
 }
 
 impl TlsSession {
@@ -235,7 +237,7 @@ impl TlsSession {
             }
         }
         let mut input = Cursor::new(encrypted);
-        let mut plaintext = Vec::new();
+        let mut plaintext = crate::body_budget::BodyBuffer::new(self.body_budget.clone());
         let mut peer_closed = false;
         while usize::try_from(input.position()).unwrap_or(usize::MAX) < encrypted.len() {
             let was_handshaking = self.connection.is_handshaking();
@@ -276,12 +278,15 @@ impl TlsSession {
         })
     }
 
-    fn drain_plaintext(&mut self, plaintext: &mut Vec<u8>) -> Result<(), Error> {
+    fn drain_plaintext(
+        &mut self,
+        plaintext: &mut crate::body_budget::BodyBuffer,
+    ) -> Result<(), Error> {
         let mut buffer = [0_u8; TLS_PLAINTEXT_CHUNK];
         loop {
             match self.connection.reader().read(&mut buffer) {
                 Ok(0) => break,
-                Ok(read) => plaintext.extend_from_slice(&buffer[..read]),
+                Ok(read) => plaintext.extend(&buffer[..read], usize::MAX)?,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(tls_io_error(false, "plaintext read", error)),
             }
@@ -347,7 +352,7 @@ impl PendingPlaintext {
 #[derive(Debug)]
 pub(super) struct TlsProgress {
     pub(super) outbound: Vec<u8>,
-    pub(super) plaintext: Vec<u8>,
+    pub(super) plaintext: crate::body_budget::BodyBuffer,
     pub(super) handshake_complete: bool,
     pub(super) peer_closed: bool,
 }
@@ -365,6 +370,12 @@ pub(super) struct TlsWriteProgress {
 }
 
 impl NativeTls {
+    pub(super) fn set_body_budget(&mut self, budget: Option<Arc<crate::body_budget::BodyBudget>>) {
+        self.session
+            .as_mut()
+            .expect("TLS session owned before exchange")
+            .body_budget = budget;
+    }
     #[cfg(test)]
     pub(super) fn request_plaintext_capacity(&self) -> usize {
         self.request
@@ -446,7 +457,7 @@ impl NativeTls {
             ));
         }
         self.retained_response = PendingPlaintext {
-            bytes: progress.plaintext,
+            bytes: progress.plaintext.into_vec(),
             offset: 0,
         };
         Ok(TlsStreamProgress {
@@ -935,7 +946,7 @@ mod tests {
         client
             .retain_stream_progress(TlsProgress {
                 outbound: Vec::new(),
-                plaintext,
+                plaintext: plaintext.into(),
                 handshake_complete: true,
                 peer_closed: false,
             })
@@ -969,7 +980,7 @@ mod tests {
         client
             .retain_stream_progress(TlsProgress {
                 outbound: Vec::new(),
-                plaintext: b"next window".to_vec(),
+                plaintext: b"next window".to_vec().into(),
                 handshake_complete: true,
                 peer_closed: false,
             })

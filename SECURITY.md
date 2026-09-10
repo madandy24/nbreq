@@ -16,10 +16,8 @@ through a private channel rather than publishing the details.
 
 ## Supported versions
 
-NBReq 0.1.1 is the latest published release. Mainline is the unreleased 0.2.0 development line.
-As later 0.x versions are published, only the latest published 0.x release is supported; users of
-older 0.x releases may be asked to upgrade before receiving a fix. This policy will be revisited
-before 1.0.
+Only the latest published 0.x release is supported. Users of older 0.x releases may be asked to
+upgrade before receiving a fix. This policy will be revisited before 1.0.
 
 ## Security posture
 
@@ -29,9 +27,11 @@ be used in ordinary deployments. Resource limits, cancellation, and consuming En
 part of the public contract. NBReq's public diagnostics are intended to be payload-free, but callers
 remain responsible for protecting request and response values they choose to log.
 
-NBReq proper forbids unsafe Rust. The small Windows compatibility FFI boundary is isolated in the
-published implementation-detail `nbreq-winpoll` support crate and exposed to NBReq through a safe
-interface.
+NBReq proper forbids unsafe Rust. Windows polling compatibility and macOS System Configuration
+conversion/notification FFI are isolated in the implementation-detail `nbreq-winpoll` and
+`nbreq-darwin` support crates behind safe interfaces. Neither helper is intended as a standalone
+consumer API. macOS resolver configurations that cannot be represented safely are rejected
+rather than flattened into an incorrect global DNS route.
 
 ## Reviewed advisory exceptions
 

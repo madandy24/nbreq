@@ -69,6 +69,10 @@ pub(super) struct HttpLimits {
 }
 
 impl HttpLimits {
+    fn for_request(mut self, request: &Request) -> Self {
+        self.body_bytes = request.options().response_body_limit(self.body_bytes);
+        self
+    }
     fn from_config(config: &EngineConfig) -> Self {
         Self {
             body_bytes: config.max_response_body_bytes(),
@@ -581,7 +585,7 @@ impl HttpTransfer {
 struct NativeHttpBackend {
     reactor: NativeReactor,
     tls_workers: HandshakeWorkers,
-    handshake_waiting: VecDeque<(SlotId, Vec<u8>)>,
+    handshake_waiting: VecDeque<(SlotId, crate::body_budget::BodyBuffer)>,
     handshake_peer_closed: HashSet<SlotId>,
     resolver: Option<NativeResolver>,
     tls: Option<NativeTlsConfigs>,
@@ -820,6 +824,12 @@ enum PendingResponse {
 }
 
 impl PendingResponse {
+    fn receive_budget(&self, request: &Request) -> Option<Arc<crate::body_budget::BodyBudget>> {
+        match self {
+            Self::Buffered => request.body_budget(),
+            Self::Streaming { .. } => None,
+        }
+    }
     fn upload(&self) -> Option<&UploadBody> {
         match self {
             Self::Buffered => None,
@@ -844,12 +854,14 @@ impl PendingResponse {
         self,
         response_to_head: bool,
         limits: HttpLimits,
+        budget: Option<Arc<crate::body_budget::BodyBudget>>,
     ) -> (TransferResponse, Option<NativeUpload>) {
         match self {
-            Self::Buffered => (
-                TransferResponse::Buffered(ResponseDecoder::new(response_to_head, limits)),
-                None,
-            ),
+            Self::Buffered => {
+                let mut decoder = ResponseDecoder::new(response_to_head, limits);
+                decoder.body = crate::body_budget::BodyBuffer::new(budget);
+                (TransferResponse::Buffered(decoder), None)
+            }
             Self::Streaming { response, upload } => (
                 TransferResponse::Streaming {
                     decoder: StreamingResponseDecoder::new(response_to_head, limits, response),
@@ -1342,6 +1354,18 @@ impl NativeHttpBackend {
             self.release_connection(&pending.key);
             return Some(pending);
         }
+        if self
+            .reactor
+            .set_body_budget(idle.slot, pending.response.receive_budget(&pending.request))
+            .is_err()
+        {
+            self.reactor.cancel(idle.slot);
+            self.release_connection(&pending.key);
+            return Some(pending);
+        }
+        if let Some(tls) = idle.tls.as_mut() {
+            tls.set_body_budget(pending.response.receive_budget(&pending.request));
+        }
         let mut request_body_offset = 0;
         let encrypted = match idle.tls.as_mut() {
             Some(tls) => {
@@ -1380,8 +1404,11 @@ impl NativeHttpBackend {
                 .and_then(|capacity| {
                     let count = pending.request.body().len().min(capacity);
                     if count != 0 {
-                        self.reactor
-                            .queue_write(idle.slot, &pending.request.body()[..count])?;
+                        self.reactor.queue_body(
+                            idle.slot,
+                            pending.request.body_owner(),
+                            0..count,
+                        )?;
                     }
                     Ok(count)
                 });
@@ -1395,9 +1422,11 @@ impl NativeHttpBackend {
             }
         }
         let request_id = pending.request_id;
-        let (response, upload) = pending
-            .response
-            .into_active(pending.serialized.response_to_head, self.limits);
+        let (response, upload) = pending.response.into_active(
+            pending.serialized.response_to_head,
+            self.limits.for_request(&pending.request),
+            pending.request.body_budget(),
+        );
         self.request_to_slot.insert(request_id, idle.slot);
         self.transfers.insert(
             idle.slot,
@@ -1543,7 +1572,7 @@ impl NativeHttpBackend {
         mut pending: PendingResolve,
     ) -> Option<Completion> {
         let deadline = pending.next_deadline();
-        let tls = if pending.scheme == "https" {
+        let mut tls = if pending.scheme == "https" {
             let Some(configs) = &self.tls else {
                 self.release_connection(&pending.key);
                 return pending.fail(Error::new(
@@ -1565,6 +1594,9 @@ impl NativeHttpBackend {
         } else {
             None
         };
+        if let Some(tls) = tls.as_mut() {
+            tls.set_body_budget(pending.response.receive_budget(&pending.request));
+        }
         let outbound_limit = if tls.is_some() {
             encrypted_outbound_limit()
         } else {
@@ -1608,6 +1640,14 @@ impl NativeHttpBackend {
                 }
             }
         };
+        if let Err(failure) = self
+            .reactor
+            .set_body_budget(slot, pending.response.receive_budget(&pending.request))
+        {
+            self.reactor.cancel(slot);
+            self.release_connection(&pending.key);
+            return pending.fail(native_transport_error(failure));
+        }
         if tls.is_some() {
             if let Err(failure) = self.reactor.set_read_allowance(slot, Some(INPUT_WINDOW)) {
                 self.reactor.cancel(slot);
@@ -1625,9 +1665,11 @@ impl NativeHttpBackend {
         pending.inactivity_deadline = pending
             .inactivity_timeout
             .and_then(|timeout| now.checked_add(timeout));
-        let (response, upload) = pending
-            .response
-            .into_active(pending.serialized.response_to_head, self.limits);
+        let (response, upload) = pending.response.into_active(
+            pending.serialized.response_to_head,
+            self.limits.for_request(&pending.request),
+            pending.request.body_budget(),
+        );
         self.request_to_slot.insert(request_id, slot);
         self.transfers.insert(
             slot,
@@ -2080,6 +2122,22 @@ impl NativeHttpBackend {
                     return;
                 }
             };
+            if let Err(error) = self.reactor.set_body_budget(
+                next,
+                if transfer.response.is_streaming() {
+                    None
+                } else {
+                    transfer.request.body_budget()
+                },
+            ) {
+                self.reactor.cancel(next);
+                self.finish(
+                    slot,
+                    Completion::Failed(native_transport_error(error)),
+                    completions,
+                );
+                return;
+            }
             if transfer.tls.is_some() {
                 if let Err(error) = self.reactor.set_read_allowance(next, Some(INPUT_WINDOW)) {
                     self.reactor.cancel(next);
@@ -2210,7 +2268,11 @@ impl NativeHttpBackend {
         if count == 0 {
             return Ok(false);
         }
-        if let Err(failure) = self.reactor.queue_write(slot, &body[..count]) {
+        if let Err(failure) = self.reactor.queue_body(
+            slot,
+            transfer.request.body_owner(),
+            transfer.request_body_offset..transfer.request_body_offset + count,
+        ) {
             self.finish(
                 slot,
                 Completion::Failed(native_transport_error(failure)),
@@ -2987,7 +3049,7 @@ impl NativeHttpBackend {
                 self.handle_buffered_tls_progress(
                     slot,
                     Some(finished.progress),
-                    Vec::new(),
+                    crate::body_budget::BodyBuffer::default(),
                     true,
                     completions,
                 )?;
@@ -3145,7 +3207,7 @@ impl NativeHttpBackend {
     fn handle_data(
         &mut self,
         slot: SlotId,
-        bytes: Vec<u8>,
+        bytes: crate::body_budget::BodyBuffer,
         arm_deadline: bool,
         completions: &mut Vec<BackendCompletion>,
     ) -> Result<(), Error> {
@@ -3190,7 +3252,7 @@ impl NativeHttpBackend {
             .get(&slot)
             .is_some_and(|transfer| transfer.response.is_streaming())
         {
-            return self.handle_stream_data(slot, bytes, arm_deadline, completions);
+            return self.handle_stream_data(slot, bytes.into_vec(), arm_deadline, completions);
         }
         let tls_progress = self
             .transfers
@@ -3204,7 +3266,7 @@ impl NativeHttpBackend {
         &mut self,
         slot: SlotId,
         tls_progress: Option<Result<TlsProgress, Error>>,
-        bytes: Vec<u8>,
+        bytes: crate::body_budget::BodyBuffer,
         arm_deadline: bool,
         completions: &mut Vec<BackendCompletion>,
     ) -> Result<(), Error> {
@@ -3485,7 +3547,7 @@ impl NativeHttpBackend {
             NativeEvent::Data(slot, bytes) => {
                 if let Some(live) = self.standalone_live.get_mut(slot) {
                     live.note_read_progress(Instant::now());
-                    if let Err(error) = live.owner.push_inbound(bytes.clone()) {
+                    if let Err(error) = live.owner.push_inbound(bytes.to_vec()) {
                         live.owner.fail(error);
                     } else {
                         live.sync_pressure(Instant::now());
@@ -4190,6 +4252,9 @@ fn native_transport_error(failure: NativeFailure) -> Error {
             LimitKind::ResponseBodyBytes,
             "the native response exceeded its bounded wire allowance",
         ),
+        NativeFailureKind::BodyBudget => {
+            Error::limit(LimitKind::BufferedBodyBytes, failure.message)
+        }
         NativeFailureKind::Internal => Error::new(ErrorKind::Internal, failure.message),
     }
 }

@@ -82,6 +82,20 @@ pub struct EngineRequestBuilder {
 }
 
 impl EngineRequestBuilder {
+    /// Further restricts the Engine's request body ceiling for this operation.
+    #[must_use]
+    pub fn max_request_body_bytes(mut self, bytes: usize) -> Self {
+        self.request = self.request.max_request_body_bytes(bytes);
+        self
+    }
+
+    /// Further restricts the Engine's response body ceiling for this operation.
+    #[must_use]
+    pub fn max_response_body_bytes(mut self, bytes: usize) -> Self {
+        self.request = self.request.max_response_body_bytes(bytes);
+        self
+    }
+
     pub(crate) fn new(client: Client, request: RequestBuilder) -> Self {
         Self { client, request }
     }

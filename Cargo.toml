@@ -24,7 +24,11 @@ include = [
     "/examples/manual.rs",
     "/examples/native_platform_https.rs",
     "/examples/spawned.rs",
+    "/examples/resolve.rs",
+    "/examples/tcp_echo.rs",
+    "/examples/bounded_http.rs",
     "/docs/getting-started.md",
+    "/docs/migrating-to-0.2.md",
     "/README.md",
     "/SECURITY.md",
     "/THIRD_PARTY_LICENSES.html",
@@ -94,4 +98,28 @@ unwrap_used = "deny"
 
 [[example]]
 name = "native_platform_https"
+required-features = ["native"]
+
+[[example]]
+name = "spawned"
+required-features = ["native"]
+
+[[example]]
+name = "manual"
+required-features = ["native"]
+
+[[example]]
+name = "ffi_owner"
+required-features = ["native"]
+
+[[example]]
+name = "resolve"
+required-features = ["resolver"]
+
+[[example]]
+name = "tcp_echo"
+required-features = ["native"]
+
+[[example]]
+name = "bounded_http"
 required-features = ["native"]

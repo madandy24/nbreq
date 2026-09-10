@@ -240,11 +240,22 @@ impl Drop for TcpAwareDns {
 }
 
 fn bind_dns_tcp_udp_pair() -> (TcpListener, UdpSocket, std::net::SocketAddr) {
-    for _ in 0..64 {
-        let udp = UdpSocket::bind("127.0.0.1:0").expect("public DNS UDP must bind");
-        let address = udp.local_addr().expect("public DNS UDP address");
-        if let Ok(listener) = TcpListener::bind(address) {
-            return (listener, udp, address);
+    for attempt in 0..64 {
+        // TCP and UDP have independent exclusions/ephemeral allocators. Windows can choose
+        // a whole run of UDP ports that TCP forbids. Alternate the reservation order, as the
+        // private native-DNS fixture does, without changing the host's port exclusions.
+        if attempt % 2 == 0 {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("public DNS TCP must bind");
+            let address = listener.local_addr().expect("public DNS TCP address");
+            if let Ok(udp) = UdpSocket::bind(address) {
+                return (listener, udp, address);
+            }
+        } else {
+            let udp = UdpSocket::bind("127.0.0.1:0").expect("public DNS UDP must bind");
+            let address = udp.local_addr().expect("public DNS UDP address");
+            if let Ok(listener) = TcpListener::bind(address) {
+                return (listener, udp, address);
+            }
         }
     }
     panic!("public DNS fixture could not reserve one port for UDP and TCP");

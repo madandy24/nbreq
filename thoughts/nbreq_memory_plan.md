@@ -1,6 +1,6 @@
 # NBReq memory work tracker
 
-Opened: 2026-09-05 · Updated: 2026-09-08 · M0/M1 accepted; MQ-02 accepted; M2 in progress.
+Opened: 2026-09-05 · Updated: 2026-09-10 · M0–M3 accepted; M4.1 verified; GDS profiles paused while unrelated GDS work blocks them.
 
 This is the working record for M0–M4. It adopts the work-package, contract, verification, and log
 structure of the [post-release follow-up plan](project_nbreq_followup_plan.html). Keep this file
@@ -11,27 +11,46 @@ failure evidence; the [GDS handoff](gds_memory_handoff.md) owns broader consumer
 
 | Field | Current state |
 | --- | --- |
-| Current package | **M2 in progress; M2.1/M2.2 verified — E-09; M2.3 verified — E-10; M2.4 verified — E-11.** MQ-02 accepted — MD-13. |
-| Next implementation step | M2.5 is scoped below after reading the live GDS adapter/build helpers. Develop against the explicit 0.2 dependency in an isolated GDS development checkout using the existing local NBReq override; then prove unique-buffer transfer before changing conversion. GDS remains pinned to 0.1.0 in its main checkout and no GDS code was changed in this inspection. MQ-03 precedes M3 budgets. |
-| Last proven test state | Final M2.4 B passes seven full verifiers across Windows/Linux/Intel Mac/ARM Mac, 29 x86 M2 tests, 120 paired Windows/Linux cases and 30 longer Windows timing cases. Three intended memory reds resolved; six companions pass. A failed the existing idle-eviction fixture on all hosts; B synchronizes its intended state. All failed attempts remain archived; none is unresolved. |
-| Source identity | M2.4 B manifest `b1ddee56304a55f26f9ef0c7b215e9ca1d5f10632c47aa5bcd764965b15b519d` hashes 120 files; five production/test files differ from M2.3 D. A-to-B changes only the idle-eviction test. Final checkout matches B; both sources and evidence are archived under E-11. Before binaries are M2.3 C, whose production equals D. Validation used base `b4c4d74cea0e` plus the recorded changes. The review/memory checkpoint excludes the older F5 registry-comparison edits, which remain intact in the working tree. |
-| Memory implementation | M0.1 bounds TLS workers/jobs/input; M1 adds observation/private-CA roots/TLS carry fix; M2.1/M2.2 share response bodies and move delivery; M2.3 borrows bounded request transmission and moves redirects. M2.4 releases consumed TLS plaintext and trims oversized HTTP idle send storage. Mixed-workload post-large idle live heap falls 1.88→0.94 MiB Windows / 1.95→1.01 MiB Linux. Ordinary retention/churn barely changes; timing has explicit limits. Budgets, profiles and GDS changes remain unstarted. |
-| Pending choices | MQ-01/MQ-02 accepted. Existing borrowed/copying usage stays available; Response clones share body storage and consuming alternatives are additive. MQ-03 precedes aggregate budget implementation; MQ-04/MQ-05 require GDS/target-device decisions. |
+| Current package | **M4.1 GDS workload admission verified — E-14.** M3 accepted — E-13; M2 accepted — E-09–E-12. |
+| Next implementation step | GDS is blocked on unrelated work as of 2026-09-10. The [nbreq 0.2 release checklist](nbreq_020_release_plan.md) now records verified consumer docs/API/examples and packaged consumers on all four hosts, plus Darwin/advisory/license rehearsals. Continue clean-candidate/support-publication preparation and final soak/CI work. Resume representative GDS workload/headroom measurements when available; M4 device profiles are not a general-library release prerequisite. |
+| Last proven test state | M4.1 final B: Windows x86 native HTTP 17/WebRPC 90 and ureq-only 2/89 pass; both DLL configurations build with SkipCopy. Nine portable policy tests pass on Windows x86 and Linux stable/MSRV. Seven runtime reds preserved. Corrected C timings leave B production unchanged. Release R1/R2 adds seven full nbreq verifiers and stable/MSRV packaged-consumer checks across Windows/Linux/both Macs. Before R1 all 119 ordinary M3 E inputs matched; R1 changes docs/examples/doc comments, with memory runtime implementation unchanged. Installed DLL unchanged; all jobs finished. |
+| Source identity | nbreq checkpoint 2c382b7 plus uncommitted M2.5/M3 work. Frozen E archive SHA256 8e25bf4edfe1a8d2f1fd7e119a6b26c03bf409852f57fa413f94c3b0364e7157; manifest a96770653e711daa096aa44d33767d2a55210f0228c0a152a1d251aee81de170. A/B preserve original accounting and the Windows DNS fixture correction; C preserves uncapped receive batching, D appends validated response payload spans in bulk, E writes header/body slices together with partial-write coverage. GDS private source/logs belong in its repo. Older F5/WAL/optimiser edits remain outside this work. |
+| Memory implementation | nbreq remains M3 E. GDS M4.1 adds process-shared queued-byte watermarks, outbound reservations and small-work reserve, local large-delivery limits, eligible-origin poll admission and configurable 32/8/64 socket/inflight defaults. Incoming polls also slow under outgoing backlog. Retain 24 MiB body ceilings; nbreq aggregate cap stays opt-in. No automatic eviction. |
+| Pending choices | MQ-01/MQ-02/MQ-03 accepted. MQ-04's initial admission policy is implemented under MD-20; exceptional frames retain compatibility within available allowance. Splitting/streaming for constrained profiles is deferred. MQ-05 remains open: typical 50–70 MB comms usage and manageable 512 MB large installs do not establish a 128/256 MB device profile. |
 | Workspace caution | Existing `.gitignore`, F5 tool files/`v011`, and follow-up HTML changes predate this tracker. Preserve them and the regression tests; inspect ownership before editing. |
 
-Commit preparation removes one trailing blank line from the allocation-meter Cargo manifest;
-its parsed TOML is unchanged. Runtime/test source remains B; frozen evidence is preserved.
+The earlier M2 commit preparation removed one trailing blank line from the allocation-meter
+Cargo manifest; its parsed TOML was unchanged. Memory runtime/test implementation remains M3 E;
+the later R1/R2 release slice adds public docs/examples, source doc comments and an independent
+consumer harness. Its source/package identity and results are recorded in the release checklist.
+
+M4.1 changes only GDS runtime/test source: final B's WebRPC SHA256 is
+`0f92b327998f6e2ebae1a7b4ba81b6475a04c46ba7e157df62c258ce8168d07f`; the artifact manifest
+records the HTTP adapter and private admission module too. E-14 archives 191 private files under
+GDS documentation, SHA256 `0c48b565568b7e5f5aa6733a0f40dd2eeb0d6eb516c814fe4ec3a6a3d6bda6a5`.
+Measurement C corrects timing only; A/B are retained as superseded timing evidence. Source B
+and all passing/failing test/build logs are preserved. Linux A/B/C jobs have finished in
+`/home/ubuntu/gds-m4-admission-20260908-{a,b,c}`. No commit or deployment occurred in this step.
+
+M3 is complete: five frozen source snapshots and 2,696 public evidence files are archived in
+E-13; 45 private GDS files are archived in its repository. Read the report before inferring a
+whole-process cap or selecting values. The longer 1 KiB timing runs do not reproduce a material
+throughput penalty, but some Linux p95 cost remains unexcluded. No final GDS/device profile,
+installed DLL replacement, or registry publication occurred. Final remote labs are
+`/home/ubuntu/nbreq-m3-20260908-e`, `/Users/andrew/nbreq-m3-20260908-e`, and
+`/Users/m1/nbreq-m3-20260908-e`; all jobs and measured child processes have finished.
 
 M2.4 is complete: source B, all seven full gates, x86 companions and 150 measurement/timing
 cases are archived in E-11. Working/remote `nbreq-m24-retention-20260908-b` labs retain binaries
-and logs; A remains as failed-fixture evidence. No source edits followed the B freeze. The longer
-Windows check reduces apparent large throughput regressions, but small latency costs remain
-unexcluded. M2.5 is the next implementation item; M3 and actual-device/GDS acceptance remain open.
+and logs; A remains as failed-fixture evidence. M2.5 subsequently relaxes the Darwin dependency
+manifest; M2.4 production/test code remains B. The longer Windows check reduces apparent large throughput regressions, but small latency costs remain
+unexcluded. M2.5 is complete (E-12), as is M3 (E-13); actual-device/GDS memory acceptance remains open.
 
 All M2.1/M2.2 jobs and measured processes have finished. Fresh `nbreq-m2-response-20260907` labs
 retain source/binaries/evidence. Across checkout changes, rebuild xtask in a fresh runner folder
 and clear NBReq package artifacts before reusing dependency caches; check the reported root and
-new tests. E-09 records this procedure. Budgeting and the GDS adapter remain unimplemented.
+new tests. E-09 records this procedure. Budgeting was not implemented at that checkpoint; M3
+now supplies it. The later GDS adapter completion is recorded in E-12.
 The ARM streaming assertion recurred during M2.3 B. E-10 records a deterministic shutdown-ordering
 fault and C fix, seven C full verifiers and 30 passing ARM repetitions. D corrects a separate
 Windows DNS test fixture and passes all seven final verifiers. Earlier failures remain visible;
@@ -70,7 +89,7 @@ inbound clients, quiet/long-poll connections, and work waiting in application qu
 
 | In this programme | Separate or deferred |
 | --- | --- |
-| Existing P1/P2 fixes; NBReq allocation/retention work; per-request limits; buffered and streaming budgets; measured profiles. | Broad GDS RPC scheduling, batching, queue-byte admission, and encoded/decoded frame policy: use the GDS handoff. |
+| Existing P1/P2 fixes; NBReq allocation/retention work; per-request limits; buffered and streaming budgets; measured profiles. M4.1's bounded GDS admission slice is now explicitly authorized. | Further GDS batching, incremental encoding/decoding and protocol/frame-policy changes: use the GDS handoff. |
 | Light GDS work through its shared engine: admission tuning, consuming response bytes, and propagating existing request-specific limits for early enforcement. | Protocol changes, silent reduction of valid large-message limits, custom allocators, broad pools, TLS replacement, and speculative stack tuning. |
 
 Agreed principles:
@@ -98,13 +117,35 @@ make an implementation package accepted.
 | --- | --- | --- | --- |
 | M0 | Accepted — Windows x64/x86, Linux x64, both Macs; E-06/E-07 | Existing red evidence | M0.1–M0.9 fixed. All fourteen regressions and 23 companions pass in applicable suites; normal verifiers pass without skips. Remote stable/MSRV and Darwin helper gates pass. Registry-only packaging awaits support-crate publication before release. |
 | M1 | Accepted — E-08 | M0 | Separate-process F5 observer and exact logical allocation meter; 120-case Windows/Linux baselines each, plus 12 cases each on Windows x86 and both Macs. Cold/steady/burst/recovery, extended workloads, fixture overhead, latency/CPU and limitations documented. |
-| M2 | In progress | M1 | Remove unnecessary whole-body copies, premature serialization, and oversized retained capacity. Prove ownership/lifecycle behavior and measure memory and performance effects. Apply compatible light GDS conversion changes. |
-| M3 | Open | M1, relevant M2 ownership decisions | Add early per-request body limits and an aggregate buffered-HTTP budget. Resolve MQ-02/MQ-03 first. Prove accounting, early rejection, release, and progress under exhaustion. |
-| M4 | Open | M2, M3, applicable GDS decisions | Select a measured small-device profile and integrate light GDS changes. Record workload/target limits, remaining overhead, compatibility policy, and performance tradeoffs. Return broader work through the handoff. |
+| M2 | Accepted — E-09–E-12 | M1 | Ownership/copy and retention work verified with platform gates and paired measurements. Light GDS conversion is verified on x86, exact Linux adapter and Mac dependency compatibility. Whole-GDS/actual-device acceptance remains M4. |
+| M3 | Accepted — E-13 | M1, M2, MD-16 | Early per-request limits and aggregate retained-body controls implemented, including light GDS startup knobs. Ownership/reservation/release/progress proved; seven full gates, x86 companions and paired Windows/Linux observations pass. Final settings remain M4. |
+| M4 | In progress | M2, M3, applicable GDS decisions | M4.1 admission is verified. Select measured installation/device profiles; record workload limits, headroom, compatibility and pickup-latency/performance tradeoffs. Whole-GDS/actual-device acceptance remains open. |
+| M4.1 | Verified — E-14 | M3, MD-20 | Shared GDS workload admission, queue/handoff accounting, small-work protection and polling limits. Seven runtime reds resolved; native/ureq x86 suites and builds plus portable Linux stable/MSRV policy checks pass. Component measurements do not establish end-to-end acceptance. |
 
 Dependency sequence: **M0 → M1 → M2 → M3 → M4**. Scope M2/M3 into smaller stable sub-IDs when
 implementation details are concrete; do not renumber completed items. Broad GDS work may proceed
 in its own session but does not expand the M0 correctness pass.
+
+### M4.1 implementation checkpoint — 2026-09-08
+
+The owner authorizes practical workload admission to control ordinary retention and pathological
+pressure while protecting small requests. First slice: expose existing nbreq connection/inflight
+controls in GDS; track inbound queued bytes through poller handoff, pause/resume polling with
+global and per-instance watermarks; reserve outbound pipeline bytes before formatting/encryption;
+limit large deliveries so they cannot occupy all four existing POST workers, with a protected
+small-work byte allowance. Shared production admission spans WebRPC instances. Preserve 24 MiB
+body compatibility and protocol/retry/shutdown semantics. No automatic connection eviction.
+Seven failing integration tests are fixed and the final B suites/builds pass. Shared inbound
+32/16 MiB and peer 8/4 MiB watermarks pause/resume polling. The 128 MiB outbound reservation
+allowance protects 8 MiB for small frames and pauses intake at 96 MiB until it drains to 64 MiB.
+Three large deliveries cannot consume all four local POST workers. Poll admission is 16 total,
+four per origin, with configurable native HTTP 32/8/64 socket/inflight defaults and startup
+headroom checks. These allowances are not upfront allocations. Read the GDS private
+`gds/doc/nbreq_m4_admission.md` for exact environment controls and overload semantics.
+Final source is B; portable measurement C fixes a worker-timing flaw without changing B policy.
+Private source/evidence lives in the GDS repository; E-14 records identities. Actual-device/process
+acceptance remains separate. Soft watermarks do not bound already active replies or Delphi-owned
+data, and fewer same-origin polls can increase pickup latency. No live DLL replacement occurred.
 
 ### M2 item register
 
@@ -114,48 +155,34 @@ in its own session but does not expand the M0 correctness pass.
 | M2.2 | Verified — E-09 | Shared immutable ResponseBody and explicit unique Vec extraction preserve copying usage, empty/spare capacity, shared failure/retry, cross-thread and post-shutdown ownership. Thirteen companions, seven full verifiers and 120 paired cases pass. Less allocation churn; peak memory essentially unchanged. No aggregate budget yet. |
 | M2.3 | Verified — E-10 | Header-only preparation, bounded borrowed HTTP/TLS transmission, consuming redirect bodies; original request API/ceilings preserved. Six ownership reds, TLS-record red and deterministic shutdown-order red resolved. Ten memory tests, seven final full verifiers, x86, 120 paired cases and 20 timing cases pass. Large-transfer peaks fall; retained capacity remains M2.4. |
 | M2.4 | Verified — E-11 | Release fully consumed TLS plaintext; trim reusable HTTP idle send capacity above 128 KiB to 64 KiB. Three intended reds resolved, six companions, seven full verifiers, x86, 120 paired cases and 30 timing follow-ups pass. Preserve partial data, small buffers, connections and valid ceilings. Post-workload retention falls; allocation churn is essentially unchanged. |
-| M2.5 | Open | Apply light GDS consuming conversion after checking its current version/build workflow; preserve status/size/UTF-8 handling. Early network enforcement belongs to M3; broad GDS budgeting remains in the handoff. |
+| M2.5 | Verified — E-12 | Unique response-to-String transfer with shared copying fallback; status/limit/UTF-8 contracts preserved. Three allocation reds resolved; x86 HTTP/WebRPC, native/ureq DLLs, Linux adapter and both Mac dependency gates pass. GDS manifest/lock moved to local 0.2; installed DLL unchanged. |
 
-### M2.5 inspected scope — 2026-09-08
+### M2.5 completed scope — 2026-09-08
 
-Checkpoint commit `2f89bef` records review fixes and M0–M2.4, including evidence. The older
-F5 registry-comparison edits remain intact outside that commit. This subsection is inspection
-and a proposed implementation outline; no GDS production/test/dependency change or GDS build ran.
+Checkpoint 2f89bef records M0–M2.4; 2c382b7 records the initial GDS inspection.
+The user then cleared GDS and chose main-checkout nbreq 0.2 with local builds (MD-15),
+superseding the isolated-checkout recommendation. E-12 records final source and proof.
 
-The current GDS `gds/rust/gds/src/dplib/dphttpclient.rs` has two copying sites: `execute_text`
-and `nbreq_response_to_dp`. Both synchronous typed responses and `NbreqHttpWaiter::wait` already
-use the latter, so one small consuming helper can cover those paths. Proposed changes:
+GDS consumes unique response storage into String in typed sync/waiter and legacy-text
+paths. Unexpected sharing explicitly copies; typed non-2xx status/body, byte limits
+before UTF-8, and legacy status-first/detailed errors are preserved. JSON parsing still
+borrows. Three allocation reds resolved and five additional tests cover semantics and
+real delivery. No request-body, transport-policy, lifecycle or 24 MiB ceiling change.
 
-1. Preserve the response status, check the existing byte limit while borrowing the body, then
-   consume `Response::into_body().try_into_vec()`. On the normal unique-owner path, pass that
-   allocation directly to `String::from_utf8`. On an unexpectedly shared body, explicitly copy
-   the returned owner as a compatibility fallback; sharing must not create a new request failure.
-2. Use the same ownership extraction for `execute_text`, preserving its current status-first
-   rejection and detailed UTF-8 error string. The typed response path must still expose non-2xx
-   status/body and preserve limit/UTF-8 error precedence. Avoid a universal success-only helper.
-3. Leave `post_json`'s borrowed `serde_json::from_slice` path intact: it already avoids the body
-   copy. Request bodies, transport policy, cancellation, Engine lifecycle and 24 MiB ceilings
-   need no change for this item. Oversize checking here is after download but before conversion;
-   early network enforcement remains M3.
-4. Start with a red pointer/capacity test proving the unique Vec becomes the returned String
-   without allocating another payload buffer. Cover spare capacity and empty bodies, shared-owner
-   fallback, exact/over limits, invalid UTF-8, status handling, and synchronous/waiter delivery.
-   Retain the HTTP wire-format, WebRPC retry/cancellation/join tests and ureq-only compatibility.
+GDS manifest and lock now select local nbreq 0.2. Its local helpers retain private
+resolution and selected-path checks, now also supporting ureq-only diagnostics.
+Cargo exposed incompatible exact Core Foundation patches; nbreq-darwin now permits
+compatible 0.10 patches. GDS selects 0.10.0; the normal nbreq lock remains 0.10.1.
+Both Macs pass lower-patch library/helper tests on stable and Rust 1.85.
 
-Version/build finding: GDS's manifest **and lockfile** select registry nbreq `=0.1.0`. Its existing
-`test_rust.py --local-nbreq` and `build.ps1 -LocalNbreq` create a temporary sibling crate/private
-lockfile and verify that Cargo actually selected the requested path. They deliberately do not
-override the manifest's version requirement, so pointing them at this 0.2 checkout is insufficient.
-Recommend an isolated GDS development checkout with an explicit 0.2 requirement and those local
-overrides while release work is pending. Do not relabel nbreq as 0.1.0, widen the version range
-across incompatible APIs, or commit a machine-specific absolute dependency path.
+Windows x86 HTTP/WebRPC and both DLL builds pass with SkipCopy; the installed DLL
+hash is unchanged, and the final build cache is native. Linux tests the exact adapter
+source in a focused harness, not the full GDS DLL. E-12 preserves all evidence and
+scope limits. All remote jobs have finished. Nothing was published or deployed.
 
-The wrappers' ordinary-build source descriptions also hard-code 0.1.0; update those labels when
-the dependency transition lands. Windows acceptance uses the existing 32-bit Rust test wrapper
-and a DLL compile with `-SkipCopy`. Resolve the selected dependency graph and compatible lockfile
-before claiming integration; use a Linux adapter check where supported. The registry release
-transition, including the recorded nbreq-darwin prerequisite, is separate from local verification.
-Broader GDS queue/encoding admission and actual-device acceptance remain in the handoff.
+M2 is accepted for its defined scope. MQ-03 precedes M3's early limits and aggregate
+budget. Broad GDS queue/encoding policy and actual 128/256 MB device acceptance remain
+in the handoff. Unique transfer removes a copy; it does not remove GDS-owned memory.
 
 ### M0 item register
 
@@ -263,10 +290,10 @@ Thirty-two TCP connections with two 16 KiB windows reserve 1 MiB rather than 16 
 windows. That is not total process RAM. HTTP and standalone TCP connection ceilings are distinct;
 measure the combination actually used. GDS can reduce pressure by admitting less work at once.
 
-GDS currently permits 24 MiB HTTP bodies to accommodate large WebRPC frames. Its smaller
-request-specific response limits are checked after buffered completion and a further copy.
-Early enforcement and consuming conversion are light adapter work; changing the permitted frame
-sizes is a compatibility decision owned by the handoff.
+GDS currently permits 24 MiB HTTP bodies to accommodate large WebRPC frames. M2.5 now checks its
+smaller request-specific response limits after completion but before consuming conversion.
+Early enforcement remains M3; changing permitted frame sizes is a compatibility decision
+owned by the handoff.
 
 ## 5. Open design questions
 
@@ -274,9 +301,17 @@ sizes is a compatibility decision owned by the handoff.
 | --- | --- | --- | --- |
 | MQ-01 | How is verification offloaded with bounded workers/job data, cancellation, and joined shutdown? Timing out a caller cannot be assumed to free an executing platform verifier. | M0.1 / NBReq | Accepted — MD-06; E-04 |
 | MQ-02 | Which request, queued completion, returned response, and shared-body allocations stay charged? Define ownership transfer and any consuming/shared API before changing accounting. | M2/M3 / NBReq | Accepted — MD-13; Option C below |
-| MQ-03 | How is buffered capacity reserved and exhaustion reported? Prevent all partial bodies from holding the budget while waiting for more space; use sufficient advance reservation or explicit bounded failure. | M3 / NBReq | Open |
-| MQ-04 | Which large GDS operations are required, and should constrained devices split, stream, or explicitly reject them? Coordinate HTTP, encoded, decoded, and plaintext ceilings. | Before relevant M4 limits / GDS handoff | Open |
+| MQ-03 | How is buffered capacity reserved and exhaustion reported? Prevent all partial bodies from holding the budget while waiting for more space; use sufficient advance reservation or explicit bounded failure. | M3 / NBReq | Accepted — Option C, MD-16 |
+| MQ-04 | Which large GDS operations are required, and should constrained devices split, stream, or explicitly reject them? Coordinate HTTP, encoded, decoded, and plaintext ceilings. | Before relevant M4 limits / GDS handoff | MD-20 implements initial admission while retaining 24 MiB body compatibility. Splitting/streaming and constrained-device exceptional-operation policy remain deferred. |
 | MQ-05 | What total networking footprint and performance thresholds are acceptable on each target, after fixture and application memory are separated? | M1, finalize M4 / NBReq + GDS measurements | E-08 baseline available; application/target-device thresholds remain Open |
+
+Post-M3 owner clarification: 50–70 MB is normal comms-server usage, not a universal process
+ceiling; a large install at 512 MB is manageable. Preserve the 24 MiB body ceilings and use
+installation-appropriate admission to avoid pressure. A connection can retain an upload,
+response, staging and decoded application data, so 24 MiB does not bound its total RAM. M3
+tests deliberately exhaust configured body budgets and prove typed failure/release/progress;
+they do not establish recovery from arbitrary process/OS allocation failure. GDS workload
+admission, byte-based queue control and any eviction policy remain separate M4/handoff work.
 
 MQ-02–MQ-05 do not block M0. Preserve decisions with their rationale; if one changes, supersede it
 explicitly rather than silently rewriting the history.
@@ -445,6 +480,79 @@ TDD sequence:
   baseline. Linode's single CPU is shared by fixture/controller/client, unlike the Windows
   host; the current measurements cannot isolate an OS/backend performance difference.
 
+### MQ-03 decision — 2026-09-08, accepted Option C (MD-16)
+
+MQ-02 already fixes ownership and charge lifetime. This proposal chooses how capacity is
+acquired and what happens when insufficient capacity remains. It does not select GDS's final
+budget value or change any valid protocol ceiling.
+
+| Option | Advantage | Cost / failure mode |
+| --- | --- | --- |
+| A — reserve each request's full response allowance before submission | Can reject insufficient aggregate capacity before network transmission; reserve staging/growth headroom too for a meaningful body-budget guarantee. Reservation need not allocate the RAM immediately. | Very conservative with permissive ceilings: 32 requests with a 24 MiB response allowance need 768 MiB of response reservation alone, even when actual replies are tiny. Tight per-operation ceilings or lower concurrency become essential. |
+| B — reserve incrementally and wait for more budget | Uses budget according to actual growth and can absorb temporary contention. | Fully buffered replies are not exposed until complete. Several partial replies can occupy all capacity while each waits for more; retained caller responses can cause the same circular dependency. Deadlines bound some waits but do not provide useful progress. Do not use as the initial policy. |
+| C — reserve according to known size/growth, fail explicitly if unavailable | Supports small replies under large legal ceilings; bounds acquisition and avoids waiting on partial bodies. Little work on the ordinary path if accounting occurs per allocation/growth. Recommended initial policy. | Acceptance does not guarantee response capacity through completion. A request may fail after the server has acted. Contention is timing-dependent, and repeated pressure can starve large operations; GDS must control admission. |
+
+Accepted contract for C:
+
+1. Make the new aggregate cap explicitly configured initially. Preserve existing default
+   behavior until a measured profile is selected. It covers the MQ-02 buffered payload scope,
+   independently of per-request body limits and the existing streaming/TCP queue budget.
+2. Before accepting a request, acquire capacity for its existing body allocation and any
+   required body staging. If unavailable, reject before queueing/transmission. Do not reserve
+   the entire maximum response allowance for every pending request or quiet long poll.
+3. When validated HTTP framing establishes the actual response length, first enforce the
+   effective per-request ceiling, then reserve the required response capacity before body
+   allocation. Reservations are permission, not mandatory immediate allocation. HEAD/no-body
+   responses must not reserve a body merely because Content-Length advertises a representation.
+4. For chunked/close-delimited responses, acquire capacity before bounded growth. Failure to
+   acquire terminates that exchange with a distinct typed aggregate-budget reason; it does not
+   park an incomplete body waiting for capacity or automatically replay the HTTP operation.
+   Dispose of partial bodies and unusable connections correctly; unrelated work continues.
+5. Preserve MQ-02 lifetimes: retained results stay charged, aliases count once, destruction
+   frees storage before refund, and explicit unique transfer hands ownership to the caller.
+   Unused advance reservations may be returned without pretending retained storage was freed.
+6. Account for spare capacity and transient old/new-buffer overlap during growth. Avoid a
+   per-byte lock or repeated tiny reallocations. The implementation must justify how allocation
+   sizes are bounded; merely checking body length or invoking Vec reserve is insufficient.
+   TLS, sockets, stacks, allocator overhead and application-owned data remain separate headroom.
+7. Distinguish aggregate exhaustion from per-request oversize. Do not classify every exhaustion
+   as safe to retry: response-side failure can follow a successful server-side POST. Current
+   GDS HTTP retry classification excludes Limit errors; retain that behavior unless its
+   application delivery contract explicitly justifies a change.
+
+The principal trade-off is memory utilization versus a pre-send response-capacity guarantee.
+If a caller needs the latter, a deliberately requested full response reservation is a reasonable
+follow-up; it should not silently become the price of every ordinary request. GDS scheduling
+and known small reply ceilings may already cover that need. No extra reservation mode is
+proposed for the first implementation without a concrete consuming call site.
+
+The candidate 4–8 MiB budget remains an experiment for ordinary traffic. It cannot buffer a
+single 24 MiB response. Supporting such operations needs a larger budget, streaming/splitting,
+or an explicit constrained-device policy under MQ-04; C does not remove that physical limit.
+
+TDD first: deterministic pre-admission failure with no wire I/O; known-length oversize/capacity
+rejection; multiple chunked replies exhausting a tiny budget without hanging; exact cleanup and
+subsequent progress; retained/shared replies, transfer, cancellation and joined shutdown;
+growth-overlap/spare-capacity accounting; a POST whose server has acted before response-budget
+failure, proving no hidden retry or duplicate delivery. Reuse the M1 small/large measurement
+cases to assess accounting/growth overhead. Implement working controls first; choose final GDS
+values afterwards. The user reports that GDS generally limits replies to roughly 1 MiB because
+large Delphi allocations and fragmentation are troublesome. This is tuning context, not an
+instruction to replace the existing 24 MiB exceptional-operation ceilings with a hard 1 MiB cap.
+
+### M3 item register
+
+| ID | Status | Deliverable / acceptance |
+| --- | --- | --- |
+| M3.1 | Verified — E-13 | Optional request/response ceilings bounded by Engine ceilings; uploads fail before admission, replies during framing/receipt. Shared buffered/streamed request options preserve redirects and HEAD/no-body. GDS per-request pass-through proved red/green. |
+| M3.2 | Verified — E-13 | Independent retained-capacity ledger and optional aggregate knob. Spare capacity, concurrent admission, shared lifetime after shutdown, unique transfer and queued uploads tested. |
+| M3.3 | Verified — E-13 | Known lengths reserve without immediate allocation; bounded growth charges old/new overlap. Receive events/TLS plaintext retain permits. Cleartext upload windows share original storage. Typed pressure, cleanup, later progress and worker cancellation tested. |
+| M3.4 | Verified — E-13 | Current/peak observations and GDS startup controls documented. Final E passes seven full gates, seventeen x86 companions, native/ureq GDS checks, 120 memory cases, 36 longer timing cases and four configured-cap probes. Earlier rejected fixture/harness attempts remain visible. Final numerical profile remains M4. |
+
+References: [Rust Vec allocation guarantees](https://doc.rust-lang.org/std/vec/struct.Vec.html#method.try_reserve_exact)
+do not promise precisely minimal capacity; [HTTP retry semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)
+require particular care when a non-idempotent operation might already have been applied.
+
 ## 6. Verification matrix and evidence
 
 | Gate | Required evidence | Current state |
@@ -469,6 +577,9 @@ TDD sequence:
 | E-09 | [M2.1/M2.2 report](nbreq_m2_response_ownership.md), 2026-09-07; [evidence](evidence/nbreq-m2-response-evidence-20260907.tar.gz), [source](evidence/nbreq-m2-response-20260907.tar.gz), [receipt](evidence/nbreq_m2_response_artifacts.json) | MQ-02 API and moved terminal delivery: thirteen ownership companions, Windows/x86 checks, all six current-source remote stable/MSRV verifiers and 120 valid paired Windows/Linux cases. Roughly 50 KiB less cumulative allocation per 50 KiB response; large-transfer peak remains about 14.4 MiB. Stale-cache attempts and an ARM first failure/rechecks are retained separately. |
 | E-10 | [M2.3 request report](nbreq_m23_request_ownership.md), [artifact identities](evidence/nbreq_m23_request_artifacts.json), [evidence](evidence/nbreq-m23-request-evidence-20260907.tar.gz), 2026-09-07 | M2.3 verified. Seven final full verifiers, ten memory tests, x86, shutdown/DNS rechecks, 120 paired cases and 20 timing follow-ups pass. Six ownership reds, TLS-record red and shutdown-order red retained; all failed attempts documented. Final D differs from measured C only in the DNS test fixture. Large-transfer heap peaks improve about 27% Windows/17% Linux; retention and performance limits are explicit. |
 | E-11 | [M2.4 retained-capacity report](nbreq_m24_retained_capacity.md), [artifact identities](evidence/nbreq_m24_retention_artifacts.json), [evidence](evidence/nbreq-m24-retention-evidence-20260908.tar.gz), 2026-09-08 | M2.4 verified: three intended reds, six companions, seven full verifiers, 29 x86 M2 tests, 120 paired cases and 30 longer timing cases. A idle-eviction fixture failures preserved; B corrects synchronization only. Mixed-workload post-large idle heap nearly halves on both measured hosts; ordinary churn/retention and performance limits are explicit. |
+| E-12 | [M2.5 GDS report](nbreq_m25_gds_conversion.md), [artifact identities](evidence/nbreq_m25_artifacts.json), 2026-09-08 | Verified: three allocation reds, eight new tests; x86 HTTP/WebRPC and native/ureq builds; Linux exact adapter; both Mac stable/MSRV lower-patch tests. Public Mac source/evidence and 89-file private GDS evidence archived. No deployment or registry publication. |
+| E-13 | [M3 controls and measurements](nbreq_m3_memory_controls.md), [artifact identities](evidence/nbreq_m3_artifacts.json), [evidence](evidence/nbreq-m3-memory-evidence-20260908.tar.gz), 2026-09-08 | M3 accepted: five source snapshots, 2,696 public evidence files and 45 private GDS files. Final E seven full gates, seventeen x86 companions, 120 memory cases, 36 longer timings, four cap probes and native/ureq GDS checks pass. Per-body defaults unchanged; final aggregate/GDS settings remain open. |
+| E-14 | [M4.1 GDS admission](nbreq_m4_gds_admission.md), [artifact identities](evidence/nbreq_m4_artifacts.json), 2026-09-08 | Final production B verified: seven runtime reds resolved; x86 native HTTP/WebRPC 17/90 and ureq-only 2/89 tests pass; both DLL builds pass with SkipCopy. Nine portable policy tests pass on x86 and Linux stable/MSRV. Corrected C component timings use unchanged B policy; A/B timing is superseded. 191 private source/evidence files archived and checked in GDS. All jobs finished; installed DLL and nbreq M3 E source unchanged. Full GDS/device memory and pickup-latency acceptance remain M4. |
 
 For each new evidence entry record date, work ID, exact source or dirty-diff identity, target,
 features/build mode, command, result, artifact, and limitations. A failed correctness or quiescence
@@ -763,6 +874,13 @@ runtime tests, other supported-platform gates, and M1 memory/performance observa
 | MD-12 · 2026-09-05 | Use separate fixture/client processes and plain/meter observations for the baseline. | Preserve the legacy F5 observer and distinguish exact logical heap from sampled process memory, native ownership, fixture cost and allocator retention. Freeze source/lockfiles and require correctness/cleanup before accepting timings. No small-device default or performance threshold is chosen from M1 alone. |
 | MD-13 · 2026-09-07 | User accepted MQ-02 Option C: track retained NBReq body ownership, share immutable response bodies, and allow explicit unique Vec transfer to application ownership. | Existing borrowed/copying consumers remain supported. Response clone semantics change from deep body copies to shared immutable bytes; consuming APIs are additive. M2 establishes ownership and removes copies; M3 implements charges/reservation after MQ-03. |
 | MD-14 · 2026-09-08 | M2.4 internal retention policy: release fully consumed TLS plaintext; on reusable HTTP idle parking, trim send capacity above 128 KiB to 64 KiB. | Empty plaintext storage is replaced on the next receive anyway. Hysteresis preserves ordinary send-buffer reuse, connections, TLS sessions and valid payload ceilings. Large repeated uploads may regrow/retrim storage; this is not aggregate admission or a whole-device budget. E-11 records proof and measurements. |
+| MD-15 · 2026-09-08 | User explicitly chose “Move GDS to 0.2 now; use local nbreq builds” after clearing the workspace. | Supersedes isolated-checkout recommendation. Use the existing local-build/test overrides with an explicit =0.2.0 manifest; verify x86 DLL with SkipCopy. Preserve unrelated GDS work and leave publication/deployment separate. |
+
+| MD-16 · 2026-09-08 | User accepted MQ-03 Option C and asked for functioning knobs before choosing values. | Explicit opt-in aggregate cap; reserve existing request storage before admission, known reply length at framing and unknown replies before bounded growth. Fail with a distinct Limit reason, no waiting or hidden replay. GDS's usual roughly 1 MiB replies guide later tuning; retain valid exceptional ceilings. |
+| MD-17 · 2026-09-08 | M3 implementation uses exact-size boxed storage for controlled growth and shared cleartext upload windows. | Charge old/new overlap, reserve known lengths before payload allocation, and keep permits with receive events/TLS plaintext across worker cancellation. Cleartext sends retain the original admitted allocation rather than requiring a copied payload queue. TLS session/record output storage remains separate headroom; raw receive windows are conservatively charged including framing. |
+| MD-18 · 2026-09-08 | Correct the public DNS fixture's port reservation order during M3 gates. | Windows UDP selected 64 consecutive ports excluded for TCP (WSAEACCES 10013); TCP-first probe passed 64/64. Alternate TCP-first/UDP-first, matching the existing private DNS fixture strategy. No host exclusions or production DNS behavior changed. A retains failure evidence; B changes only this test helper. |
+| MD-19 · 2026-09-08 | Preserve uncapped receive batching, append validated payload spans in bulk, and use vectored shared-upload writes after initial M3 observations exposed overhead. | C/D/E retain accounting and early limits. Seventeen companions include forced short writes across wrapped headers/body; E passes all gates. Longer small-message throughput is comparable; Linux latency variation and separate TLS overhead remain explicit in E-13. |
+| MD-20 · 2026-09-08 | User authorizes practical GDS workload admission: keep ordinary usage controlled, slow incoming work under pressure and protect small requests. | M4.1 implements shared inbound watermarks, outgoing reservations, small-work headroom and eligible-origin poll admission. Retain 24 MiB body compatibility; simultaneous exceptional work may be refused before encoding. The initial 128 MiB outbound allowance is not preallocated or a whole-process cap. No automatic eviction/replay; full device profiles and further protocol work remain separate. E-14 records verification, low component overhead and the same-origin pickup-latency tradeoff. |
 
 ## 8. Progress log
 
@@ -793,6 +911,9 @@ Append concise entries. Keep the resume checkpoint and item status current as we
 | 2026-09-08 · M2.4 implementation / validation | Three intended capacity reds resolved; six companions cover partial bytes, clean idle parking, threshold boundaries, large-to-small connection reuse and cancellation. A full gates exposed an existing fixture that closed before idle parking. B synchronizes the intended state and keeps all eviction assertions. | E-11, MD-14. A failures retained on every host; B production is unchanged from A. Windows and both Macs pass; Windows comparison/timing complete. Finish Linux gates/measurements and archive final evidence. |
 | 2026-09-08 · M2.4 verified | Seven B full verifiers, 29 x86 M2 tests, 120 paired cases and 30 longer timing cases pass. Mixed-workload post-large idle heap falls 1.88→0.94 MiB Windows / 1.95→1.01 MiB Linux; ordinary churn and small-call retention remain essentially unchanged. | E-11. Two source snapshots and 1,049 evidence files archived and checked; all jobs finished. Timing remains qualified; repeated large uploads may regrow/retrim buffers. Next M2.5 light GDS conversion; MQ-03 before M3 budgets. |
 | 2026-09-08 · checkpoint and M2.5 inspection | Commit 2f89bef records review/memory work through M2.4; older F5 edits remain outside it. Read GDS's adapter, manifest/lockfile and build/test helpers. Scoped two consuming conversion sites, pointer/capacity reds, shared fallback and error-precedence companions. | M2.5 outline above. GDS still pins 0.1.0; existing local overrides require an explicit compatible version constraint. Recommend isolated 0.2 integration first. No GDS code, dependency, build or deployed DLL changed. |
+| 2026-09-08 · M2.5 verified / M2 accepted | User chose main GDS 0.2 with local builds. Three allocation reds resolved; unique String conversion and explicit shared fallback preserve all response semantics. Cargo patch conflict resolved with compatible Darwin dependency range. | E-12 / MD-15. X86 HTTP/WebRPC, native/ureq DLL builds, Linux adapter and both Mac stable/MSRV gates pass. 89 private GDS evidence files and public Mac source/evidence archived. Installed DLL unchanged; all jobs finished. MQ-03 next before M3. |
+| 2026-09-08 · M3 accepted | User accepted Option C and asked for working knobs before values. Implemented per-request early limits, retained-capacity accounting, bounded reservation/growth, staging ownership and GDS startup controls. Preserved actual runtime reds and subsequent fixture/harness failures; refined measured hot paths. | E-13 / MD-16–MD-19. Final E seven full gates, seventeen x86 companions, 120 memory cases, 36 timing cases, four cap probes and GDS checks pass. Five source archives, 2,696 public evidence files and 45 private GDS files checked. All jobs finished; installed DLL unchanged. M4/MQ-04/MQ-05 are next. |
+| 2026-09-08 · M4.1 verified | User authorized workload admission and small-request protection. Seven runtime reds fixed; final B adds outgoing-pressure intake pauses. C corrects the component benchmark clock without changing B production. | E-14 / MD-20. X86 native/ureq suites and both builds pass; portable Windows/Linux stable/MSRV policy checks pass. 191 private files archived; all jobs finished. Component reservation overhead is low, but whole-GDS memory and same-origin pickup latency require representative installation measurements. nbreq source and installed DLL unchanged; no commit. |
 
 ## 9. Update and handoff discipline
 
