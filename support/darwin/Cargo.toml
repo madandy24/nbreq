@@ -11,7 +11,8 @@ publish = ["crates-io"]
 include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "=0.10.1"
+# Permit compatible patch versions used by consumers (for example serialport).
+core-foundation = "0.10.0"
 system-configuration = "=0.8.0"
 
 [lints.rust]
