@@ -45,7 +45,6 @@ default = ["native", "resolver"]
 native = [
     "dep:getrandom",
     "dep:httparse",
-    "dep:ipconfig",
     "dep:mio",
     "dep:nbreq-darwin",
     "dep:nbreq-winpoll",
@@ -66,9 +65,8 @@ rustls-platform-verifier = { version = "=0.7.0", optional = true, default-featur
 url = { version = "=2.5.8", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-ipconfig = { version = "=0.3.4", optional = true, default-features = false }
 windows-registry = { version = "=0.6.1", optional = true }
-nbreq-winpoll = { path = "support/winpoll", version = "0.1.0", optional = true }
+nbreq-winpoll = { path = "support/winpoll", version = "0.1.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 resolv-conf = { version = "=0.7.6", optional = true, default-features = false }

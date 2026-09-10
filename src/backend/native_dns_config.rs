@@ -111,7 +111,7 @@ fn finish(
 
 #[cfg(windows)]
 mod platform {
-    use ipconfig::OperStatus;
+    use nbreq_winpoll::dns::DnsAdapter;
     #[cfg(feature = "resolver")]
     use windows_registry::LOCAL_MACHINE;
 
@@ -131,41 +131,62 @@ mod platform {
         address: SocketAddr,
     }
 
+    struct RankedConfig {
+        servers: Vec<RankedServer>,
+        #[cfg(feature = "resolver")]
+        adapters: Vec<RankedAdapter>,
+    }
+
     pub(super) fn discover() -> Result<DiscoveredResolverConfig, Error> {
-        let adapters = ipconfig::get_adapters().map_err(|error| {
+        let adapters = nbreq_winpoll::dns::adapters().map_err(|error| {
             Error::new(
                 ErrorKind::Internal,
                 format!("Windows DNS adapter discovery failed: {error}"),
             )
         })?;
+        let ranked = rank_adapters(adapters);
+        #[cfg(feature = "resolver")]
+        let search_suffixes = windows_search_suffixes(&ranked.adapters);
+        #[cfg(not(feature = "resolver"))]
+        let search_suffixes = std::iter::empty::<&'static str>();
+        finish(
+            ranked.servers.into_iter().map(|server| server.address),
+            search_suffixes,
+            DEFAULT_ATTEMPT_TIMEOUT,
+            DEFAULT_ATTEMPTS,
+        )
+    }
+
+    fn rank_adapters(adapters: Vec<DnsAdapter>) -> RankedConfig {
         #[cfg(feature = "resolver")]
         let mut ranked_adapters = Vec::new();
         let mut ranked_servers = Vec::new();
         for (adapter_order, adapter) in adapters.into_iter().enumerate() {
-            if adapter.oper_status() != OperStatus::IfOperStatusUp {
+            if !adapter.up {
                 continue;
             }
             #[cfg(feature = "resolver")]
             ranked_adapters.push(RankedAdapter {
-                metric: adapter.ipv4_metric().min(adapter.ipv6_metric()),
+                metric: adapter.ipv4_metric.min(adapter.ipv6_metric),
                 adapter_order,
-                name: adapter.adapter_name().to_owned(),
+                name: adapter.name,
             });
-            for (server_order, address) in adapter.dns_servers().iter().copied().enumerate() {
+            for (server_order, address) in adapter.dns_servers.into_iter().enumerate() {
                 let (metric, address) = match address {
-                    IpAddr::V4(address) => (
-                        adapter.ipv4_metric(),
-                        SocketAddr::new(IpAddr::V4(address), DNS_PORT),
+                    SocketAddr::V4(address) => (
+                        adapter.ipv4_metric,
+                        SocketAddr::new(IpAddr::V4(*address.ip()), DNS_PORT),
                     ),
-                    IpAddr::V6(address) => {
-                        let scope_id = if address.is_unicast_link_local() {
-                            adapter.ipv6_if_index()
-                        } else {
-                            0
-                        };
+                    SocketAddr::V6(address) => {
+                        let scope_id =
+                            if address.scope_id() == 0 && address.ip().is_unicast_link_local() {
+                                adapter.ipv6_if_index
+                            } else {
+                                address.scope_id()
+                            };
                         (
-                            adapter.ipv6_metric(),
-                            SocketAddr::V6(SocketAddrV6::new(address, DNS_PORT, 0, scope_id)),
+                            adapter.ipv6_metric,
+                            SocketAddr::V6(SocketAddrV6::new(*address.ip(), DNS_PORT, 0, scope_id)),
                         )
                     }
                 };
@@ -181,16 +202,11 @@ mod platform {
             .sort_by_key(|server| (server.metric, server.adapter_order, server.server_order));
         #[cfg(feature = "resolver")]
         ranked_adapters.sort_by_key(|adapter| (adapter.metric, adapter.adapter_order));
-        #[cfg(feature = "resolver")]
-        let search_suffixes = windows_search_suffixes(&ranked_adapters);
-        #[cfg(not(feature = "resolver"))]
-        let search_suffixes = std::iter::empty::<&'static str>();
-        finish(
-            ranked_servers.into_iter().map(|server| server.address),
-            search_suffixes,
-            DEFAULT_ATTEMPT_TIMEOUT,
-            DEFAULT_ATTEMPTS,
-        )
+        RankedConfig {
+            servers: ranked_servers,
+            #[cfg(feature = "resolver")]
+            adapters: ranked_adapters,
+        }
     }
 
     #[cfg(feature = "resolver")]
@@ -231,6 +247,63 @@ mod platform {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         })
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn dns_ranking_preserves_status_family_metrics_ties_and_scopes() {
+            let make = |name: &str, up, ipv4_metric, ipv6_metric, addresses: &[&str]| DnsAdapter {
+                name: name.to_owned(),
+                up,
+                ipv4_metric,
+                ipv6_metric,
+                ipv6_if_index: 17,
+                dns_servers: addresses
+                    .iter()
+                    .map(|s| s.parse().expect("fixture address"))
+                    .collect(),
+            };
+            let ranked = rank_adapters(vec![
+                make("down", false, 0, 0, &["192.0.2.1:53"]),
+                make(
+                    "a",
+                    true,
+                    30,
+                    5,
+                    &[
+                        "192.0.2.2:0",
+                        "[fe80::1]:0",
+                        "[fe80::2%29]:0",
+                        "[2001:db8::1]:0",
+                    ],
+                ),
+                make("b", true, 5, 30, &["192.0.2.3:99", "192.0.2.4:0"]),
+                make("c", true, 4, 99, &[]),
+            ]);
+            assert_eq!(
+                ranked.servers.iter().map(|s| s.address).collect::<Vec<_>>(),
+                [
+                    "[fe80::1%17]:53",
+                    "[fe80::2%29]:53",
+                    "[2001:db8::1]:53",
+                    "192.0.2.3:53",
+                    "192.0.2.4:53",
+                    "192.0.2.2:53",
+                ]
+                .map(|s| s.parse::<SocketAddr>().expect("expected address"))
+            );
+            #[cfg(feature = "resolver")]
+            assert_eq!(
+                ranked
+                    .adapters
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["c", "a", "b"]
+            );
+        }
     }
 }
 

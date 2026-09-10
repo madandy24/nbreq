@@ -1,9 +1,9 @@
 [package]
 name = "nbreq-winpoll"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
-description = "Windows polling compatibility support for NBReq"
+description = "Windows polling and DNS discovery compatibility support for NBReq"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/madandy24/nbreq"
 readme = "README.md"
@@ -11,7 +11,7 @@ publish = ["crates-io"]
 include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

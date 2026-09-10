@@ -27,11 +27,15 @@ be used in ordinary deployments. Resource limits, cancellation, and consuming En
 part of the public contract. NBReq's public diagnostics are intended to be payload-free, but callers
 remain responsible for protecting request and response values they choose to log.
 
-NBReq proper forbids unsafe Rust. Windows polling compatibility and macOS System Configuration
+NBReq proper forbids unsafe Rust. Windows polling/DNS discovery and macOS System Configuration
 conversion/notification FFI are isolated in the implementation-detail `nbreq-winpoll` and
 `nbreq-darwin` support crates behind safe interfaces. Neither helper is intended as a standalone
 consumer API. macOS resolver configurations that cannot be represented safely are rejected
 rather than flattened into an incorrect global DNS route.
+
+Windows DNS discovery reads only the needed IP Helper fields through bounds-checked byte slices.
+It does not decode unused adapter descriptions or friendly names; malformed required records
+return errors. DNS ranking, interface filtering and registry search-suffix policy remain in NBReq.
 
 ## Reviewed advisory exceptions
 
