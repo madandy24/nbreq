@@ -2,8 +2,9 @@
 
 2026-09-15. The scoped pass is implemented on `codex/pre-r5-release`, based on R4 `68649ee`.
 Planning commit `db55c31` records the accepted scope; `9c4c46d` contains the three failing tests.
-Packaging and the remote checkpoint are pending. No publication, tag, main merge or GDS change
-is included. The [release plan](nbreq_020_release_plan.md) owns the remaining R5/R6 gates.
+Fix and package source: **`a44cac5788d0596040ba65df29ccff387b5b493d`**. Local validation and
+packaging are complete; the remote checkpoint is pending. No publication, tag, main merge or
+GDS change is included. The [release plan](nbreq_020_release_plan.md) owns the remaining R5/R6 gates.
 
 ## Changes and proof
 
@@ -19,7 +20,8 @@ bug, not a demonstrated current HTTP-triggered failure.
 All six budget tests pass, including the three new regressions, old-plus-new allocation accounting,
 and concurrent admission bounds. The complete Windows x64 stable verifier passes **24/24 stages**
 in **131.476 s**, including 421 default library tests and 13 winpoll tests. Raw red/green output is
-retained under `target/pre-r5-20260915` pending evidence sealing.
+sealed in the [evidence archive](evidence/nbreq-pre-r5-20260915.tar.gz), with exact identities in
+the [artifact manifest](evidence/nbreq_pre_r5_artifacts.json).
 
 Ordinary root/support runtime dependencies now accept Cargo-compatible ranges at the same tested
 lower bounds, with feature choices unchanged. Dev/tool pins and the documented test-only `time`
@@ -65,13 +67,40 @@ each exact archive and its source identity, checks packaged relative documentati
 writes a path/hash/file inventory. It uses explicit local helper overrides for the root package;
 it does not publish. The old main `target/package` files are not selected or removed.
 
+All three packages from clean commit `a44cac5` pass `cargo package --locked --offline`, including
+Cargo's package verification. The root's 14 relative Markdown links resolve to included files.
+Root normalization removes local helper paths and retains their release version requirements.
+These Windows x64 package checks do not establish native macOS behavior or registry acceptance.
+
+| Exact archive | Bytes | Files | SHA256 |
+| --- | ---: | ---: | --- |
+| nbreq-darwin-0.1.0.crate | 11,377 | 8 | `4fee1289f9b9d4949c3f48c9f7e47166afd15299f4185916ef1e304e20d31873` |
+| nbreq-winpoll-0.1.1.crate | 13,034 | 10 | `7284d7fedda8a13f4bf53aef3634c0ed4097dc94b6400c1f50b8a195791aa55f` |
+| nbreq-0.2.0.crate | 336,320 | 82 | `fa099cb2213705e51e913c6a1f8f94afc5c2ee28e2848c491424734fb44d0a63` |
+
+The sealed evidence archive contains **322 files**, **1,700,989 bytes**, SHA256
+`cde23b9744e4da6a576bc327cddca59e54dfb719c3ff17c4ee96b48da707d4c6`.
+Every archived member was compared with its selected input. It includes red/green logs, the
+original Mio resolution failure, full verifier output, four fresh consumer locks/test outputs,
+the exact packages, source snapshot, link checks and outgoing-history inventory; build trees
+are excluded. The source snapshot matches the validation input hashes. Later report and private
+tool README edits do not change the packaged crate inputs.
+
+The fix, manifest changes, compatibility documentation and validation tools were mirrored into
+main only after its original file hashes/content were checked. Its unrelated work and unreleased
+notices were preserved, and Cargo.lock was unchanged. The clean branch owns the commits.
+
 crates.io rewrites relative README links to repository `blob/HEAD` links. Existing relative links
 are not inherently broken. Newly added docs must reach the repository's default branch, or use
 verified release-specific destinations, before publication. R5/R6 retain that integration and
 actual published README/docs.rs check; validating archive targets alone is not hosted-link proof.
+On September 15, remote default branch `5441d205` contains the older consumer guide but lacks
+`docs/migrating-to-0.2.md`, `examples/bounded_http.rs`, `examples/resolve.rs` and
+`examples/tcp_echo.rs`. Integrating the candidate documentation before publication resolves these
+known destinations; this pass does not merge main.
 
 R5 still needs the final integrated source's platform/MSRV/x86 and hosted CI checks, refreshed
 advisory/license evidence (including the advisory DB commit/date), and registry-only acceptance.
-Both helper packages need rebuilding after their manifest changes and separate publication
-authorization. Either helper may publish first; both must resolve before the root registry gate.
+Fresh helper candidates are included above; they still need final R5 acceptance and separate
+publication authorization. Either helper may publish first; both must resolve before the root registry gate.
 The completed R4 soaks remain historical evidence and were not repeated here.

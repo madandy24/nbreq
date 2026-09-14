@@ -29,3 +29,20 @@ Example processes have 45-second bounds (60 seconds for live HTTPS).
 
 The root package allowlist excludes this directory. Use `cargo test --lib` here; the probe bins
 deliberately fail in feature combinations where their imported surface should be absent.
+
+## Pre-R5 dependency and packaging checks
+
+`python pre_r5.py --out NEW_EVIDENCE_DIRECTORY` resolves fresh online consumer graphs on stable
+and Rust 1.85, both alone and alongside an explicit newer compatible Mio requirement. It runs
+default/native-only/minimal/test-support tests and negative feature probes, preserving locks,
+compiler versions and logs. It uses local root, Darwin and winpoll overrides, so these checks
+do not establish registry-only installation.
+
+`python package_candidate.py --out NEW_EVIDENCE_DIRECTORY` requires a clean candidate checkout
+and packages all three crates with locked offline verification into that fresh directory. Root
+verification uses explicit current local helper overrides. `packages.json` names each exact
+archive, source commit, SHA256, included file and relative documentation target. It neither
+selects old archives from another target directory nor uploads/publishes anything. Native macOS
+behavior still requires macOS execution; compiling its gated support crate on Windows is not
+macOS validation. Both scripts require Python 3.11 or later and bound each Cargo command to
+15 minutes.

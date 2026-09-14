@@ -1,0 +1,27 @@
+{
+  "archive": "nbreq-pre-r5-20260915.tar.gz",
+  "bytes": 1700989,
+  "sha256": "cde23b9744e4da6a576bc327cddca59e54dfb719c3ff17c4ee96b48da707d4c6",
+  "files": 322,
+  "source_commit": "a44cac5788d0596040ba65df29ccff387b5b493d",
+  "red_commit": "9c4c46dc78512ce2f47134688045b3e1d68ed1e5",
+  "registry_only": false,
+  "packages": {
+    "nbreq-darwin-0.1.0.crate": {
+      "sha256": "4fee1289f9b9d4949c3f48c9f7e47166afd15299f4185916ef1e304e20d31873",
+      "bytes": 11377,
+      "commit": "a44cac5788d0596040ba65df29ccff387b5b493d"
+    },
+    "nbreq-winpoll-0.1.1.crate": {
+      "sha256": "7284d7fedda8a13f4bf53aef3634c0ed4097dc94b6400c1f50b8a195791aa55f",
+      "bytes": 13034,
+      "commit": "a44cac5788d0596040ba65df29ccff387b5b493d"
+    },
+    "nbreq-0.2.0.crate": {
+      "sha256": "fa099cb2213705e51e913c6a1f8f94afc5c2ee28e2848c491424734fb44d0a63",
+      "bytes": 336320,
+      "commit": "a44cac5788d0596040ba65df29ccff387b5b493d"
+    }
+  },
+  "note": "Budget red/green, dependency conflict, 24-stage Windows verifier, four fresh stable/MSRV consumers with locks, three verified packages, documentation link and outgoing-history inventory. Build trees excluded. Source snapshot matches validation input hashes; later report/tool README edits do not change crate inputs."
+}
