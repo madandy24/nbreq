@@ -246,6 +246,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pre_r5_growth_beyond_plan_uses_reserved_budget() {
+        let budget = BodyBudget::new(Some(8192));
+        let mut body = BodyBuffer::new(Some(budget.clone()));
+        body.plan_capacity(4096).expect("reserve without allocating");
+        assert_eq!(body.capacity(), 0);
+        assert_eq!(budget.used(), 4096);
+
+        body.extend(&vec![7; 8192], 8192)
+            .expect("the existing reservation is part of the 8192-byte allocation");
+        assert_eq!(body.as_slice(), &[7; 8192]);
+        assert_eq!(body.capacity(), 8192);
+        assert_eq!(budget.used(), 8192);
+        assert_eq!(budget.peak(), 8192);
+        drop(body);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn pre_r5_growth_beyond_plan_does_not_retain_an_unused_charge() {
+        let budget = BodyBudget::new(None);
+        let mut body = BodyBuffer::new(Some(budget.clone()));
+        body.plan_capacity(4096).expect("reserve");
+        body.extend(&vec![9; 8192], 8192).expect("grow");
+        assert_eq!(budget.used(), body.capacity());
+        assert_eq!(budget.peak(), 8192);
+        drop(body);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn pre_r5_failed_planned_growth_preserves_bytes_and_reservation_for_retry() {
+        let budget = BodyBudget::new(Some(10 * 1024));
+        let mut body = BodyBuffer::admit(vec![3; 2048], budget.clone()).expect("old allocation");
+        body.plan_capacity(4096).expect("future allocation reservation");
+        let original = body.as_ptr();
+        let competing = budget.acquire(1).expect("competing byte");
+
+        let error = body.reserve_capacity(8192).expect_err("old plus new must fit together");
+        assert_eq!(error.limit_kind(), Some(LimitKind::BufferedBodyBytes));
+        assert_eq!(body.as_ptr(), original);
+        assert_eq!(body.as_slice(), &[3; 2048]);
+        assert_eq!(body.capacity(), 2048);
+        assert_eq!(budget.used(), 2048 + 4096 + 1);
+
+        drop(competing);
+        body.reserve_capacity(8192)
+            .expect("retry reuses the reservation after competing work releases");
+        assert_eq!(body.as_slice(), &[3; 2048]);
+        assert_eq!(body.capacity(), 8192);
+        assert_eq!(budget.used(), 8192);
+        assert_eq!(budget.peak(), 10 * 1024);
+        drop(body);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
     fn m3_growth_charges_old_and_new_capacity_and_failure_preserves_original() {
         let budget = BodyBudget::new(Some(12 * 1024));
         let mut body = BodyBuffer::new(Some(budget.clone()));
