@@ -36,12 +36,15 @@ def validate(folder, seconds):
 
 
 def pack(args):
-    preflight, soak = args.preflight.resolve(), args.soak.resolve()
+    preflight = args.preflight.resolve()
+    soak = args.soak.resolve() if args.soak else None
     assert read(preflight/'result.json')['status'] == 'passed'
-    assert read(soak/'result.json')['status'] == 'passed'
-    assert read(soak/'result.json')['source'] == SOURCE
-    results = [validate(preflight/'smoke-default', 30), validate(preflight/'smoke-native', 180),
-               validate(soak/'mixed', 14400)]
+    assert read(preflight/'result.json')['source'] == SOURCE
+    results = [validate(preflight/'smoke-default', 30), validate(preflight/'smoke-native', 180)]
+    if soak:
+        assert read(soak/'result.json')['status'] == 'passed'
+        assert read(soak/'result.json')['source'] == SOURCE
+        results.append(validate(soak/'mixed', 14400))
     checks = read(preflight/'checks/checks.json')
     assert len(checks) == 5
     for item in checks[:3]:
@@ -51,18 +54,22 @@ def pack(args):
     binaries = read(preflight/'result.json')['binaries']
     for label, binary in binaries.items():
         assert hashlib.sha256(Path(binary['path']).read_bytes()).hexdigest() == binary['sha256']
-    assert results[-1]['metadata']['binary_sha256'] == binaries['default']['sha256']
+    for result, label in zip(results, ['default', 'native', 'default']):
+        assert result['metadata']['binary_sha256'] == binaries[label]['sha256']
     output = args.output.resolve()
     assert not output.exists(), 'do not overwrite an evidence archive'
     inputs = []
     for label, folder in [('preflight', preflight), ('soak', soak)]:
+        if folder is None:
+            continue
         for current, dirs, files in os.walk(folder):
             dirs[:] = [name for name in dirs if not name.startswith('build-') and name != '__pycache__']
             for name in sorted(files):
                 path = Path(current)/name
                 assert not path.is_symlink() and folder in path.resolve().parents
                 inputs.append((path, label+'/'+path.relative_to(folder).as_posix()))
-    manifest = dict(source=SOURCE, host=args.label, files={name: hashlib.sha256(path.read_bytes()).hexdigest()
+    kind = 'four-hour-soak' if soak else 'preflight-companion'
+    manifest = dict(source=SOURCE, host=args.label, kind=kind, files={name: hashlib.sha256(path.read_bytes()).hexdigest()
                                                         for path, name in inputs})
     encoded = json.dumps(manifest, indent=2).encode('utf-8')
     with tarfile.open(output, 'w:gz', compresslevel=9) as archive:
@@ -71,7 +78,7 @@ def pack(args):
         entry = tarfile.TarInfo('evidence-manifest.json')
         entry.size = len(encoded)
         archive.addfile(entry, io.BytesIO(encoded))
-    summary = dict(host=args.label, source=SOURCE, archive=str(output), bytes=output.stat().st_size,
+    summary = dict(host=args.label, source=SOURCE, kind=kind, archive=str(output), bytes=output.stat().st_size,
                    sha256=hashlib.sha256(output.read_bytes()).hexdigest(), files=len(inputs),
                    final=results[-1]['final'], process_summary=results[-1]['process_summary'])
     output.with_suffix('.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
@@ -83,7 +90,7 @@ def main():
     commands = parser.add_subparsers(dest='mode', required=True)
     build = commands.add_parser('pack')
     build.add_argument('--preflight', type=Path, required=True)
-    build.add_argument('--soak', type=Path, required=True)
+    build.add_argument('--soak', type=Path, help='Omit only for a preflight-only companion archive.')
     build.add_argument('--output', type=Path, required=True)
     build.add_argument('--label', required=True)
     export = commands.add_parser('emit')

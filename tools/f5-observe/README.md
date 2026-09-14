@@ -35,7 +35,10 @@ the ordinary 0.2 feature set and is descriptive only.
 It checks every input hash and retains exact binary hashes, commands, toolchains, raw inner
 samples, outer process samples and byte/quiescence/cleanup checks. Both versions use the shared
 explicit Engine/Client/Request native HTTP source; registry 0.1.1 has its own unchanged lockfile.
-The current lock is resolved under Rust 1.85. Only Windows and Linux are comparison hosts.
+The current lock is resolved under Rust 1.85. Windows and Linux were the original comparison
+hosts. On 2026-09-14 the owner also requested the same within-host comparison on the dedicated
+Apple Silicon Mac, after noting substantial concurrent work on Windows. Preserve that load
+qualification and do not rank different hosts as library performance differences.
 
 There are three alternating repetitions for each plain/allocation-instrumented pair and each
 1 KiB, 64 KiB and 1 MiB response. Each launch has 32 warmups and three measured samples: 4,096

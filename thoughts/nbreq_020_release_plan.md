@@ -1,10 +1,13 @@
 # NBReq 0.2.0 release checklist
 
-Opened 2026-09-10. Status: R1 verified; R2 platform proof verified with explicit Darwin override;
-R3 has a clean tested Darwin candidate; local root candidate preparation is in progress.
-Registry-only acceptance remains open. A user-reported nbreq/Wine issue is untriaged: passing
-tests are evidence for their exercised hosts/workloads, not authoritative release acceptance.
-GDS is blocked on unrelated work. Its application/device profile is not a prerequisite for
+Opened 2026-09-10; updated 2026-09-14. Status: R1 verified; R2 platform proof verified with local
+support overrides; R3 has tested Darwin and winpoll candidates. The clean root checkpoint is
+committed and packaged. Final reliability, exact-candidate CI and registry-only gates remain.
+W-01 is reproduced and fixed in `149450d`; actual Wine 5 x86 and native Windows gates pass.
+On 2026-09-14 the owner reports a live GDS pilot under Wine has run this code for several days
+with no problems observed. This adds application evidence; it does not specify an exact DLL
+hash/Wine version, workload or shutdown check. The [investigation](nbreq_wine_dns.md) retains
+those provenance limits. The library path can proceed; GDS's application/device profile is not a prerequisite for
 releasing nbreq's general-purpose library. Consumer documentation/examples and external checks
 are authorized; publication remains separate. This checklist joins the [follow-up programme](project_nbreq_followup_plan.html)
 and [memory work](nbreq_memory_plan.md); it does not replace their historical evidence.
@@ -13,14 +16,14 @@ and [memory work](nbreq_memory_plan.md); it does not replace their historical ev
 
 | Field | State |
 | --- | --- |
-| Candidate | Root manifest is 0.2.0, Rust 1.85 / edition 2024. Scoped M2.5/M3/R1 work is isolated on `codex/nbreq-0.2.0-release`, based on clean Darwin commit `4a6c807a49f72ad9ff6585b0f9b479b61fee6609`. This is a review checkpoint, not final release acceptance. Main's unrelated F5 work remains separately owned. |
+| Candidate | Root 0.2.0, Rust 1.85 / edition 2024. Current fix checkpoint `149450d6543376cdb8255b55d7eb286e98207f42` on `codex/wine-dns-adapters` extends `7693d6c` with bounded Windows DNS discovery and winpoll 0.1.1. Earlier Darwin `4a6c807` and root branches are preserved. [Wine report](nbreq_wine_dns.md) and [clean candidates](nbreq_020_clean_candidates.md) identify the packages. The scoped fix is mirrored to main; unrelated F5 work remains separately owned. |
 | Verified core | F1/F2 Resolver and TCP, F3 private DNS codec, F4 feature boundary, F6 bounded macOS support, F7 HTTP convenience, review fixes and memory M0–M3 have accepted evidence. |
 | Source recheck | Before R1, all 119 ordinary inputs in the final M3 E manifest matched on 2026-09-10. R1 now changes docs, example registration/examples and source doc comments/includes; it does not change runtime implementation. The new release rehearsal freezes its own manifest. |
-| Registry recheck | crates.io API reports nbreq 0.1.1 and nbreq-winpoll 0.1.0; nbreq-darwin returns 404. Root 0.2.0 is not published. |
-| Package inventory | Root and Darwin `cargo package --list --allow-dirty --offline` succeed. New body-budget source/tests and retained fuzz seeds are included; thoughts, GDS evidence and F5 tools are excluded. This does not prove normalized-package compilation or registry resolution. |
-| Active slice | The clean Darwin archive passes stable/MSRV helper tests and stable Clippy on both Macs. Root Windows verifier initially exposed error 10054 in a UDP test fixture; a bounded socket reproduction confirmed closed-peer ICMP behavior. The Windows-only fixture correction passes six route-change tests and the full 24-step verifier (128.456 s). No runtime code changed in this candidate-preparation slice. |
-| Evidence | [Artifact manifest](evidence/nbreq_020_artifacts.json) and [archive](evidence/nbreq-020-consumer-20260910.tar.gz), SHA256 e2425b7b46abed9a7a9d673da03b95d80e85efed64c5e2feaafed52d5f1a7f85. Frozen source/package inputs rechecked after all runs. |
-| Next slice | Commit the scoped root checkpoint and identify its package; preserve failures as well as passes. Record and investigate the user-reported nbreq/Wine issue before treating test results as release acceptance. R4's final mixed-capability soak and R5's exact-candidate/hosted-CI gates remain. Darwin publication still requires separate authorization. |
+| Registry recheck | Rechecked 2026-09-14 through the crates.io APIs: nbreq latest 0.1.1, nbreq-winpoll latest 0.1.0; nbreq-darwin returns 404. Root 0.2.0 and the two required support releases are not published. |
+| Package inventory | Latest clean root and winpoll archives contain 82 and 10 files with commit `149450d` and no dirty flag. Both verify for Windows x86; root uses explicit local Darwin and winpoll overrides. Winpoll's exact archive passes 13 tests on Windows x64/Rust 1.85. Prior Darwin archive has 8 files. Thoughts, GDS evidence and private tools are excluded from root. Registry-only resolution remains open. |
+| Active slice | W-01 confirmed: Wine 5 returns unaligned descriptive strings/records and unchanged ipconfig reproduces the exact panic. New byte parser and policy regressions pass, including actual Wine default/native-only lifecycle probes. Final Windows verifier 24/24 (81.561 s). Earlier deadline-sensitive failures and an unbounded test fixture are retained with qualified interpretation in the report. |
+| Evidence | Earlier R1/R2 [manifest](evidence/nbreq_020_artifacts.json) and [archive](evidence/nbreq-020-consumer-20260910.tar.gz) remain intact. New [candidate manifest](evidence/nbreq_020_candidate_artifacts.json) and [91-file archive](evidence/nbreq-020-candidates-20260910.tar.gz), SHA256 `62b8aac61a4bb1bcfb48410c9b6c82b5a7f4ca8c4335cca86375a67a4aff6986`, preserve clean packages, failures, proof and passing follow-ups. |
+| Next slice | R4's four-host four-hour observations and Windows x86 companion have passed; finish the scoped Linux 0.1.1 comparison and evidence handoff, then R5's final candidate checks. Then separately authorize/publish Darwin 0.1.0 and winpoll 0.1.1, prove registry-only root installation, and publish/smoke 0.2.0. The successful owner-reported GDS pilot supports W-01; collecting its exact provenance does not block these library checks. |
 | GDS boundary | Preserve its source and installed DLL. M4 device/application memory acceptance waits for GDS availability. Do not export GDS policy as nbreq defaults. |
 
 ## Remaining work
@@ -29,11 +32,11 @@ Status is deliberately split between existing evidence and final release accepta
 
 | ID | Status | Work and exit condition |
 | --- | --- | --- |
-| R1 — Consumer contract and documentation | Verified on Windows, Linux and both Macs | Scoped API audit, migration notes, 0.2 snippets, ownership/budget/error guidance, DNS/TCP walkthroughs, platform/feature matrix and Darwin limitations are in place. Seven examples are registered and packaged. The final release candidate must remove the unreleased wording. |
+| R1 — Consumer contract and documentation | Verified on Windows, Linux and both Macs | Scoped API audit, migration notes, 0.2 snippets, ownership/budget/error guidance, DNS/TCP walkthroughs, platform/feature matrix and Darwin limitations are in place. Seven examples are registered and packaged. The isolated root checkpoint removes unreleased wording; main retains it pending integration. |
 | R2 — Independent consumer proof | Platform proof verified with explicit Darwin override; registry gate open | External temporary workspaces on all four hosts exercise ordinary default/native-only/minimal/test-support APIs against normalized archives. Stable and Rust 1.85 pass fresh online dependency resolution, HTTP/callback/manual/cancel/shutdown, streaming, TCP, retained budgets and feature probes. The same three HTTP tests also pass against registry 0.1.1. All seven packaged examples run on each host, including live DNS/HTTPS. The four independently resolved locks are identical. R3 publication is still needed for registry-only acceptance. |
-| R3 — Support crates and package graph | Clean Darwin candidate tested; publication remains open | Darwin commit `4a6c807` is isolated and clean. Its 11,377-byte archive SHA256 is `656cf22c96ceb3f0ab3b96b24a3465021e22483390a32cc34d201419674401c4`; the exact archive passes five helper tests on both Macs/stable/MSRV and stable Clippy. Winpoll is unchanged from the released source. Earlier advisory/license gates remain applicable while the graph is unchanged. After separate authorization/publication, prove registry-only root resolution. |
-| R4 — Final reliability observation | Open; earlier evidence reusable | Reconcile F5.1–F5.4 with M1–M3 instead of repeating completed memory experiments. Retain the planned final multi-hour mixed HTTP/Resolver/TCP soak on the supported platform set, including sustained pressure, retained bodies, cancellation and shutdown. Check for a missing 0.1.1 common-path comparison before making release performance claims. Record platform-specific interruptions/recovery where practical. |
-| R5 — Exact release candidate | Local checkpoint preparation; acceptance open | Freeze the reviewed source/docs/locks while preserving unrelated dirty work. The corrected Windows candidate verifier passes. Final matrix/hosted CI, x86 companions as applicable, advisory/license gates, archive tests, consumer proof and docs.rs/package-link checks remain release gates. Reconcile the Wine finding with the relevant test oracles before claiming acceptance. |
+| R3 — Support crates and package graph | Darwin and winpoll candidates tested; publication remains open | Darwin `4a6c807` and its tested 8-file archive are unchanged. Winpoll 0.1.1 from `149450d` adds bounded DNS discovery; its clean 10-file archive verifies on x86 and passes 13 tests on x64/MSRV. Root removes ipconfig/widestring; advisory and generated-license checks were refreshed. Publish both helpers only after separate authorization, then prove registry-only root resolution. |
+| R4 — Final reliability observation | Four-host soaks and x86 companion passed; Linux common-path comparison in progress | All four full verifiers, four-hour default mixed observations, harness checks and default/native-only rehearsals passed; the complete Windows x86 preflight passed too. Independently verified archives retain every cycle, source/binary hashes and clean shutdown evidence. Windows 0.1.1 comparison and longer noisy-small-body follow-up are complete; Linux is building the same frozen inputs after explicit source-upload approval. [Checkpoint and results](nbreq_r4_reliability.md) retain exact evidence and limits. Fixture reds/greens and harness are committed; runtime implementation is unchanged from the Wine fix. |
+| R5 — Exact release candidate | Clean W-01 fix checkpoint; acceptance open | `149450d` and its root/winpoll packages are clean; Windows/Wine proof is in [W-01](nbreq_wine_dns.md). Earlier `7693d6c` archive-consumer checks remain scoped historical results. Final matrix/hosted CI, applicable x86 companions, final advisory/license gates, registry-only consumer proof and docs.rs/package-link checks remain. Track the deadline-sensitive test failures and unbounded fixture separately; no universal test-authority claim. |
 | R6 — Root publication and registry smoke | Separate owner action after R1–R5 | After R3's authorized support publication and the registry-resolved root proof, publish nbreq 0.2.0. Inspect the published metadata/docs and run a clean consumer using only the registry release. Publication is not implied by this checklist. |
 
 R3's support publication necessarily precedes the final registry-only root rehearsal in R2/R5.
@@ -41,14 +44,46 @@ Before that point, a clearly labelled local support override can validate code, 
 the registry-consumer gate. Dependency ranges may select different versions in a fresh consumer
 than in our Cargo.lock; the advertised MSRV must be checked against that distinction.
 
-## Open finding W-01 — nbreq on Wine
+R4 is now authorized and underway; [working checkpoint](nbreq_r4_reliability.md) records fixture
+proof, historical-failure investigation and the four-hour/four-host soak contract.
 
-On 2026-09-10 the user reported an nbreq/Wine bug and cautioned that existing tests may not be
-authoritative until it has been examined. Symptoms, reproducer and affected test assumptions
-are not yet available in this task. Continue reversible candidate preparation; do not equate
-passing native-host gates with Wine coverage or a resolved correctness concern. Once the
-findings are available, establish the failure and inspect whether it exposes a product bug,
-an unsupported platform assumption, or a test-oracle gap. No disposition is assumed here.
+## 2026-09-14 release-path review
+
+The clean fix worktree remains at `149450d6543376cdb8255b55d7eb286e98207f42`. A read-only
+comparison finds no differences in its source, tests or support-crate files versus main
+(normalizing line endings). Main still contains separately owned uncommitted tooling and
+documentation; use the isolated candidate when freezing release inputs.
+
+Recommended order:
+
+1. Finish R4: reconcile F5 observation work with accepted M1–M3 evidence, address the unbounded
+   fixture cleanup and investigate recurring timing failures, then run the planned multi-hour
+   HTTP/Resolver/TCP soak with pressure, retained bodies, cancellation and joined shutdown.
+2. Finish pre-publication R5 on the final source: Windows/Linux/Intel Mac/Apple Silicon matrix,
+   supported stable/MSRV and x86 checks, hosted CI, refreshed advisory/license checks and package
+   documentation checks. Reuse prior evidence as history; identify new results by exact source.
+3. Publish the prepared nbreq-darwin 0.1.0 and nbreq-winpoll 0.1.1 after separate owner authorization.
+4. Complete R2/R5 using registry support dependencies without local overrides, including a fresh
+   consumer/MSRV graph. Then publish nbreq 0.2.0 under R6 and verify the registry release/docs.
+
+No new feature package or additional GDS memory policy is proposed. The common 0.1.1 comparison
+is a regression check where evidence is missing, not an open-ended optimization programme.
+Actual 128/256 MB device profiles remain separate. This review changed documentation only;
+it did not rerun tests, start remote jobs or publish anything.
+
+## W-01 — fixed library boundary; live GDS pilot reported successful
+
+[Investigation and GDS handoff](nbreq_wine_dns.md) records the exact reproduction on Wine 5.0
+(Ubuntu 5.0-3ubuntu1), x86 Windows debug binaries. Odd in-buffer UTF-16 pointers trigger unchanged
+ipconfig/widestring. Fix `149450d` avoids unused strings and validates required fields through
+byte slices, retaining selection/suffix policy and scopes. Actual Wine and native Windows checks
+pass; original failures and test-oracle limitations are preserved. The deployed GDS DLL hash and
+application-prefix provenance remain unrecorded here. The owner reports several successful pilot
+days as of 2026-09-14; no separate shutdown or scan-test transcript was supplied. The Delphi
+backend-selection fix belongs to GDS.
+
+The [W-01 artifact manifest](evidence/nbreq_wine_dns_artifacts.json) and
+[archive](evidence/nbreq-wine-dns-20260910.tar.gz) preserve source, packages, binaries and logs.
 
 ## Documentation findings addressed by R1
 
