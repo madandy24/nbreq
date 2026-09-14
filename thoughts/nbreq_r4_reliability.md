@@ -13,7 +13,7 @@ No publication or GDS source/runtime changes are included.
 | Companion | Manual Engine request expires before first drive; no socket opens and the unused fixture joins. Demonstrates the valid path behind the earlier hang. |
 | Other historical failures | Full default library suite passed after the fixture change; 60 repetitions of the six historical cases passed with four concurrent bounded children and immediate panic output. The five original DNS/TCP failure causes are not established; do not attribute them conclusively to load or OS discovery. |
 | Bridges | Linux `gds-client-01i linode`, Intel `intel-mac`, ARM `scaleway-nbreq` returned successful identity checks. Linux default Rust 1.85; Macs default stable 1.98. Windows/ARM four-hour jobs started at approximately 03:45 UTC September 14; Intel at 03:51. |
-| Next | Windows and both Macs passed all frozen `e78b73b18d4c` preflight gates and are soaking. Linux's full verifier passed and its native release build is underway at 03:51 UTC. Each host runs the complete verifier, release/default/native builds with warning-denied Clippy, 900 fixture connections and two negative supervisor checks, then 30-second default and 180-second native rehearsals. Start Linux's four-hour default soak only after its complete preflight passes. |
+| Next | All four hosts passed every frozen `e78b73b18d4c` preflight gate and are soaking. Linux started at 04:10 UTC after its completed preflight was inspected. Retain evidence and inspect final cleanup before acceptance; earliest nominal completion is Windows/ARM around 07:45 UTC, Intel 07:51, Linux 08:10. Windows x86 and common-path comparison remain open and must avoid an active soak on the same host. |
 
 ## Frozen intent for this slice
 
@@ -111,12 +111,20 @@ unfiltered; do not count an in-progress host as passed.
 | Windows | Running: `target/release-r4-20260914/windows-soak-e78`, supervisor PID 34384. Passed preflight default binary SHA256 `d92747078e4ecaae717ef3cbf3b26f84ab63287b70363d8cb61d59a8209c6731`. |
 | ARM Mac | Running: `/Users/m1/nbreq-r4-e78b73b18d4c/observations/soak`, supervisor PID 60249, request `20260914-034544-845bca3b` completed/ok/exit 0. Passed preflight default binary SHA256 `84a3c18bde2ec1809f62276c498c91eb05c5055f12200bfe03ba0f86ae4b5c3e`. |
 | Intel Mac | Running: `/Users/andrew/nbreq-r4-e78b73b18d4c/observations/soak`, supervisor PID 98998, request `20260914-035108-08aa66c6` completed/ok/exit 0 at 03:51 UTC. Full preflight passed in 590.733 seconds. Default binary SHA256 `55707f1466a62a81cd4f05e6c8e7326a75620150b16437da92008ff406a03613`. |
-| Linux | Not started; await complete preflight. |
+| Linux | Running: `/home/ubuntu/nbreq-r4-e78b73b18d4c/observations/soak`, supervisor PID 1443783, request `20260914-041003-c02b96fe` completed/ok/exit 0 at 04:10 UTC. Full preflight passed in 1041.905 seconds on Rust 1.85, including all 900 fixture connections, corruption/watchdog checks and both rehearsals. Default binary SHA256 `7622e19154ece67d2dcd362e155b72a1fb29f38d77292d6e90a0413b1fb19b51`. |
 
 Heartbeat `finish-nbreq-r4-reliability-checks` checks this task every 15 minutes, continues the
 authorized gates, and stays quiet on unchanged healthy progress. Pause it when the observations
 and remaining R4 work are complete or explicitly handed back for user disposition. Keep later
 Windows x86 builds and the common-path comparison out of the active host's soak interval.
+
+04:09 UTC inspection: Windows, Intel and ARM have completed approximately 24, 18 and 24 minutes
+respectively, with exact expected terminal accounting and zero quiescent operation/body/queue
+gauges. The nonzero failed-request counters are the deliberately provoked response-budget
+refusals (one in the first round and every tenth round), not unexpected errors. Public DNS and
+TCP failure counters are zero. No Windows supervisor sampling/clock anomaly has been logged.
+These are interim observations, not acceptance. The bridge results are copied into the local
+lab's `bridge-results` directory; Linux's final preflight and launch evidence are included.
 
 ## F5 reconciliation
 
