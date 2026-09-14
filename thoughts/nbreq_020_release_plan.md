@@ -1,6 +1,6 @@
 # NBReq 0.2.0 release checklist
 
-Opened 2026-09-10; updated 2026-09-14. Status: R1 verified; R2 platform proof verified with local
+Opened 2026-09-10; updated 2026-09-15. Status: pre-R5 review follow-up authorized and underway; R1 verified; R2 platform proof verified with local
 support overrides; R3 has tested Darwin and winpoll candidates. The clean root checkpoint is
 committed and packaged. R4 reliability is complete; exact-candidate CI and registry-only gates remain.
 W-01 is reproduced and fixed in `149450d`; actual Wine 5 x86 and native Windows gates pass.
@@ -27,6 +27,31 @@ and [memory work](nbreq_memory_plan.md); it does not replace their historical ev
 | GDS boundary | Preserve its source and installed DLL. M4 device/application memory acceptance waits for GDS availability. Do not export GDS policy as nbreq defaults. |
 
 ## Remaining work
+
+## Pre-R5 pass — independent-review follow-up (2026-09-15)
+
+The owner accepted the scoped follow-up and authorized implementation after updating this plan.
+Use one clean branch based on R4 `68649ee`, preserving its Wine fix and all completed evidence.
+Keep main's mixed working tree intact; mirror scoped fixes only after checking their original
+contents. A reviewed remote branch checkpoint is part of this pass. No crate publication, tag,
+main merge, GDS change or repetition of the completed four-hour soaks is implied.
+
+| Item | State | Work and acceptance |
+| --- | --- | --- |
+| P5-01 — Planned-body reservation | Next: red tests | Demonstrate growth beyond an unused reservation, including a false budget refusal, retained excess charge, and failed growth preserving the original bytes/reservation. Reuse/extend the reservation exactly once while continuing to charge both real allocations during replacement. Prove final refunds and retain red/green logs. Current fixed-length HTTP prevents the problematic sequence; fix the helper rather than relying on that caller invariant. |
+| P5-02 — Dependency policy | Accepted: compatible library ranges | Use Cargo-compatible version ranges for ordinary root/support runtime dependencies, retaining tested lower bounds and explicit default-feature choices. Keep dev/tool pins and the documented Rust-1.85 `time` exception. Preserve the reviewed root lock graph, then separately prove fresh default/native-only/minimal consumer resolution on stable and Rust 1.85, including a consumer constraint above a formerly exact dependency pin. Record resulting locks/versions; local helper overrides do not become registry-only evidence. |
+| P5-03 — Compatibility documentation | Pending | Document rejection of ambiguous HTTP Transfer-Encoding plus Content-Length and errors for malformed required Windows adapter data; preserve both behaviors. Valid unaligned Wine records remain supported. Existing callback-activation ownership and duplicate-delivery/shutdown tests address the review concern; no speculative arithmetic change. |
+| P5-04 — Packaging and published docs | Pending | Use a fresh dedicated packaging directory and an explicit package path/hash inventory. Do not clean the broad target tree or use wildcard crate upload selection. Keep the stale `target/package` archive out of the release inputs. Verify candidate wording and link destinations; crates.io already rewrites relative README links, so no blanket conversion to moving `main` URLs. Carry exact post-publication README/docs.rs checks into R6. |
+| P5-05 — Validation and durable checkpoint | Pending | Run the relevant budget tests and complete Windows verifier; fresh consumer/MSRV checks cover the range changes. Retain source identities, locks and logs; commit and push the reviewed release branch without merging main or publishing crates. R5 still owns the final hosted cross-platform matrix and final-candidate package gates. |
+
+The two helper versions remain nbreq-darwin **0.1.0** and nbreq-winpoll **0.1.1**. Either helper
+can publish first after separate authorization; both must actually resolve from the registry
+before root registry acceptance. A fixed sleep is not evidence of index availability.
+R5 must record the advisory database commit/date alongside audit JSON, including when
+`cargo audit --no-fetch` omits that identity. R6 must inspect the published README and docs.rs
+pages for stale unreleased wording and broken release-documentation links.
+
+## Release gates
 
 Status is deliberately split between existing evidence and final release acceptance.
 
