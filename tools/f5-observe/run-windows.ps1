@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("Default", "NativeOnly")]
-    [string]$Configuration = "Default",
+    [ValidateSet("CurrentDefault", "CurrentNative", "V011")]
+    [string]$Mode = "CurrentDefault",
     [ValidateRange(1, 1000)]
     [int]$Samples = 3,
     [ValidateRange(0, 1000000)]
@@ -16,32 +16,43 @@ param(
 $ErrorActionPreference = "Stop"
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $toolRoot "..\..")).Path
-$manifest = Join-Path $toolRoot "Cargo.toml"
+$currentManifest = Join-Path $toolRoot "Cargo.toml"
+$v011Manifest = Join-Path $toolRoot "v011\Cargo.toml"
 $resultRoot = Join-Path $repoRoot "target\f5-observe\results"
 New-Item -ItemType Directory -Force -Path $resultRoot | Out-Null
 
-$sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0) {
-    throw "git rev-parse failed"
+if ($Mode -eq "V011") {
+    $manifest = $v011Manifest
+    $sourceCommit = (& git -C $repoRoot rev-list -n 1 v0.1.1).Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceCommit.Length -eq 0) {
+        throw "could not resolve immutable v0.1.1 provenance"
+    }
+    $sourceVersion = "0.1.1"
+} else {
+    $manifest = $currentManifest
+    $sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "git rev-parse failed"
+    }
+    if ((& git -C $repoRoot status --porcelain --untracked-files=normal).Count -ne 0) {
+        $sourceCommit += "+dirty"
+    }
+    $manifestText = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
+    if ($manifestText -notmatch '(?m)^version = "([^"]+)"') {
+        throw "could not read the NBReq package version"
+    }
+    $sourceVersion = $Matches[1]
 }
-if ((& git -C $repoRoot status --porcelain --untracked-files=normal).Count -ne 0) {
-    $sourceCommit += "+dirty"
-}
-$manifestText = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
-if ($manifestText -notmatch '(?m)^version = "([^"]+)"') {
-    throw "could not read the NBReq package version"
-}
-$sourceVersion = $Matches[1]
 $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ")
 
 function Build-Observer {
     param([bool]$Instrumented)
 
     $kind = if ($Instrumented) { "instrumented" } else { "plain" }
-    $targetDir = Join-Path $repoRoot "target\f5-observe\windows-$($Configuration.ToLowerInvariant())-$kind"
+    $targetDir = Join-Path $repoRoot "target\f5-observe\windows-$($Mode.ToLowerInvariant())-$kind"
     $arguments = @("build", "--manifest-path", $manifest, "--release", "--target-dir", $targetDir)
     $features = @()
-    if ($Configuration -eq "NativeOnly") {
+    if ($Mode -ne "CurrentDefault") {
         $arguments += "--no-default-features"
     }
     if ($Instrumented) {
@@ -80,7 +91,7 @@ function Invoke-Observer {
     param([string]$Executable, [bool]$Instrumented)
 
     $kind = if ($Instrumented) { "instrumented" } else { "plain" }
-    $stem = "$timestamp-$($Configuration.ToLowerInvariant())-$kind"
+    $stem = "$timestamp-$($Mode.ToLowerInvariant())-$kind"
     $stdoutPath = Join-Path $resultRoot "$stem.inner.json"
     $stderrPath = Join-Path $resultRoot "$stem.log"
     $finalPath = Join-Path $resultRoot "$stem.json"

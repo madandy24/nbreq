@@ -4,7 +4,6 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rustc-check-cfg=cfg(nbreq_f5_current_api)");
-    println!("cargo:rustc-cfg=nbreq_f5_current_api");
 
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_owned());
     println!("cargo:rustc-env=NBREQ_F5_TARGET={target}");

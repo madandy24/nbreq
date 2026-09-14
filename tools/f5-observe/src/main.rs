@@ -151,6 +151,16 @@ fn spawn_connection(
     stop: Arc<AtomicBool>,
 ) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || {
+        // Keep the shared current/registry fixture's scheduling and TCP behavior explicit.
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("fixture blocking reads failed: {error}"))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("fixture TCP_NODELAY failed: {error}"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| format!("fixture write bound failed: {error}"))?;
         stream
             .set_read_timeout(Some(Duration::from_millis(25)))
             .map_err(|error| format!("fixture timeout configuration failed: {error}"))?;
@@ -276,12 +286,78 @@ fn execute_request(
     Ok(())
 }
 
+#[cfg(nbreq_f5_current_api)]
 fn feature_selection() -> &'static str {
     if cfg!(feature = "resolver") {
         "default:native,resolver"
     } else {
         "no-default-features:native"
     }
+}
+
+#[cfg(not(nbreq_f5_current_api))]
+fn feature_selection() -> &'static str {
+    "v0.1.1:no-default-features,native"
+}
+
+#[cfg(nbreq_f5_current_api)]
+fn current_only_operation_gauges_zero(current: &nbreq::ResourceMetrics) -> bool {
+    current.inflight_resolutions() == 0 && current.standalone_tcp_connections() == 0
+}
+
+#[cfg(not(nbreq_f5_current_api))]
+fn current_only_operation_gauges_zero(_current: &nbreq::ResourceMetrics) -> bool {
+    true
+}
+
+#[cfg(nbreq_f5_current_api)]
+fn current_only_queue_gauges_zero(current: &nbreq::ResourceMetrics) -> bool {
+    current.reserved_tcp_queue_bytes() == 0 && current.reserved_buffered_body_bytes() == 0
+}
+
+#[cfg(not(nbreq_f5_current_api))]
+fn current_only_queue_gauges_zero(_current: &nbreq::ResourceMetrics) -> bool {
+    true
+}
+
+#[cfg(nbreq_f5_current_api)]
+fn push_current_only_high_water(
+    measures: &mut Vec<(&'static str, Summary)>,
+    high: &nbreq::ResourceMetrics,
+) -> Result<(), Box<dyn Error>> {
+    measures.push((
+        "high_inflight_resolutions",
+        Summary::measured("resolutions", &[high.inflight_resolutions() as f64])?,
+    ));
+    measures.push((
+        "high_standalone_tcp_connections",
+        Summary::measured("connections", &[high.standalone_tcp_connections() as f64])?,
+    ));
+    measures.push((
+        "high_reserved_tcp_queue_bytes",
+        Summary::measured("bytes", &[high.reserved_tcp_queue_bytes() as f64])?,
+    ));
+    Ok(())
+}
+
+#[cfg(not(nbreq_f5_current_api))]
+fn push_current_only_high_water(
+    measures: &mut Vec<(&'static str, Summary)>,
+    _high: &nbreq::ResourceMetrics,
+) -> Result<(), Box<dyn Error>> {
+    measures.push((
+        "high_inflight_resolutions",
+        Summary::unavailable("resolutions"),
+    ));
+    measures.push((
+        "high_standalone_tcp_connections",
+        Summary::unavailable("connections"),
+    ));
+    measures.push((
+        "high_reserved_tcp_queue_bytes",
+        Summary::unavailable("bytes"),
+    ));
+    Ok(())
 }
 
 fn json_string(value: &str) -> String {
@@ -387,14 +463,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let current = metrics.current();
     let high = metrics.high_water();
     let expected_requests = arguments.warmups + arguments.samples * arguments.requests_per_sample;
-    let operation_gauges_zero = current.inflight_requests() == 0
-        && current.inflight_resolutions() == 0
-        && current.standalone_tcp_connections() == 0;
+    let operation_gauges_zero =
+        current.inflight_requests() == 0 && current_only_operation_gauges_zero(&current);
     let queue_gauges_zero = current.queued_commands() == 0
         && current.queued_callbacks() == 0
         && current.reserved_stream_queue_bytes() == 0
-        && current.reserved_tcp_queue_bytes() == 0
-        && current.connection_waiters() == 0;
+        && current.connection_waiters() == 0
+        && current_only_queue_gauges_zero(&current);
     let keepalive_state_exact =
         current.active_connections() == 1 && current.idle_connections() == 1;
     let connection_reuse_exact = metrics.connection_metrics_available()
@@ -486,18 +561,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "high_reserved_stream_queue_bytes",
         Summary::measured("bytes", &[high.reserved_stream_queue_bytes() as f64])?,
     ));
-    measures.push((
-        "high_inflight_resolutions",
-        Summary::measured("resolutions", &[high.inflight_resolutions() as f64])?,
-    ));
-    measures.push((
-        "high_standalone_tcp_connections",
-        Summary::measured("connections", &[high.standalone_tcp_connections() as f64])?,
-    ));
-    measures.push((
-        "high_reserved_tcp_queue_bytes",
-        Summary::measured("bytes", &[high.reserved_tcp_queue_bytes() as f64])?,
-    ));
+    push_current_only_high_water(&mut measures, &high)?;
     measures.push((
         "high_active_connections",
         Summary::measured("connections", &[high.active_connections() as f64])?,
