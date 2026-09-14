@@ -4327,6 +4327,136 @@ fn capped_connection_pressure_survives_mixed_peer_interruptions() {
     server.join().expect("pressure fixture must join");
 }
 
+fn run_stalled_response_fixture(listener: TcpListener, stop: mpsc::Receiver<()>) -> bool {
+    listener
+        .set_nonblocking(true)
+        .expect("bounded timeout-fixture accept");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut stream = loop {
+        if !matches!(stop.try_recv(), Err(mpsc::TryRecvError::Empty)) || Instant::now() >= deadline
+        {
+            return false;
+        }
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("timeout fixture accept failed: {error}"),
+        }
+    };
+    // Accepted sockets can inherit Windows' listener mode. Bound blocking I/O separately.
+    stream
+        .set_nonblocking(false)
+        .expect("blocking timeout-fixture reads");
+    let mut received = Vec::new();
+    let mut buffer = [0_u8; 256];
+    while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || received.len() > 8192 {
+            return false;
+        }
+        stream
+            .set_read_timeout(Some(remaining))
+            .expect("fixture read bound");
+        match stream.read(&mut buffer) {
+            Ok(0) => return false,
+            Ok(read) => received.extend_from_slice(&buffer[..read]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return false;
+            }
+            Err(error) => panic!("timeout fixture request read failed: {error}"),
+        }
+    }
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("socket close bound");
+    assert_socket_closed(&mut stream, &mut buffer, "HTTP timeout");
+    true
+}
+
+#[test]
+fn stalled_response_fixture_stops_without_a_connection() {
+    check_stalled_fixture_cleanup(false);
+}
+
+#[test]
+fn stalled_response_fixture_rejects_an_incomplete_request_head() {
+    check_stalled_fixture_cleanup(true);
+}
+
+#[test]
+fn total_timeout_before_first_drive_never_connects_and_fixture_joins() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("expired-request fixture bind");
+    let address = listener
+        .local_addr()
+        .expect("expired-request fixture address");
+    let (stop, stopped) = mpsc::channel();
+    let server = thread::spawn(move || run_stalled_response_fixture(listener, stopped));
+    let config = EngineConfig::manual();
+    let backend = NativeHttpFactory::new(&config)
+        .into_backend()
+        .expect("manual HTTP backend");
+    let mut engine = Engine::with_backend(config, backend).expect("manual HTTP Engine");
+    let pending = engine
+        .client()
+        .submit(
+            Request::get(format!("http://{address}/expired"))
+                .total_timeout(Duration::from_millis(40))
+                .build()
+                .expect("expiring request"),
+        )
+        .expect("expiring request submission");
+    // No owner drive can connect before this total deadline. This is the valid path that
+    // previously left the fixture blocked in accept after the timeout assertion passed.
+    thread::sleep(Duration::from_millis(80));
+    let Completion::Failed(error) = engine.drive_until(pending).expect("drive expired request")
+    else {
+        panic!("request must fail before any connection");
+    };
+    assert_eq!(error.kind(), ErrorKind::Timeout);
+    assert_eq!(error.timeout_kind(), Some(TimeoutKind::Total));
+    let _ = stop.send(());
+    assert!(!server.join().expect("unused fixture must join"));
+    assert_eq!(engine.metrics().connections_opened(), 0);
+    engine.shutdown().expect("expired-request Engine must join");
+}
+
+fn check_stalled_fixture_cleanup(partial_request: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("cleanup fixture bind");
+    let address = listener.local_addr().expect("cleanup fixture address");
+    let (stop, stopped) = mpsc::channel();
+    let (done, result) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let observed_request = run_stalled_response_fixture(listener, stopped);
+        done.send(observed_request)
+            .expect("cleanup result receiver");
+    });
+    if partial_request {
+        let mut stream = std::net::TcpStream::connect(address).expect("partial fixture connection");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\n")
+            .expect("partial head");
+        drop(stream);
+    } else {
+        stop.send(()).expect("stop before any connection");
+    }
+    assert!(
+        !result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fixture must report incomplete setup and stop within its bound")
+    );
+    server.join().expect("incomplete fixture must join");
+}
+
 #[test]
 fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
     let config = EngineConfig::spawned();
@@ -4338,20 +4468,8 @@ fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
     for timeout_kind in [TimeoutKind::Inactivity, TimeoutKind::Total] {
         let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
         let address = listener.local_addr().expect("HTTP fixture address");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("HTTP fixture must accept");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("fixture timeout must configure");
-            let mut received = Vec::new();
-            let mut buffer = [0_u8; 256];
-            while !received.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).expect("request head must read");
-                assert_ne!(read, 0, "client closed before request head");
-                received.extend_from_slice(&buffer[..read]);
-            }
-            assert_socket_closed(&mut stream, &mut buffer, "HTTP timeout");
-        });
+        let (stop, stopped) = mpsc::channel();
+        let server = thread::spawn(move || run_stalled_response_fixture(listener, stopped));
 
         let builder = Request::get(format!("http://{address}/timeout"));
         let request = match timeout_kind {
@@ -4372,7 +4490,11 @@ fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
         };
         assert_eq!(error.kind(), ErrorKind::Timeout);
         assert_eq!(error.timeout_kind(), Some(timeout_kind));
-        server.join().expect("timeout fixture must join");
+        let _ = stop.send(());
+        assert!(
+            server.join().expect("timeout fixture must join"),
+            "timeout must occur after the fixture receives a complete request head"
+        );
         assert!(started.elapsed() < Duration::from_millis(500));
     }
     engine.shutdown().expect("native HTTP Engine must stop");
