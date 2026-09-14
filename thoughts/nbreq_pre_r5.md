@@ -6,6 +6,16 @@ Fix and package source: **`a44cac5788d0596040ba65df29ccff387b5b493d`**. Local va
 packaging are complete; the remote checkpoint is pending. No publication, tag, main merge or
 GDS change is included. The [release plan](nbreq_020_release_plan.md) owns the remaining R5/R6 gates.
 
+The September 15 push of checkpoint `86e5af9` was rejected by automatic approval review before
+execution. The stated reason was that publishing the repository history and embedded evidence
+to the public `madandy24/nbreq` GitHub repository needs explicit approval for that payload and
+destination. No remote branch was created. The prepared branch includes the existing memory,
+consumer and R4 history/evidence as well as this pass. Its outgoing blobs and nested archives
+were inventoried (13,297 ordinary file instances, no matches in the bounded credential-pattern
+scan); that check is not a comprehensive secret audit. Local branch commits, source and evidence
+remain intact. The next action is owner approval for this public checkpoint, then a normal push
+and verification of the remote commit. No workaround or alternative destination was used.
+
 ## Changes and proof
 
 The body-budget helper previously charged an entire replacement allocation in addition to an
