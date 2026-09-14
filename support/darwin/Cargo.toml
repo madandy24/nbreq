@@ -13,7 +13,7 @@ include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 [target.'cfg(target_os = "macos")'.dependencies]
 # Permit compatible patch versions used by consumers (for example serialport).
 core-foundation = "0.10.0"
-system-configuration = "=0.8.0"
+system-configuration = "0.8.0"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -37,6 +37,16 @@ Windows DNS discovery reads only the needed IP Helper fields through bounds-chec
 It does not decode unused adapter descriptions or friendly names; malformed required records
 return errors. DNS ranking, interface filtering and registry search-suffix policy remain in NBReq.
 
+## Dependency updates
+
+Runtime dependency requirements normally accept Cargo-compatible releases. This lets consuming
+applications resolve a shared graph and receive compatible security fixes without waiting for an
+NBReq manifest change. Applications retain control through their own lockfiles and update process.
+NBReq's lockfile and release evidence identify the graph we tested; they do not pin the transitive
+graph of a downstream application. Any future exact runtime pin needs a documented compatibility
+reason. Test/tool pins, including the exception below, do not impose those development dependencies
+on applications that use NBReq as a library.
+
 ## Reviewed advisory exceptions
 
 The test graph pins `time` 0.3.45 through the `rcgen` certificate-fixture generator.

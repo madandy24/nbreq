@@ -126,6 +126,18 @@ engine.shutdown()?;
 network construction returns `Unsupported`; the lifecycle scaffold is internal test support rather
 than a second public runtime.
 
+## Dependency versions
+
+Runtime dependencies use Cargo-compatible version ranges with tested lower bounds, so an
+application can share compatible dependencies with other libraries. The repository's `Cargo.lock`
+records the graph used for locked validation; an application's own lockfile controls its resolved
+graph. Release checks also exercise fresh consumer resolution on stable Rust and the advertised
+minimum Rust version. Compatible ranges permit updates; they do not automatically update an
+existing application lockfile or guarantee that every future dependency release will be compatible.
+
+Development tools and test-only dependencies may remain exactly pinned. The test-only `time`
+exception and dependency security policy are described in [SECURITY.md](SECURITY.md).
+
 ## Documentation
 
 - [Consumer guide](docs/getting-started.md)

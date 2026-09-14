@@ -140,7 +140,15 @@ impl BodyBuffer {
         if capacity <= self.bytes.capacity() {
             return Ok(());
         }
-        let permit = if capacity == self.planned_capacity && self.future.is_some() {
+        let permit = if let Some(reserved) = self.future.as_mut() {
+            if capacity > reserved.bytes {
+                // The future allocation is already partly charged. Acquire only the
+                // shortfall, preserving the original reservation if admission fails.
+                let mut additional = reserved.budget.acquire(capacity - reserved.bytes)?;
+                reserved.bytes = capacity;
+                // Transfer the additional charge into the reservation without refunding it.
+                additional.bytes = 0;
+            }
             self.future.take()
         } else {
             self.budget
@@ -249,7 +257,8 @@ mod tests {
     fn pre_r5_growth_beyond_plan_uses_reserved_budget() {
         let budget = BodyBudget::new(Some(8192));
         let mut body = BodyBuffer::new(Some(budget.clone()));
-        body.plan_capacity(4096).expect("reserve without allocating");
+        body.plan_capacity(4096)
+            .expect("reserve without allocating");
         assert_eq!(body.capacity(), 0);
         assert_eq!(budget.used(), 4096);
 
@@ -279,11 +288,14 @@ mod tests {
     fn pre_r5_failed_planned_growth_preserves_bytes_and_reservation_for_retry() {
         let budget = BodyBudget::new(Some(10 * 1024));
         let mut body = BodyBuffer::admit(vec![3; 2048], budget.clone()).expect("old allocation");
-        body.plan_capacity(4096).expect("future allocation reservation");
+        body.plan_capacity(4096)
+            .expect("future allocation reservation");
         let original = body.as_ptr();
         let competing = budget.acquire(1).expect("competing byte");
 
-        let error = body.reserve_capacity(8192).expect_err("old plus new must fit together");
+        let error = body
+            .reserve_capacity(8192)
+            .expect_err("old plus new must fit together");
         assert_eq!(error.limit_kind(), Some(LimitKind::BufferedBodyBytes));
         assert_eq!(body.as_ptr(), original);
         assert_eq!(body.as_slice(), &[3; 2048]);

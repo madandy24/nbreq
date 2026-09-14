@@ -11,6 +11,12 @@ interface indices and DNS endpoints. It validates required fields using bounded 
 never follows unused descriptive UTF-16 strings, including odd-addressed strings from old Wine.
 The caller retains DNS server ranking, search-suffix and query policy.
 
+Malformed required records, linked-list cycles, or invalid required pointers/addresses return an
+error for the whole discovery snapshot. The wrapper does not silently skip an adapter and thereby
+change DNS selection. Valid unaligned records are supported; unused descriptive strings remain
+ignored even when malformed. NBReq reports discovery errors to the caller without substituting
+public DNS servers.
+
 Version 0.1.1 adds the DNS interface; existing polling behavior and API are unchanged. Both x86
 and x64 Windows builds are covered. Wine compatibility observations require the actual Wine
 version and any adjacent runtime shims to be recorded separately from native Windows tests.

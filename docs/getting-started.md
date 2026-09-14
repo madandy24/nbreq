@@ -248,6 +248,14 @@ NBReq deliberately provides no raw-TLS-diagnostic switch: backend-native certifi
 contain requested or presented names. The structured category preserves operational usefulness
 without making ordinary logging a data-disclosure path.
 
+### Ambiguous HTTP response framing
+
+The native HTTP/1.1 backend rejects a response containing both `Transfer-Encoding` and
+`Content-Length`, even when a legacy server intended a valid chunked body. The result is a
+transport error at the HTTP stage. This avoids accepting ambiguous framing that can cause
+response splitting or disagreement between intermediaries; no permissive compatibility switch
+is provided. See [RFC 9112 section 6.3](https://httpwg.org/specs/rfc9112.html#message.body.length).
+
 ## Manual driving and GUI loops
 
 Manual mode creates no reactor thread and dispatches callbacks inline only from explicit drive
