@@ -2,7 +2,7 @@
 
 Opened 2026-09-10; updated 2026-09-14. Status: R1 verified; R2 platform proof verified with local
 support overrides; R3 has tested Darwin and winpoll candidates. The clean root checkpoint is
-committed and packaged. Final reliability, exact-candidate CI and registry-only gates remain.
+committed and packaged. R4 reliability is complete; exact-candidate CI and registry-only gates remain.
 W-01 is reproduced and fixed in `149450d`; actual Wine 5 x86 and native Windows gates pass.
 On 2026-09-14 the owner reports a live GDS pilot under Wine has run this code for several days
 with no problems observed. This adds application evidence; it does not specify an exact DLL
@@ -23,7 +23,7 @@ and [memory work](nbreq_memory_plan.md); it does not replace their historical ev
 | Package inventory | Latest clean root and winpoll archives contain 82 and 10 files with commit `149450d` and no dirty flag. Both verify for Windows x86; root uses explicit local Darwin and winpoll overrides. Winpoll's exact archive passes 13 tests on Windows x64/Rust 1.85. Prior Darwin archive has 8 files. Thoughts, GDS evidence and private tools are excluded from root. Registry-only resolution remains open. |
 | Active slice | W-01 confirmed: Wine 5 returns unaligned descriptive strings/records and unchanged ipconfig reproduces the exact panic. New byte parser and policy regressions pass, including actual Wine default/native-only lifecycle probes. Final Windows verifier 24/24 (81.561 s). Earlier deadline-sensitive failures and an unbounded test fixture are retained with qualified interpretation in the report. |
 | Evidence | Earlier R1/R2 [manifest](evidence/nbreq_020_artifacts.json) and [archive](evidence/nbreq-020-consumer-20260910.tar.gz) remain intact. New [candidate manifest](evidence/nbreq_020_candidate_artifacts.json) and [91-file archive](evidence/nbreq-020-candidates-20260910.tar.gz), SHA256 `62b8aac61a4bb1bcfb48410c9b6c82b5a7f4ca8c4335cca86375a67a4aff6986`, preserve clean packages, failures, proof and passing follow-ups. |
-| Next slice | R4's four-host four-hour observations and Windows x86 companion have passed; finish the scoped Linux 0.1.1 comparison and evidence handoff, then R5's final candidate checks. Then separately authorize/publish Darwin 0.1.0 and winpoll 0.1.1, prove registry-only root installation, and publish/smoke 0.2.0. The successful owner-reported GDS pilot supports W-01; collecting its exact provenance does not block these library checks. |
+| Next slice | R4 is complete, including the four-host four-hour observations, x86 companion and scoped Windows/Linux/owner-requested ARM 0.1.1 comparisons. Proceed with R5's final integrated-candidate checks. Then separately authorize/publish Darwin 0.1.0 and winpoll 0.1.1, prove registry-only root installation, and publish/smoke 0.2.0. The successful owner-reported GDS pilot supports W-01; collecting its exact provenance does not block these library checks. |
 | GDS boundary | Preserve its source and installed DLL. M4 device/application memory acceptance waits for GDS availability. Do not export GDS policy as nbreq defaults. |
 
 ## Remaining work
@@ -35,7 +35,7 @@ Status is deliberately split between existing evidence and final release accepta
 | R1 — Consumer contract and documentation | Verified on Windows, Linux and both Macs | Scoped API audit, migration notes, 0.2 snippets, ownership/budget/error guidance, DNS/TCP walkthroughs, platform/feature matrix and Darwin limitations are in place. Seven examples are registered and packaged. The isolated root checkpoint removes unreleased wording; main retains it pending integration. |
 | R2 — Independent consumer proof | Platform proof verified with explicit Darwin override; registry gate open | External temporary workspaces on all four hosts exercise ordinary default/native-only/minimal/test-support APIs against normalized archives. Stable and Rust 1.85 pass fresh online dependency resolution, HTTP/callback/manual/cancel/shutdown, streaming, TCP, retained budgets and feature probes. The same three HTTP tests also pass against registry 0.1.1. All seven packaged examples run on each host, including live DNS/HTTPS. The four independently resolved locks are identical. R3 publication is still needed for registry-only acceptance. |
 | R3 — Support crates and package graph | Darwin and winpoll candidates tested; publication remains open | Darwin `4a6c807` and its tested 8-file archive are unchanged. Winpoll 0.1.1 from `149450d` adds bounded DNS discovery; its clean 10-file archive verifies on x86 and passes 13 tests on x64/MSRV. Root removes ipconfig/widestring; advisory and generated-license checks were refreshed. Publish both helpers only after separate authorization, then prove registry-only root resolution. |
-| R4 — Final reliability observation | Four-host soaks and x86 companion passed; Linux common-path comparison in progress | All four full verifiers, four-hour default mixed observations, harness checks and default/native-only rehearsals passed; the complete Windows x86 preflight passed too. Independently verified archives retain every cycle, source/binary hashes and clean shutdown evidence. Windows 0.1.1 comparison and longer noisy-small-body follow-up are complete; Linux is building the same frozen inputs after explicit source-upload approval. [Checkpoint and results](nbreq_r4_reliability.md) retain exact evidence and limits. Fixture reds/greens and harness are committed; runtime implementation is unchanged from the Wine fix. |
+| R4 — Final reliability observation | Complete within the documented scope | Four full native verifiers and four-hour default mixed observations, short default/native-only rehearsals, harness negative checks and complete Windows x86 companion pass. All 73,593 cycle records and archive hashes were independently checked. Common-native-HTTP registry 0.1.1 comparisons pass on Windows/Linux and the owner-requested dedicated ARM Mac (108 launches plus ten longer Windows small-body launches). Windows timings are qualified by the owner's concurrent work; no cross-host ranking. [Results and limitations](nbreq_r4_reliability.md) and [artifact manifest](evidence/nbreq_r4_artifacts.json) retain the proof. Fixture cleanup is fixed with reds/greens; five historical DNS/TCP causes remain unconfirmed. Runtime implementation is unchanged from the Wine fix. |
 | R5 — Exact release candidate | Clean W-01 fix checkpoint; acceptance open | `149450d` and its root/winpoll packages are clean; Windows/Wine proof is in [W-01](nbreq_wine_dns.md). Earlier `7693d6c` archive-consumer checks remain scoped historical results. Final matrix/hosted CI, applicable x86 companions, final advisory/license gates, registry-only consumer proof and docs.rs/package-link checks remain. Track the deadline-sensitive test failures and unbounded fixture separately; no universal test-authority claim. |
 | R6 — Root publication and registry smoke | Separate owner action after R1–R5 | After R3's authorized support publication and the registry-resolved root proof, publish nbreq 0.2.0. Inspect the published metadata/docs and run a clean consumer using only the registry release. Publication is not implied by this checklist. |
 
@@ -44,8 +44,8 @@ Before that point, a clearly labelled local support override can validate code, 
 the registry-consumer gate. Dependency ranges may select different versions in a fresh consumer
 than in our Cargo.lock; the advertised MSRV must be checked against that distinction.
 
-R4 is now authorized and underway; [working checkpoint](nbreq_r4_reliability.md) records fixture
-proof, historical-failure investigation and the four-hour/four-host soak contract.
+R4 is complete; its [report](nbreq_r4_reliability.md) records fixture proof, qualified historical
+failures, the four-hour/four-host contract and results, and the completed common-path comparison.
 
 ## 2026-09-14 release-path review
 
@@ -56,9 +56,9 @@ documentation; use the isolated candidate when freezing release inputs.
 
 Recommended order:
 
-1. Finish R4: reconcile F5 observation work with accepted M1–M3 evidence, address the unbounded
-   fixture cleanup and investigate recurring timing failures, then run the planned multi-hour
-   HTTP/Resolver/TCP soak with pressure, retained bodies, cancellation and joined shutdown.
+1. R4 completed on September 14: F5 reconciled with M1–M3/R1, bounded fixture with red/green
+   proof, qualified historical failures, four-host mixed soaks, x86 companion and shared-path
+   comparisons. Preserve its exact evidence while assembling the final integrated candidate.
 2. Finish pre-publication R5 on the final source: Windows/Linux/Intel Mac/Apple Silicon matrix,
    supported stable/MSRV and x86 checks, hosted CI, refreshed advisory/license checks and package
    documentation checks. Reuse prior evidence as history; identify new results by exact source.

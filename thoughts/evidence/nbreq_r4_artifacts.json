@@ -1,0 +1,9 @@
+{
+  "archive": "nbreq-r4-20260914.tar.gz",
+  "bytes": 11295438,
+  "sha256": "bbd341f444125e379971941feea11e76a7793973256ab7e99c20a75fd5e188e1",
+  "files": 580,
+  "runtime_source": "e78b73b18d4c3b969f7e022a705b8c84146dab44d39a2d14cbe1893242936914",
+  "comparison_source": "033d1fce1db88e8161f0ef4ab2ec5f30df613a97b39248fe8940d605bb17f9b1",
+  "note": "Raw per-host archives, source snapshots, comparison measurements, failures and collector provenance; binaries excluded but hashes and toolchains retained."
+}

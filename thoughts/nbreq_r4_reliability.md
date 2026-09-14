@@ -13,7 +13,7 @@ No publication or GDS source/runtime changes are included.
 | Companion | Manual Engine request expires before first drive; no socket opens and the unused fixture joins. Demonstrates the valid path behind the earlier hang. |
 | Other historical failures | Full default library suite passed after the fixture change; 60 repetitions of the six historical cases passed with four concurrent bounded children and immediate panic output. The five original DNS/TCP failure causes are not established; do not attribute them conclusively to load or OS discovery. |
 | Bridges | Linux `gds-client-01i linode`, Intel `intel-mac`, ARM `scaleway-nbreq` returned successful identity checks. Linux default Rust 1.85; Macs default stable 1.98. Windows/ARM four-hour jobs started at approximately 03:45 UTC September 14; Intel at 03:51. |
-| Next | All four four-hour soaks and the complete Windows x86 companion passed. All five archives are local, with every archived file hash and every long-run cycle record independently checked. Windows common-path comparison and longer 1 KiB follow-up passed; Linux comparison build request `20260914-081957-2080a3cd` is queued. Check its terminal reply before further bridge work. No host soak remains active. |
+| Status / next | **R4 complete.** All four four-hour soaks, the complete x86 companion, Windows/Linux/ARM common-path comparisons and longer Windows 1 KiB follow-up passed. Raw archives and every cycle/result identity are verified. No jobs remain active; no further bridge action is needed. Proceed to R5's final integrated-candidate checks, with publication still separately authorized. Results and historical qualifications are below. |
 
 ## Frozen intent for this slice
 
@@ -106,7 +106,7 @@ rehearsals remain in progress. Linux's verifier subsequently passed 24/24 in 474
 on Rust 1.85 and its release builds are running. All successful tests are
 unfiltered; do not count an in-progress host as passed.
 
-| Four-hour job | State / exact launch |
+| Four-hour job | Historical launch checkpoint — all subsequently passed |
 | --- | --- |
 | Windows | Running: `target/release-r4-20260914/windows-soak-e78`, supervisor PID 34384. Passed preflight default binary SHA256 `d92747078e4ecaae717ef3cbf3b26f84ab63287b70363d8cb61d59a8209c6731`. |
 | ARM Mac | Running: `/Users/m1/nbreq-r4-e78b73b18d4c/observations/soak`, supervisor PID 60249, request `20260914-034544-845bca3b` completed/ok/exit 0. Passed preflight default binary SHA256 `84a3c18bde2ec1809f62276c498c91eb05c5055f12200bfe03ba0f86ae4b5c3e`. |
@@ -246,8 +246,8 @@ examples and package work from F5.4. R4 retains its final mixed-capability multi
 
 The exact-registry 0.1.1 common-native-HTTP seam in main's separately owned F5 tool has only a
 758-response Windows rehearsal recorded; it is not a clean comparison baseline. M3 compares
-against M2.4 B, not 0.1.1. Therefore **the Windows/Linux common-path 0.1.1 comparison remains
-open** and must not be claimed from M1–M3 results. Keep it scoped to the shared native HTTP API,
+against M2.4 B, not 0.1.1. Therefore the Windows/Linux common-path 0.1.1 comparison was still
+open at R4's start; the completed results below close it. Keep it scoped to the shared native HTTP API,
 same host/toolchain, repeat timings and plain versus allocation attribution separately; no
 Mac/Wine ranking or new optimization programme is implied.
 
@@ -294,3 +294,93 @@ three samples, five pairs) also passed. The paired timing differences ranged app
 from -3.2% to +2.7%; the median-of-launch-medians was 2,073.46 versus 2,025.82 ms (+2.35%).
 Retain both observations. The owner subsequently confirmed substantial concurrent Windows
 work, so neither is a clean performance baseline. Linux and dedicated ARM results remain open.
+
+## Completed comparison and R4 disposition
+
+Windows, Linux and the owner-requested dedicated Apple Silicon comparison each completed all
+36 launches. The longer Windows small-body follow-up adds ten passed launches. All 118
+processes passed exact-byte/reuse/quiescence checks and exited unforced; every recorded binary
+hash matches its build manifest. All four Clippy and four locked release-build steps passed
+on each host. The source manifest is the same on all hosts; compiler versions differ, so
+compare versions within a host only.
+
+Plain timings below are medians of three launch medians (each launch contains three measured
+samples). A negative change means less elapsed time for 0.2. Sample lengths differ by body:
+4,096 requests for 1/64 KiB; 256 for 1 MiB. Raw nine samples and all launch ranges remain in
+the evidence; instrumented timings are not mixed into this table.
+
+| Host / Rust | Body | Current ms | 0.1.1 ms | Elapsed change |
+| --- | --- | ---: | ---: | ---: |
+| mac-arm64 / 1.98.0 | 1 KiB | 168.55 | 176.45 | -4.5% |
+| mac-arm64 / 1.98.0 | 64 KiB | 236.79 | 1534.16 | -84.6% |
+| mac-arm64 / 1.98.0 | 1 MiB | 58.97 | 1024.47 | -94.2% |
+| linux-x64 / 1.85.0 | 1 KiB | 221.14 | 214.54 | +3.1% |
+| linux-x64 / 1.85.0 | 64 KiB | 324.76 | 1721.52 | -81.1% |
+| linux-x64 / 1.85.0 | 1 MiB | 127.17 | 1853.42 | -93.1% |
+| windows / 1.97.1 | 1 KiB | 303.66 | 258.51 | +17.5% |
+| windows / 1.97.1 | 64 KiB | 407.44 | 821.80 | -50.4% |
+| windows / 1.97.1 | 1 MiB | 420.44 | 907.20 | -53.7% |
+
+The Windows 1 KiB longer follow-up above and the owner's concurrent-work disclosure qualify
+its initial row. Linux's 1 KiB launch medians also overlap (current 193.70–234.74 ms, legacy
+212.79–222.50 ms); this is not evidence of an actionable small-request regression. The
+dedicated ARM medians are tighter (current 167.43–168.93 ms, legacy 176.34–177.31 ms).
+No broad timing regression was demonstrated in the shared workload.
+
+The large-body timing difference is substantial on Linux and ARM, but it compares the whole
+released 0.1.1 implementation/graph with the current candidate. It does not isolate one memory
+change or establish a general application speed-up. These are serial buffered loopback HTTP
+requests with exact response inspection, not TLS, streaming, public-network latency or GDS
+traffic. This is release regression evidence, not a performance promise or a new optimization
+programme. The measured differences do not require a production change for R4.
+
+Allocation instrumentation separately measures bytes allocated during the sample, including
+any in-process fixture activity. These are allocation traffic, not live heap or peak process
+memory. Median allocated bytes per request were:
+
+| Host | Body | Current bytes/request | 0.1.1 bytes/request | Change |
+| --- | --- | ---: | ---: | ---: |
+| mac-arm64 | 1 KiB | 6,740 | 7,369 | -8.5% |
+| mac-arm64 | 64 KiB | 136,126 | 201,057 | -32.3% |
+| mac-arm64 | 1 MiB | 2,113,228 | 3,155,978 | -33.0% |
+| linux-x64 | 1 KiB | 6,583 | 7,209 | -8.7% |
+| linux-x64 | 64 KiB | 135,932 | 200,911 | -32.3% |
+| linux-x64 | 1 MiB | 2,114,636 | 3,157,859 | -33.0% |
+| windows | 1 KiB | 7,009 | 7,684 | -8.8% |
+| windows | 64 KiB | 136,331 | 201,309 | -32.3% |
+| windows | 1 MiB | 2,111,286 | 3,156,562 | -33.1% |
+
+Lower allocation traffic does not guarantee lower RSS: for example ARM's 1 KiB plain launches
+sampled about 8.0–8.1 MiB RSS for current versus 7.2 MiB for legacy, and Linux's 64 KiB private
+resident peaks were slightly higher for current. The cause of those small process-footprint
+differences was not profiled here. At 1 MiB, buffered bodies showed lower sampled peak RSS on
+all three hosts. Source, binary, allocator and process measures remain separate in `analysis.json`.
+
+Remote comparison archives were SHA256-verified before safe extraction, and the embedded
+source manifest hash, all result identities and all binary-manifest matches were checked:
+
+| Host | Archive under the R4 lab | Bytes | SHA256 |
+| --- | --- | ---: | --- |
+| mac-arm64 | `mac-arm64-compare-033d-evidence.tar.gz` | 101,086 | `92f634f71bbd6cd0409bc09249923aff60e4506891b4dc0c64c656a14944c115` |
+| linux-x64 | `linux-x64-compare-033d-evidence.tar.gz` | 184,456 | `381528c6a3cb985cda6cb4754bc19f7887cd7a0233f7d2b00ed0d8667085b784` |
+
+ARM's first collection command failed before packaging because the bridge dropped nested
+double quotes in inline Python. The failed reply `20260914-082838-c69cf26f` is retained;
+passing filenames/status as arguments fixed transport without changing or rerunning the
+benchmark. Corrected pack `20260914-083039-3657de74` and Linux pack
+`20260914-083133-f8176b75` passed. Remote jobs are complete; no further bridge work is needed.
+
+**R4 is complete within its stated scope.** The original unbounded HTTP fixture is fixed with
+retained red/green proof; the remaining historical DNS/TCP causes remain unconfirmed and
+explicitly qualified. The complete unfiltered verifiers, 60 focused repetitions, four native
+four-hour soaks, x86 companion and shared-path comparisons pass. M1–M3/R1 evidence plus this
+slice covers the reconciled F5 work; it does not close GDS's M4 device/application acceptance.
+
+The next release work is R5 on the final integrated candidate: exact-source CI/package,
+advisory/license/documentation checks and final registry-only consumer/MSRV resolution after
+the separately authorized support publications. Nothing has been published or pushed here.
+The scoped runtime remains the Wine fix; R4 changes tests and unpublished tooling only.
+The [artifact manifest](evidence/nbreq_r4_artifacts.json) and
+[sealed archive](evidence/nbreq-r4-20260914.tar.gz) preserve the raw evidence and a dated report
+snapshot. The archive excludes build trees/executables; source archives, toolchains and binary
+hashes are retained. Pause the R4 heartbeat after this completed handoff.
