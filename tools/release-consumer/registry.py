@@ -25,7 +25,7 @@ if (args.mode == 'candidate') != (args.package is not None):
 source = Path(__file__).resolve().parent
 out = args.out.resolve()
 out.mkdir(parents=True, exist_ok=False)
-work = Path(tempfile.mkdtemp(prefix='nbreq-020-registry-'))
+work = Path(tempfile.mkdtemp(prefix='nbreq-020-registry-')).resolve()
 env = dict(os.environ, CARGO_TARGET_DIR=str(out / 'build'))
 env.pop('CARGO_BUILD_TARGET', None)
 steps = []

@@ -22,3 +22,10 @@ archive directly under `package/`; Cargo placed publication archives under `tmp-
 `tmp-registry/`. The successful dry run was reused and both staged archives were verified.
 Root comparison separately identified and verified the harmless README line-ending difference;
 it was not treated as a source change or silently omitted from the new package identity.
+
+The first registry workflow (`34947171514`, source `6cfdf0a`) passed both Ubuntu jobs and all
+eight package-verification stages, but its new extraction guard rejected six Windows/Mac temp
+paths before consumer tests. It compared resolved destinations with an unresolved temp root
+(Mac temp aliases and Windows short/long paths). Canonicalize the freshly created root too;
+retain the containment check and both earlier path-component guards. This is a verification
+runner correction, with no library/package change. The failed run and its artifacts are retained.
