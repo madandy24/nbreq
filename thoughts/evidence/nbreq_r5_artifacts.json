@@ -1,0 +1,16 @@
+{
+  "archive": "nbreq-r5-technical-20260915.tar.gz",
+  "bytes": 4629805,
+  "sha256": "f6f02579763add7843756e8d489a2d44c3f531e04acf13751558c392cacc574f",
+  "files": 299,
+  "source_commit": "bdf5db590e4da6ee5a1534f408a370787453cff5",
+  "initial_hosted_run": 34930282926,
+  "passing_hosted_run": 34930899817,
+  "consumer_cases": 16,
+  "distinct_consumer_locks": 2,
+  "consumer_test_executions": 464,
+  "windows_x86_verifier": "24/24, 107.003 seconds; initial failure retained with cause unconfirmed",
+  "advisory_database": "e2e640471715167f73e22eaf761f2e547adafeec 2026-09-14T18:06:06+02:00",
+  "registry_only": false,
+  "note": "Technical R5 evidence before the owner README/examples refresh. Public hosted CI logs/artifacts, audited consumer locks, local red/green results and canonical Git source. Build/cache trees, Git credential material and main-before copies excluded."
+}
