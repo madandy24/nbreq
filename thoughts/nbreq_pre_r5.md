@@ -3,18 +3,24 @@
 2026-09-15. The scoped pass is implemented on `codex/pre-r5-release`, based on R4 `68649ee`.
 Planning commit `db55c31` records the accepted scope; `9c4c46d` contains the three failing tests.
 Fix and package source: **`a44cac5788d0596040ba65df29ccff387b5b493d`**. Local validation and
-packaging are complete; the remote checkpoint is pending. No publication, tag, main merge or
+packaging are complete; the approved public checkpoint is pushed and verified. No publication, tag, main merge or
 GDS change is included. The [release plan](nbreq_020_release_plan.md) owns the remaining R5/R6 gates.
 
-The September 15 push of checkpoint `86e5af9` was rejected by automatic approval review before
-execution. The stated reason was that publishing the repository history and embedded evidence
-to the public `madandy24/nbreq` GitHub repository needs explicit approval for that payload and
-destination. No remote branch was created. The prepared branch includes the existing memory,
-consumer and R4 history/evidence as well as this pass. Its outgoing blobs and nested archives
-were inventoried (13,297 ordinary file instances, no matches in the bounded credential-pattern
-scan); that check is not a comprehensive secret audit. Local branch commits, source and evidence
-remain intact. The next action is owner approval for this public checkpoint, then a normal push
-and verification of the remote commit. No workaround or alternative destination was used.
+The owner explicitly approved publishing this branch and its repository history/evidence to
+`https://github.com/madandy24/nbreq` on September 15, resolving the earlier automatic-review
+rejection. Checkpoint **`72085093c88f12a5afcc9c2548a4b74dc305277b`** was pushed normally to
+`origin/codex/pre-r5-release`, and `git ls-remote` confirmed the exact remote identity. The branch
+includes the existing memory, consumer and R4 history/evidence as well as this pass. Its outgoing
+blobs and nested archives had been inventoried (13,297 ordinary file instances, no matches in the
+bounded credential-pattern scan); that check is not a comprehensive secret audit. Subsequent
+planning-only commits record completion and the owner's documentation request without changing
+the tested crate inputs.
+
+The owner requested a README and examples refresh when work returns to main-tree integration,
+before the full release. This is an open R5 acceptance item: review the presentation and usage,
+validate the changed examples/doctests and package contents, then freeze fresh publication
+packages. The final hosted README/docs.rs link checks remain under R6. This checkpoint does not
+perform that refresh or merge main.
 
 ## Changes and proof
 

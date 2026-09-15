@@ -1,6 +1,6 @@
 # NBReq 0.2.0 release checklist
 
-Opened 2026-09-10; updated 2026-09-15. Status: pre-R5 local verification complete; public checkpoint awaits explicit approval; R1 verified; R2 platform proof verified with local
+Opened 2026-09-10; updated 2026-09-15. Status: pre-R5 complete, including the approved public branch checkpoint; R1 verified; R2 platform proof verified with local
 support overrides; R3 has tested Darwin and winpoll candidates. The clean root checkpoint is
 committed and packaged. R4 reliability is complete; exact-candidate CI and registry-only gates remain.
 W-01 is reproduced and fixed in `149450d`; actual Wine 5 x86 and native Windows gates pass.
@@ -21,9 +21,9 @@ and [memory work](nbreq_memory_plan.md); it does not replace their historical ev
 | Source recheck | Before R1, all 119 ordinary inputs in the final M3 E manifest matched on 2026-09-10. R1 now changes docs, example registration/examples and source doc comments/includes; it does not change runtime implementation. The new release rehearsal freezes its own manifest. |
 | Registry recheck | Rechecked 2026-09-14 through the crates.io APIs: nbreq latest 0.1.1, nbreq-winpoll latest 0.1.0; nbreq-darwin returns 404. Root 0.2.0 and the two required support releases are not published. |
 | Package inventory | Three clean `a44cac5` archives pass Windows x64 package verification: root 82 files, winpoll 10, Darwin 8. All 14 root relative Markdown links target included files. Exact archives/hashes are in the [pre-R5 manifest](evidence/nbreq_pre_r5_artifacts.json). Root uses explicit local helper overrides; registry-only resolution remains open. Earlier packages and stale main target/package output are not release inputs. |
-| Active slice | Pre-R5 local work complete: 3 budget reds, 6 greens; Windows verifier 24/24; fresh stable/MSRV consumers 34/34 stages, including the previously conflicting Mio 1.2.3 requirement. Three clean packages verify. Evidence sealed and scoped changes mirrored. The public branch push was rejected by automatic approval review; explicit payload/destination approval is needed before the remote checkpoint. Then R5. |
+| Active slice | Pre-R5 local work complete: 3 budget reds, 6 greens; Windows verifier 24/24; fresh stable/MSRV consumers 34/34 stages, including the previously conflicting Mio 1.2.3 requirement. Three clean packages verify. Evidence sealed and scoped changes mirrored. The owner approved the public payload/destination; `7208509` is pushed and its exact remote identity verified on `origin/codex/pre-r5-release`. Proceed to R5. |
 | Evidence | The [pre-R5 report](nbreq_pre_r5.md), [manifest](evidence/nbreq_pre_r5_artifacts.json) and [322-file archive](evidence/nbreq-pre-r5-20260915.tar.gz) retain new source, red/green logs, fresh locks, package bytes and link checks. [R4 evidence](evidence/nbreq_r4_artifacts.json), [R1/R2 evidence](evidence/nbreq_020_artifacts.json) and the Wine investigation remain historical evidence. |
-| Next slice | R5 final integrated-candidate matrix/hosted CI, applicable x86/MSRV, advisory DB identity and license checks. Before publication, integrate release docs or verify release-specific links: four new README destinations are absent from remote main. Separately authorize/publish Darwin 0.1.0 and winpoll 0.1.1, prove registry-only root installation, then publish/smoke 0.2.0. R4 soaks remain completed historical evidence. |
+| Next slice | R5 final integrated-candidate matrix/hosted CI, applicable x86/MSRV, advisory DB identity and license checks. At main-tree integration, complete the owner-requested README/example refresh before final package freeze; validate the changed examples and hosted links. Four new README destinations are currently absent from remote main. Separately authorize/publish Darwin 0.1.0 and winpoll 0.1.1, prove registry-only root installation, then publish/smoke 0.2.0. R4 soaks remain completed historical evidence. |
 | GDS boundary | Preserve its source and installed DLL. M4 device/application memory acceptance waits for GDS availability. Do not export GDS policy as nbreq defaults. |
 
 ## Pre-R5 pass — independent-review follow-up (2026-09-15)
@@ -40,12 +40,12 @@ main merge, GDS change or repetition of the completed four-hour soaks is implied
 | P5-02 — Dependency policy | Verified: stable/MSRV consumers | Use Cargo-compatible version ranges for ordinary root/support runtime dependencies, retaining tested lower bounds and explicit default-feature choices. Keep dev/tool pins and the documented Rust-1.85 `time` exception. Preserve the reviewed root lock graph, then separately prove fresh default/native-only/minimal consumer resolution on stable and Rust 1.85, including a consumer constraint above a formerly exact dependency pin. Record resulting locks/versions; local helper overrides do not become registry-only evidence. |
 | P5-03 — Compatibility documentation | Complete | Document rejection of ambiguous HTTP Transfer-Encoding plus Content-Length and errors for malformed required Windows adapter data; preserve both behaviors. Valid unaligned Wine records remain supported. Existing callback-activation ownership and duplicate-delivery/shutdown tests address the review concern; no speculative arithmetic change. |
 | P5-04 — Packaging and published docs | Verified locally; publication checks assigned to R5/R6 | Use a fresh dedicated packaging directory and an explicit package path/hash inventory. Do not clean the broad target tree or use wildcard crate upload selection. Keep the stale `target/package` archive out of the release inputs. Verify candidate wording and link destinations; crates.io already rewrites relative README links, so no blanket conversion to moving `main` URLs. Carry exact post-publication README/docs.rs checks into R6. |
-| P5-05 — Validation and durable checkpoint | Local gates/evidence complete; public push needs approval | Run the relevant budget tests and complete Windows verifier; fresh consumer/MSRV checks cover the range changes. Retain source identities, locks and logs; commit and push the reviewed release branch without merging main or publishing crates. R5 still owns the final hosted cross-platform matrix and final-candidate package gates. |
+| P5-05 — Validation and durable checkpoint | Complete: verified and pushed | Run the relevant budget tests and complete Windows verifier; fresh consumer/MSRV checks cover the range changes. Retain source identities, locks and logs; commit and push the reviewed release branch without merging main or publishing crates. R5 still owns the final hosted cross-platform matrix and final-candidate package gates. |
 
-The attempted public push of `86e5af9` was rejected before execution by automatic approval
-review: explicit owner approval is required for publishing this repository history and embedded
-evidence to `https://github.com/madandy24/nbreq`. No remote branch was created. The prepared
-local branch and sealed evidence are intact; see the [checkpoint report](nbreq_pre_r5.md).
+The owner explicitly approved the public payload/destination on September 15 after the earlier
+automatic-review rejection. Checkpoint **`72085093c88f12a5afcc9c2548a4b74dc305277b`** was pushed
+to `origin/codex/pre-r5-release` at `https://github.com/madandy24/nbreq`; `git ls-remote` confirmed
+the exact remote commit. The [checkpoint report](nbreq_pre_r5.md) retains the validation scope.
 
 The two helper versions remain nbreq-darwin **0.1.0** and nbreq-winpoll **0.1.1**. Either helper
 can publish first after separate authorization; both must actually resolve from the registry
@@ -53,6 +53,25 @@ before root registry acceptance. A fixed sleep is not evidence of index availabi
 R5 must record the advisory database commit/date alongside audit JSON, including when
 `cargo audit --no-fetch` omits that identity. R6 must inspect the published README and docs.rs
 pages for stale unreleased wording and broken release-documentation links.
+
+## Main-tree README and examples refresh — owner requested
+
+The owner wants a README and examples refresh before the full release, scheduled for the return
+to the main working tree and its integration/push. The pre-R5 branch is a durable checkpoint;
+this request does not merge main or edit the consumer-facing files now.
+
+Before freezing the final publication packages:
+
+- Review the README and examples against the intended 0.2 consumer experience, including usage,
+  feature selection, memory/ownership guidance and migration links. Agree the actual presentation
+  changes during that pass rather than treating the existing candidate wording as final.
+- Build/run the affected examples and doctests, check the package allowlist and release wording,
+  and produce fresh packages with the final source identities. Earlier archives remain evidence.
+- Push the integrated documentation to the default branch before publication, or verify explicit
+  release-specific destinations. Check the actual crates.io README and docs.rs pages under R6.
+
+This refresh is part of R5 acceptance, ahead of R6 publication, and is not closed by the previous
+R1 documentation evidence or the successful pre-R5 package checks.
 
 ## Release gates
 
@@ -64,7 +83,7 @@ Status is deliberately split between existing evidence and final release accepta
 | R2 — Independent consumer proof | Platform proof verified with explicit Darwin override; registry gate open | External temporary workspaces on all four hosts exercise ordinary default/native-only/minimal/test-support APIs against normalized archives. Stable and Rust 1.85 pass fresh online dependency resolution, HTTP/callback/manual/cancel/shutdown, streaming, TCP, retained budgets and feature probes. The same three HTTP tests also pass against registry 0.1.1. All seven packaged examples run on each host, including live DNS/HTTPS. The four independently resolved locks are identical. R3 publication is still needed for registry-only acceptance. |
 | R3 — Support crates and package graph | Darwin and winpoll candidates tested; publication remains open | Darwin `4a6c807` and Wine-fix winpoll `149450d` retain earlier platform proof. Pre-R5 `a44cac5` supplies fresh 8-file Darwin and 10-file winpoll candidates after compatible dependency-range changes, with Windows package verification. Winpoll's earlier x86/x64/MSRV and Wine proof remains historical until final-candidate checks. Root removes ipconfig/widestring; advisory and generated-license checks were refreshed. Publish both helpers only after separate authorization, then prove registry-only root resolution. |
 | R4 — Final reliability observation | Complete within the documented scope | Four full native verifiers and four-hour default mixed observations, short default/native-only rehearsals, harness negative checks and complete Windows x86 companion pass. All 73,593 cycle records and archive hashes were independently checked. Common-native-HTTP registry 0.1.1 comparisons pass on Windows/Linux and the owner-requested dedicated ARM Mac (108 launches plus ten longer Windows small-body launches). Windows timings are qualified by the owner's concurrent work; no cross-host ranking. [Results and limitations](nbreq_r4_reliability.md) and [artifact manifest](evidence/nbreq_r4_artifacts.json) retain the proof. Fixture cleanup is fixed with reds/greens; five historical DNS/TCP causes remain unconfirmed. Runtime implementation is unchanged from the Wine fix. |
-| R5 — Exact release candidate | Pre-R5 integrated candidate; acceptance open | The pre-R5 branch extends the clean `149450d` and R4 checkpoints; Windows/Wine proof is in [W-01](nbreq_wine_dns.md). Earlier `7693d6c` archive-consumer checks remain scoped historical results. Final matrix/hosted CI, applicable x86 companions, final advisory/license gates, registry-only consumer proof and docs.rs/package-link checks remain. Track the deadline-sensitive test failures and unbounded fixture separately; no universal test-authority claim. |
+| R5 — Exact release candidate | Pre-R5 integrated candidate; acceptance open | The pre-R5 branch extends the clean `149450d` and R4 checkpoints; Windows/Wine proof is in [W-01](nbreq_wine_dns.md). Earlier `7693d6c` archive-consumer checks remain scoped historical results. Final matrix/hosted CI, applicable x86 companions, final advisory/license gates, registry-only consumer proof, the owner-requested main-tree README/example refresh, and docs.rs/package-link checks remain. Track the deadline-sensitive test failures and unbounded fixture separately; no universal test-authority claim. |
 | R6 — Root publication and registry smoke | Separate owner action after R1–R5 | After R3's authorized support publication and the registry-resolved root proof, publish nbreq 0.2.0. Inspect the published metadata/docs and run a clean consumer using only the registry release. Publication is not implied by this checklist. |
 
 R3's support publication necessarily precedes the final registry-only root rehearsal in R2/R5.
