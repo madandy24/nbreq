@@ -1,0 +1,990 @@
+{
+  "schema": "nbreq-housekeeping-evidence-v1",
+  "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+  "snapshot_commit": "cb18acc301520ec6d250a1eb467b98f2cc2a8c99",
+  "snapshot_branch": "codex/main-before-housekeeping-20260915",
+  "snapshot_file_count": 313,
+  "snapshot_changed_paths": 147,
+  "intentional_differences_from_snapshot": [
+    "SECURITY.md",
+    "docs/getting-started.md",
+    "docs/migrating-to-0.2.md",
+    "thoughts/nbreq_020_release_plan.md",
+    "thoughts/nbreq_housekeeping.md",
+    "thoughts/nbreq_memory_plan.md",
+    "tools/f5-observe/README.md",
+    "tools/f5-observe/compare.py",
+    "tools/f5-observe/src/main.rs"
+  ],
+  "unchanged_core_inputs": 81,
+  "validation": {
+    "status": "passed",
+    "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+    "registry_only": false,
+    "package_overrides": "Exact locally frozen Darwin/winpoll archives, not registry-only proof",
+    "steps": [
+      {
+        "label": "versions",
+        "command": [
+          "rustup",
+          "show"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 0.046999999998661224
+      },
+      {
+        "label": "verifier",
+        "command": [
+          "cargo",
+          "run",
+          "--locked",
+          "--offline",
+          "--manifest-path",
+          "tools/xtask/Cargo.toml",
+          "--",
+          "verify",
+          "--offline"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 136.375
+      },
+      {
+        "label": "build-examples",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "--offline",
+          "--examples"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 11.031999999999243
+      },
+      {
+        "label": "local-examples",
+        "command": [
+          "C:\\Users\\andre\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+          "tools/release-consumer/check_examples.py",
+          "--bin-dir",
+          "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples",
+          "--out",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\local-examples"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 0.8589999999967404
+      },
+      {
+        "label": "packages",
+        "command": [
+          "C:\\Users\\andre\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+          "tools/release-consumer/package_candidate.py",
+          "--out",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 15.76600000000326
+      },
+      {
+        "label": "packaged-consumers",
+        "command": [
+          "C:\\Users\\andre\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+          "tools/release-consumer/run.py",
+          "--package",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-0.2.0.crate",
+          "--darwin-package",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-darwin-0.1.0.crate",
+          "--winpoll-package",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-winpoll-0.1.1.crate",
+          "--out",
+          "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\consumers",
+          "--offline",
+          "--toolchains",
+          "stable",
+          "1.85.0"
+        ],
+        "exit_code": 0,
+        "elapsed_s": 131.28100000000268
+      }
+    ]
+  },
+  "packages": {
+    "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+    "registry_only": false,
+    "support_override": "Root package uses explicit current local Darwin/winpoll paths",
+    "packages": {
+      "nbreq-darwin-0.1.0.crate": {
+        "path": "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-darwin-0.1.0.crate",
+        "bytes": 11376,
+        "sha256": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839",
+        "commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+        "files": {
+          ".cargo_vcs_info.json": "1b38da8531e575b774f91e93d1e9b6c065b2ac201d20844d0e98aa63838c187c",
+          "Cargo.lock": "b08ec3701b95961c79fdcf8709e412bcdf9c47805de653cc039300801f52c65f",
+          "Cargo.toml": "d8f8b85b6c98b924e1ed85820fc401f229aebce1a2deb8830860471dde732fa9",
+          "Cargo.toml.orig": "ca1268a7c855e16b24e06cc8486f29685f0caf78e136cfb8dff7212e8dff2729",
+          "LICENSE-APACHE": "e03ba41d7fab20700769fe4118bab50d800cb74f990353a05d2f5fff1c228363",
+          "LICENSE-MIT": "4229c82b626b48faa54758fcd613232079bd87507b8010c744a6a1095d5150ef",
+          "README.md": "f34b5131db88c3f98a125d5b8f788d4ed0000de6d3c6ebcd3b24eded2b6e53a8",
+          "src/lib.rs": "e18132115e655723e6bf7a6e241ad0e8c91ad5c1ac0c79f032777be1a027a996"
+        },
+        "relative_links": []
+      },
+      "nbreq-winpoll-0.1.1.crate": {
+        "path": "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-winpoll-0.1.1.crate",
+        "bytes": 13033,
+        "sha256": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696",
+        "commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+        "files": {
+          ".cargo_vcs_info.json": "e8fc60daf9877c9e2052e107be711b203d897baf4e0a2014a45bc2c05bf9e3f7",
+          "Cargo.lock": "d9a603d1f10893afe39fbc471c93e2179b0df9be8d0f7a6f6c47d9a6ae3ee8e5",
+          "Cargo.toml": "84c260dab668621e42bfb066f63e020c19dc123a4fca96467c48353cd67687a4",
+          "Cargo.toml.orig": "83284d3afa84bc7794d92cf5a7c91c87bf29ea3ddd5c293d8ee72356a6acedb0",
+          "LICENSE-APACHE": "e03ba41d7fab20700769fe4118bab50d800cb74f990353a05d2f5fff1c228363",
+          "LICENSE-MIT": "a8cb2a0ad179cfa665a477d6c8912f7a56b0b4aba54c7a3be34c19866687a641",
+          "README.md": "1c9631b74fe61ad8721e00401e74f3bffe67877c2131a06d83cedab1ec6d06c1",
+          "src/dns/tests.rs": "0f9233aa148256d757836f8462dc43121e5c9e907b4a542d3e8aa03dfb249823",
+          "src/dns.rs": "ecc8284ba88b50895d6c0ad3825ccc727db65ea6aeeaf260c3e66394d879cae7",
+          "src/lib.rs": "4047d59b5837e093c6d82629774f5d34e0d8b76616e82c106a016726dd5159cf"
+        },
+        "relative_links": []
+      },
+      "nbreq-0.2.0.crate": {
+        "path": "C:\\User\\projects\\nbreq\\target\\housekeeping-20260915\\final-check\\packages\\build\\package\\nbreq-0.2.0.crate",
+        "bytes": 343565,
+        "sha256": "59b54d263c6951da867df745d5fc1cd9aad29930c659a9f9d378c7bfc6966860",
+        "commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+        "files": {
+          ".cargo_vcs_info.json": "0107a7f3101c3b9023ded21ba353e91de4309c7c69c08653a7d719a0aff5e9ca",
+          "Cargo.lock": "ddad6c1d1fb29491684fb3e09f7793df4db463ab2564407e7e4d793e925ee4a8",
+          "Cargo.toml": "68d4f3011efa3d95dce86b19fd7863aeda331693964a7ca7771d7cd18e0d63f1",
+          "Cargo.toml.orig": "1514799788879276627dac1fc34fd90df4327370d08fd761a0b7dca4e507f77b",
+          "LICENSE-APACHE": "e03ba41d7fab20700769fe4118bab50d800cb74f990353a05d2f5fff1c228363",
+          "LICENSE-MIT": "a8cb2a0ad179cfa665a477d6c8912f7a56b0b4aba54c7a3be34c19866687a641",
+          "README.md": "8f702b2d20c9fc9200eaf8ba6c44038e25483b56c9657b7784e18ef1b219a97a",
+          "SECURITY.md": "f4cc1954bdee5abf341d15f37a273b2e164268bba0b3b4c0bfb77156148ddcd9",
+          "THIRD_PARTY_LICENSES.html": "4148b045cd4da7e02241be28423b14782a8129742869c29d1af5246ec6f1504e",
+          "docs/getting-started.md": "564a66b9630bafe199951ca7f2b4340473b148e555b21bf3867bc697708875bd",
+          "docs/migrating-to-0.2.md": "10e6276d3aaebbb93709d5ee165afcf5c2873f664b930dfdcbed787976d8c5bb",
+          "examples/A01-http-blocking-get.rs": "5087364aa80e24ef142047863ec0a32bf5319b82a729cdf1182f45266c294d14",
+          "examples/A02-http-blocking-post.rs": "996bed2b6c611b29faaebe4d055b32af81f2bef915c62db68e3b8cf1e9424c76",
+          "examples/A03-http-full-get.rs": "db19bb339cd80be281285e793f2739fb683495c0bac00f269ad4aa801551043e",
+          "examples/A04-http-full-post.rs": "8a6cabf8a95caa87898be4f01ed6b4f9d44a43595b44f9c62a74ff66e225de52",
+          "examples/A05-http-nonblocking.rs": "bea6e9993bd8f5d73cc8b37789735ec61f1dc2f81fbf23b6c407ccd042aedd99",
+          "examples/A06-http-callbacks.rs": "ae078040ca46a3d7e2f8d20e04e77c302cde4e11300c8e95d8b0b2c06e971db9",
+          "examples/A07-http-cancel.rs": "0596a2f562ee24e137a44a645837143e8b05b8a8876ea251362b01c12ef3f170",
+          "examples/A08-http-manual.rs": "710dde7e9cfaa6d68ed0e2d3616b0861c15c942ccae0ca76d16fe5d11a095078",
+          "examples/A09-http-streaming.rs": "4ce94fc043f36d9235969d3f65c72cfb1ba5925703743a17242d79cb69932a27",
+          "examples/A10-http-memory-limits.rs": "1da82fa6b46804975ca87a77b519525d40f09ea7c05451ac066e16a65492c8ae",
+          "examples/A11-http-owner-lifecycle.rs": "c9808c8397e0ddac906a5f5e99b0824cc4c3d7f4a265b0d7b916aea81b722e09",
+          "examples/B01-dns-blocking.rs": "367f9ff89442620884810efb72a83c0197f1cf291de0c5d1243b116bba06dc62",
+          "examples/B02-dns-nonblocking.rs": "88f761f187d77fafa4f4122df5ee6cd372822dff3942cccf7b5b4fd530806abe",
+          "examples/B03-dns-manual.rs": "b95bd976ff50734a4debee261f9eea0f411c1831fadad74259e74a60091d0b03",
+          "examples/C01-tcp-blocking.rs": "555a77c74997b9fcc81861ca0fa643b82534b7c19e8737b0541c9253558d6bd0",
+          "examples/C02-tcp-nonblocking.rs": "7d238b67e8d56bc7cfc3c5b511ea4f076bfebf6b266299f3288e6d4794759240",
+          "examples/C03-tcp-manual.rs": "3afd2e6323aa3d725c5c940df8b327cfb629e5daef0fe938f4dbf30ee5912177",
+          "examples/README.md": "fe251957735c37f993955253a1608c14090640f47228b4736848196f4e953e97",
+          "examples/support/echo.rs": "2db7c20345f9ae26ee90550531f71778c46d3f16538f3b7e8105f4696dbbc6b7",
+          "examples/support/held_http.rs": "5dc2a3234caa777fd916c78b6d654e0b9606a879c838dd9f744d7d1c8362a1f1",
+          "src/atomic.rs": "6301e060b07b0cfb9dc020906950a2eff02105da01192ef64cdd1a3fef7a6e0b",
+          "src/backend/mod.rs": "186c615883a77959b08f0ca50c65dd06c3cbb2d0917750b2fbcc1f09e68ce60c",
+          "src/backend/native.rs": "9ec62cc5a77f1ed1a94e96ca5b992cbd7d5473f0692cef796b88a1c5e4c5c27b",
+          "src/backend/native_dns/tests.rs": "770383861cee0e898df0db3f6c3063f5ff93113171c071a18ac9fa81b696230d",
+          "src/backend/native_dns.rs": "3bed8c83042b0639350511a7df0b9ab8e21f5216ee87565f1961f0ee0bf9c38b",
+          "src/backend/native_dns_config.rs": "9ebb775fc80db3fbf1dbc903d290f3628b4891e3631c66d7c65eaca0b39c349c",
+          "src/backend/native_dns_wire.rs": "93f07287cef249f483445f096b707f995f557e81d4eec8d46a8bd5b6b3d70835",
+          "src/backend/native_http/fuzz.rs": "2018c483ae77a678ca927854888b592a7f486b0d9f0ff67e73857c63be031fc5",
+          "src/backend/native_http/http1.rs": "b8b65b992dbce884273103e4fe3af3ce7b6966c975e54189150bcaebe667d4f8",
+          "src/backend/native_http/tests/address_fallback.rs": "1b760c575f97ecdd18b6e5cdce236da7ddbd0371ff74b1e2301497ccf835210b",
+          "src/backend/native_http/tests/request_ownership.rs": "643f31c0175bf5e1947c316a0d178e94e17d82526cec23091e6200a153dde918",
+          "src/backend/native_http/tests/retained_capacity.rs": "912fed98e6f46a2b0acbd7c745fea08b3e2b4f4250262c462011ee8d146f59f5",
+          "src/backend/native_http/tests/tls_lifecycle.rs": "a69e7b4d20bb898f0368c3265395aaf6c393b41d7d360c017ff913be76e71461",
+          "src/backend/native_http/tests.rs": "9bca1444da9cafd269fc46ba38614fb490ad18f10c3f294a16022f0dbec4b2da",
+          "src/backend/native_http.rs": "292a92bc5b5164603d6b31557422088283dfa482996ddb930a6257297a77459d",
+          "src/backend/native_poll.rs": "f8a1e15cecff37db4f286ff76551b7c1c4234ffb99ad565a182af4a926f6f429",
+          "src/backend/native_tls/worker/tests.rs": "98b23fefd80430f43691c4158bb4f576e7103fdf6076ba791b5b1e78ac73f28d",
+          "src/backend/native_tls/worker.rs": "95ec28ba07058726070ef0c9cca26131f6e2c50a59832b78e6fef20b00a79ddc",
+          "src/backend/native_tls.rs": "01208991d6520ae084f1cbcbe60b044fdd7f4c5b10350c73cd3093e3813bea83",
+          "src/backend/scaffold.rs": "05c9343b15721339961730b3a1c750cec7f4f738bb711e57c23016562c834228",
+          "src/body.rs": "79e534d6b008762dfedef31c59f1b5de216903668c660734e202d6141f63568c",
+          "src/body_budget.rs": "c158cce8e00043323249bc10e4a3927be5b301a6ced9d27cec8633c14c9d76eb",
+          "src/callback.rs": "629099afa5b7b8d7c918222cd2099fd514047a298a32dd549d41261dc55c0153",
+          "src/client.rs": "82866e59eed12590b5ef7db7e66c6f12e83a3d3c39810f1dde6da60e205d5ac5",
+          "src/context.rs": "48da28f45e5098cde1ac2aeba523974144ad96f87f1e7f6e47091cafe80a96ad",
+          "src/dispatch.rs": "89eb6ecf322da7d9ececdeb33b99c8a65c26b8b41f8d2b29c02047eb5bd171b4",
+          "src/dns.rs": "364d7d704a7947721c1e3b274f910463eb58d34accc9c4d9bc8a9e9d20ba51b0",
+          "src/dns_wiring_tests.rs": "106297f3d8c666d4913951fd37d8bb369bda909709c4e63923682a9bd3d05c4d",
+          "src/engine.rs": "fc71073f74e58571d32cdfab315d3efce56820e05cb06a3bf97f1c5dc2f17307",
+          "src/fuzzing.rs": "3301e2c4f45ec7223113af17a573a78acc9aa829b766750ea5ebb4d9eeb7ef6b",
+          "src/lib.rs": "4bd6ffa1bd82876d756c0eeb2ecd60bb290fa361e2e7559ce7d5437659f0475f",
+          "src/lifecycle_tests.rs": "211f640333914b07902275ac4780158693e22f0ab3eef9cb89b192d7737e18d4",
+          "src/memory_limits_tests.rs": "39446377ad4d910163fa3f2837c3bb428b37fbb24cd6f816dcc815798c1f3796",
+          "src/metrics.rs": "8e664d8a2e1eacbf2b7d46bfffda5c4359d5b49bb8555485e7990ed3b29921ce",
+          "src/reactor.rs": "66dcdb07d0bad05610fcaf55ae379fdad70323447728386ded8760a80877177a",
+          "src/registry.rs": "462c36523e7ab6dc435c90fae2adbac6fac388fee771cc1eec16daa6ab8d7640",
+          "src/response_body_tests.rs": "6c442e56e1f68d0f3993291c5ff053b5a838ed173e109d6e39909e3b42463f58",
+          "src/stream.rs": "7d6242ba17aabaa32cdaf2f850d23e7c03c34b25d9cf8b1eb7cf281ecc95885c",
+          "src/tcp/io.rs": "b2d7081834ede51559a82b41b5d196eb240ee63fcf89f35a4e04876f91d3489e",
+          "src/tcp/mod.rs": "4561e6f64d90f4f7a75b0ce76a123e14225d954f31b40b37ed2debb6e3469bc8",
+          "src/testing.rs": "1c6578630c76a7bfadd7d7d9dad81f5dccca01c5fe2a595ee8748773164d0688",
+          "src/types.rs": "bcdb9ec82047496922750614f50062085bd6b42a3c9803e18ff1be4161a58a76",
+          "src/waiter.rs": "ca5793aeffb3a9881c865f3536c2b919b37999effcf26f39f10c60118dfab342",
+          "tests/fixtures/fuzz/native_dns_response/a.seed": "a22efad6deb469001cf7e45e18dd8d224c793c050ad4dd6a340d7828f893a6d1",
+          "tests/fixtures/fuzz/native_dns_response/aaaa.seed": "905900ff313e5f0f024180d9bf8fd031e9c62fd05f10d376eea9d22f3a9468b5",
+          "tests/fixtures/fuzz/native_dns_response/cname.seed": "ee4e7843ec7a0377786ba9e5ca5d50e7f82590beb8e533657eaeb05363130431",
+          "tests/fixtures/fuzz/native_dns_response/nxdomain.seed": "36a82a17f58b759aec29667f736ad7b2b0dd59f3bea0870a67ea2411cc4d4a92",
+          "tests/fixtures/fuzz/native_dns_response/root-cname.seed": "44aa4c9b3ab47b5eaccb4dfb00789ac808c4274209c2aae290e6ac64ab0e5358",
+          "tests/fixtures/fuzz/native_dns_response/truncated.seed": "09dda2f24b95822fbf83c467b82aa3ed0b1acfb432f2575e6297aab2793d9cec",
+          "tests/fixtures/fuzz/native_response_decoder/chunked.seed": "5e0bf15a85e6688c8129edae5e3a47a16d29a1496bc07f56b578d1271df3b852",
+          "tests/fixtures/fuzz/native_response_decoder/close_delimited.seed": "cc9e386ec9857a1e00485df23ebac1467154001c2c8e813289080aaede68fa98",
+          "tests/fixtures/fuzz/native_response_decoder/conflicting_length.seed": "af77e7a618052ef40022db6d9507f33163a9d55cc9c7e56f51e3b1bbf1f2c42b",
+          "tests/fixtures/fuzz/native_response_decoder/fixed.seed": "f5b2520bd34503c6d2b5a3a8d51c98b54b2772781c4f84c50cdec5e587e65cba",
+          "tests/fixtures/fuzz/native_response_decoder/informational.seed": "8aa995c493558dc720c876e4181ef2d5b3d09dc71348e72f6f32909887611d98",
+          "tests/fixtures/fuzz/native_response_decoder/malformed_chunk.seed": "5540bd79396bc8d2524e707681448388d8e07fff2d1cd7cb697209c7561135ca",
+          "tests/fixtures/fuzz/native_streaming_response_decoder/chunked_tiny_queue.seed": "21ef4b1f1769ec8309e8512efcfbf99e08e5b660afe335274b78416b8585f6e3",
+          "tests/fixtures/fuzz/native_streaming_response_decoder/close_delimited.seed": "0e24d5807bc7a666141ab2050f3b13cdf140309ac4722c74ed625e85a03855b6",
+          "tests/fixtures/fuzz/native_streaming_response_decoder/discard_redirect.seed": "e211b94cb0b6d91fb5a65daa8048473e8cc4836fb3b1d3f7de3dd3c4b778a2e2",
+          "tests/fixtures/fuzz/native_streaming_response_decoder/fixed_tiny_queue.seed": "f1f94f319c5c77d96e85a3d83bcf605a2b84494420946a1ff7f3494e6f346d2a",
+          "tests/fixtures/fuzz/native_streaming_response_decoder/no_body.seed": "7fd76f2eb56cc3a3816c26f2fa32c5dcd32d211d01768e61ae9cd554fdd8ba75",
+          "tests/http_adversarial.rs": "927b7bebb4be064b6aba1e0ebb91f495444239059c0a52d365531be9311ebeb3",
+          "tests/package_contents.rs": "cd85658568069a92999463d31e9b8be5b35488b3bb97d8355e58fef4d96bdd25",
+          "tests/public_contract.rs": "7b9409ab70882ef482528a64f35ca16fe44f2bdf3f85ad0588960eeda629021c",
+          "tests/tls_roots.rs": "b7fa83ac580f5a2d64b2b82f2b08235239e73894f76e2a4ee8bd15fe7df7bfef"
+        },
+        "relative_links": [
+          {
+            "document": "README.md",
+            "destination": "examples/A01-http-blocking-get.rs",
+            "packaged_target": "examples/A01-http-blocking-get.rs"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/A02-http-blocking-post.rs",
+            "packaged_target": "examples/A02-http-blocking-post.rs"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/getting-started.md#buffered-http-memory-controls",
+            "packaged_target": "docs/getting-started.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/A10-http-memory-limits.rs",
+            "packaged_target": "examples/A10-http-memory-limits.rs"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/A07-http-cancel.rs",
+            "packaged_target": "examples/A07-http-cancel.rs"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/README.md#b--dns",
+            "packaged_target": "examples/README.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/README.md#c--tcp",
+            "packaged_target": "examples/README.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/getting-started.md",
+            "packaged_target": "docs/getting-started.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "examples/README.md",
+            "packaged_target": "examples/README.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/migrating-to-0.2.md",
+            "packaged_target": "docs/migrating-to-0.2.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/getting-started.md#platform-scope",
+            "packaged_target": "docs/getting-started.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/getting-started.md",
+            "packaged_target": "docs/getting-started.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "docs/getting-started.md#backend-and-feature-selection",
+            "packaged_target": "docs/getting-started.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "SECURITY.md",
+            "packaged_target": "SECURITY.md"
+          },
+          {
+            "document": "README.md",
+            "destination": "LICENSE-APACHE",
+            "packaged_target": "LICENSE-APACHE"
+          },
+          {
+            "document": "README.md",
+            "destination": "LICENSE-MIT",
+            "packaged_target": "LICENSE-MIT"
+          },
+          {
+            "document": "README.md",
+            "destination": "THIRD_PARTY_LICENSES.html",
+            "packaged_target": "THIRD_PARTY_LICENSES.html"
+          },
+          {
+            "document": "docs/getting-started.md",
+            "destination": "../examples/README.md",
+            "packaged_target": "examples/README.md"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A01-http-blocking-get.rs",
+            "packaged_target": "examples/A01-http-blocking-get.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A02-http-blocking-post.rs",
+            "packaged_target": "examples/A02-http-blocking-post.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A03-http-full-get.rs",
+            "packaged_target": "examples/A03-http-full-get.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A04-http-full-post.rs",
+            "packaged_target": "examples/A04-http-full-post.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A05-http-nonblocking.rs",
+            "packaged_target": "examples/A05-http-nonblocking.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A06-http-callbacks.rs",
+            "packaged_target": "examples/A06-http-callbacks.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A07-http-cancel.rs",
+            "packaged_target": "examples/A07-http-cancel.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A08-http-manual.rs",
+            "packaged_target": "examples/A08-http-manual.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A09-http-streaming.rs",
+            "packaged_target": "examples/A09-http-streaming.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A10-http-memory-limits.rs",
+            "packaged_target": "examples/A10-http-memory-limits.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "A11-http-owner-lifecycle.rs",
+            "packaged_target": "examples/A11-http-owner-lifecycle.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "B01-dns-blocking.rs",
+            "packaged_target": "examples/B01-dns-blocking.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "B02-dns-nonblocking.rs",
+            "packaged_target": "examples/B02-dns-nonblocking.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "B03-dns-manual.rs",
+            "packaged_target": "examples/B03-dns-manual.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "C01-tcp-blocking.rs",
+            "packaged_target": "examples/C01-tcp-blocking.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "C02-tcp-nonblocking.rs",
+            "packaged_target": "examples/C02-tcp-nonblocking.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "C03-tcp-manual.rs",
+            "packaged_target": "examples/C03-tcp-manual.rs"
+          },
+          {
+            "document": "examples/README.md",
+            "destination": "support/echo.rs",
+            "packaged_target": "examples/support/echo.rs"
+          }
+        ]
+      }
+    }
+  },
+  "registry_only": false,
+  "performance_claim": false,
+  "files": {
+    "checkpoint/main-before.json": {
+      "bytes": 35038,
+      "sha256": "5be1cb8f2ecb05d3dffcfe38cf615e741334aca8760e8e43879495d8f2709e3f"
+    },
+    "checkpoint/main-status-before.txt": {
+      "bytes": 5157,
+      "sha256": "cde67aca0ef4ed48c7e748264db2b028eddee1088132aa9d0187244e1ff6e207"
+    },
+    "checkpoint/snapshot.json": {
+      "bytes": 133,
+      "sha256": "a59ac407e9751a8f8cdb679005b3c4c006a450628738ca6ad9e627e2a063ccc0"
+    },
+    "checkpoint/reconciliation.json": {
+      "bytes": 3526,
+      "sha256": "98b7df052539da9ec2e083b76b5762897613d503c0c3d544afb18bbbb7012523"
+    },
+    "checkpoint/inherited-archive-audit.json": {
+      "bytes": 2098,
+      "sha256": "3a8482bb9df640747ad8cd86d94ea0127ab1e1437165f5c9d9e54fb36036298d"
+    },
+    "controller/housekeeping-snapshot.py": {
+      "bytes": 1997,
+      "sha256": "95b3b621d8555f98de8b3fe4375ddc34e04d8cd2c503c22b931e89c92faef0d3"
+    },
+    "controller/housekeeping-reconcile.py": {
+      "bytes": 2109,
+      "sha256": "b6dc4e47f58e7a6c1bc333933bb486a4b7ce60586d0478b7e4515b3d69d4c252"
+    },
+    "controller/housekeeping-tools-check.py": {
+      "bytes": 3427,
+      "sha256": "153b91a24ac8103fe36543a6488c79c82ecbe23db64b2fe2a667a7b47b167654"
+    },
+    "controller/housekeeping-final-check.py": {
+      "bytes": 2401,
+      "sha256": "2cdbf70f8c383c32a4856cccc4e477201d960cca431a0c63cc9f788f1e85c9b3"
+    },
+    "controller/housekeeping-collect.py": {
+      "bytes": 4741,
+      "sha256": "45df0940bd5b9a62ef38566edf083f9e28ebd99380d04ec3d8d617299f725f18"
+    },
+    "controller/housekeeping-audit.py": {
+      "bytes": 2108,
+      "sha256": "077ec904cd7fd71ed968bbec5bb3c7ef9e75548a33653aecf980ea03e3187842"
+    },
+    "tools-check/current-build.log": {
+      "bytes": 1841,
+      "sha256": "c0b86eb4b4d105da560174f0bf5e577b2dd6571be1394246969275831fbff068"
+    },
+    "tools-check/current-clippy.log": {
+      "bytes": 2275,
+      "sha256": "d9564db5cbc4e1c42f01f3389637614b5120e5a74e4149e0f00492cd5d0fc1d4"
+    },
+    "tools-check/current-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check/current-smoke.log": {
+      "bytes": 3136,
+      "sha256": "97f290434d0a40d439430a86eb7fa9dfaa267269e9ba6a025193dbb130f72d3f"
+    },
+    "tools-check/steps.json": {
+      "bytes": 1374,
+      "sha256": "96401b6cf147959595754ada42d657540f774b7024d37aecf176ff214a1c1609"
+    },
+    "tools-check-b/current-build.log": {
+      "bytes": 72,
+      "sha256": "299f16a2c523be18fef769975d2df00e0505521db047540feea3a74b94666887"
+    },
+    "tools-check-b/current-clippy.log": {
+      "bytes": 72,
+      "sha256": "d7dae192715495fa89ccbe279af3efb9792c1dae1768228e369035e68a1df673"
+    },
+    "tools-check-b/current-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/current-smoke.json": {
+      "bytes": 4227,
+      "sha256": "f6cd1a74bd358b8edf66a0707cedf3cde69ffe9e7ec36758aa05250c204c0519"
+    },
+    "tools-check-b/current-smoke.log": {
+      "bytes": 3136,
+      "sha256": "4a6459ad7a21683d393e989b406dd5a2b858d5c2265e0d06f425c17defc1aa00"
+    },
+    "tools-check-b/http-budget/cleanup.json": {
+      "bytes": 188,
+      "sha256": "bd0cdb358375f984e91ee3f0fdf17acf6c221dee6f5b07c9994de748750c2a4e"
+    },
+    "tools-check-b/http-budget/client.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/http-budget/events.json": {
+      "bytes": 10530,
+      "sha256": "c4e5a8c0082fd11f2801a724f9dc52dce645601af60d251aad20cc5880a99db5"
+    },
+    "tools-check-b/http-budget/fixture.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/http-budget/result.json": {
+      "bytes": 11905,
+      "sha256": "c2b382c70999c89a8515c2296c958213f8be1eaac14bf738661b0a55622d2f15"
+    },
+    "tools-check-b/https-budget/cleanup.json": {
+      "bytes": 189,
+      "sha256": "c065195a671a77638cb7669ac8858bf52f716514ef0fa9f6e27b6d7a16fba7f6"
+    },
+    "tools-check-b/https-budget/client.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/https-budget/events.json": {
+      "bytes": 10493,
+      "sha256": "e73c1fe8a50c49c5ffce83512224c5eea204861fa1327c5386121fffee76a005"
+    },
+    "tools-check-b/https-budget/fixture.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/https-budget/result.json": {
+      "bytes": 11873,
+      "sha256": "5d4dfba3547240db48aa7882fb44f11461d0cda185cdcf79e6595835c68253e6"
+    },
+    "tools-check-b/memory-build.log": {
+      "bytes": 2240,
+      "sha256": "fa24e22fea308a78de263eb2243241a13b4e05daf2f23ca83443f586c23b2349"
+    },
+    "tools-check-b/memory-clippy.log": {
+      "bytes": 2757,
+      "sha256": "31c77dfe68bbf20187e501f1055b1469ba551e1697f9a78376f29e7a94b696c9"
+    },
+    "tools-check-b/memory-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/result.json": {
+      "bytes": 164,
+      "sha256": "7ef520ef901ff9b98f171235bfd90b3846888cf6b8d6dd2c1f505782fc1390db"
+    },
+    "tools-check-b/steps.json": {
+      "bytes": 3620,
+      "sha256": "868d72efc4355ea17267c252ad213332356f1ed5fc1112e8af0ce175cc00a104"
+    },
+    "tools-check-b/v011-build.log": {
+      "bytes": 2426,
+      "sha256": "69cb6e485e2dc98e0e05fe47dfde01c52d00bd48441abef1f1524bd976fe54ee"
+    },
+    "tools-check-b/v011-clippy.log": {
+      "bytes": 2988,
+      "sha256": "efa41e80f2e57add2e5e16012fd99294c5cfe04e40c726007d8b62b858c361fb"
+    },
+    "tools-check-b/v011-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tools-check-b/v011-smoke.json": {
+      "bytes": 4249,
+      "sha256": "c3be7abd177cd7f7e8fd57264ac029ef7d2360b80f94d796091bf6ad77686623"
+    },
+    "tools-check-b/v011-smoke.log": {
+      "bytes": 3113,
+      "sha256": "e53bbd395c9e149374334464198657062fac7d730318ee4fe2e83685beb001cc"
+    },
+    "final-check/build-examples.log": {
+      "bytes": 315,
+      "sha256": "3f3c688d523dcb361dd1511494e0640b7898ea30ede310e1fdbf777d25e1c4c1"
+    },
+    "final-check/local-examples.log": {
+      "bytes": 374,
+      "sha256": "9d7ce6277085541f385dbd5d5181400b04dc8dd17d62dbea06310960c9d2079c"
+    },
+    "final-check/packaged-consumers.log": {
+      "bytes": 525,
+      "sha256": "68cceab8223ea757dfbcc0739e8b317f6dcf8bc2786d5e75c626cba1d8eecfd1"
+    },
+    "final-check/packages.log": {
+      "bytes": 36,
+      "sha256": "590e0218a72f3645434b0f059a17f69db29a4dce81e6ce1f7c94f503f3c923a9"
+    },
+    "final-check/result.json": {
+      "bytes": 2877,
+      "sha256": "0aff0af0db5c6476ec34be72321f1fb9e60ccf39c7a9414aa9bc59aa24c18122"
+    },
+    "final-check/steps.json": {
+      "bytes": 2483,
+      "sha256": "ab472efd680a36bdf4568c7e301719b277f433aedeae9269fa87840b946652e0"
+    },
+    "final-check/verifier.log": {
+      "bytes": 206623,
+      "sha256": "6a12ede679b7be96fd9b8386990531a7911664c1db69dc9849c84d37c31dc9d6"
+    },
+    "final-check/versions.log": {
+      "bytes": 507,
+      "sha256": "2cdbdde632dbb366bb6350e69abddb9daa3183b33993cbae23ce25d028224d72"
+    },
+    "final-check/local-examples/A01-http-blocking-get.log": {
+      "bytes": 39,
+      "sha256": "0f404cbb21d6a7d003b5621aaed992a0c9872af935ea09f0aef111d510b1c539"
+    },
+    "final-check/local-examples/A02-http-blocking-post.log": {
+      "bytes": 56,
+      "sha256": "a9ae38288201a96176b3aab3a38a04547ff926a4d7f6a5ab0b4343cc1e38433a"
+    },
+    "final-check/local-examples/A03-http-full-get.log": {
+      "bytes": 1008,
+      "sha256": "020a7c8c772ee6b1fad84ffa69bd846b0c997591f465dda54bf445b91c8f19b0"
+    },
+    "final-check/local-examples/A04-http-full-post.log": {
+      "bytes": 74,
+      "sha256": "1a03399a9e830542148ede26f30ea4fefe36e97d1473891588218f54efc6186a"
+    },
+    "final-check/local-examples/A05-http-nonblocking.log": {
+      "bytes": 113,
+      "sha256": "6d8225e842c1d35ae437fbcf72fdcf1f194d749a0ad1548895d4673070b70a68"
+    },
+    "final-check/local-examples/A06-http-callbacks.log": {
+      "bytes": 58,
+      "sha256": "335c690dd33c0aae96c3faa3f347fd07847bfab6f7f5c72b072ba53db9e365c2"
+    },
+    "final-check/local-examples/A07-http-cancel.log": {
+      "bytes": 80,
+      "sha256": "33897928ffc68f633ad923582d62f826b2b21c1ceaa1efae31616299c479627c"
+    },
+    "final-check/local-examples/A08-http-manual.log": {
+      "bytes": 9,
+      "sha256": "ce5160732537495c19ec06dc34ff9b20fe246b7e5ba0e5c579285a8db26a5bb5"
+    },
+    "final-check/local-examples/A09-http-streaming.log": {
+      "bytes": 83,
+      "sha256": "842a47735bbe91000ac71d69714006513ed462c478345ca15fd89a4fc934cfbc"
+    },
+    "final-check/local-examples/A10-http-memory-limits.log": {
+      "bytes": 121,
+      "sha256": "3b8f18770ac4e944423335564b8ebc5dafcc28f828d57c48f85f8c7c34e14494"
+    },
+    "final-check/local-examples/A11-http-owner-lifecycle.log": {
+      "bytes": 68,
+      "sha256": "d118b432444a1760ed376a49612b52418b345ee693067d95568e37da052b8549"
+    },
+    "final-check/local-examples/C01-tcp-blocking.log": {
+      "bytes": 33,
+      "sha256": "68d35282a3fb3c379af47f8eb7bd44de13722500952ba6df1c0216228fc9ed5f"
+    },
+    "final-check/local-examples/C02-tcp-nonblocking.log": {
+      "bytes": 82,
+      "sha256": "259f49fdff3499c0493496d28eb671bd8779683d80e25c340fdcd9cafdc7e0f0"
+    },
+    "final-check/local-examples/C03-tcp-manual.log": {
+      "bytes": 33,
+      "sha256": "68d35282a3fb3c379af47f8eb7bd44de13722500952ba6df1c0216228fc9ed5f"
+    },
+    "final-check/local-examples/http-status-is-response.log": {
+      "bytes": 1008,
+      "sha256": "fa1bf701a22fdc485ae2955a724878839745b7269ca750be80871af6688295b8"
+    },
+    "final-check/local-examples/response-limit-failure.log": {
+      "bytes": 271,
+      "sha256": "89d484359347ab750a6c77962f1e11bafe6c44f16fd10b1bad6d8b03eb1b37d4"
+    },
+    "final-check/local-examples/results.json": {
+      "bytes": 6187,
+      "sha256": "cfc2f1b27984174ce68ac1ca2268a90561b82d494925821ba5198eb54f9dfa30"
+    },
+    "final-check/local-examples/summary.json": {
+      "bytes": 158,
+      "sha256": "3be56c4434d8c77d40822e3461e70af93cf84c3044159ff3dc8238b670f0a1f9"
+    },
+    "final-check/packages/nbreq-darwin.log": {
+      "bytes": 462,
+      "sha256": "750a289e9201f46dc2bb64da059477c9754fe61479eb806b4e42f465c602e307"
+    },
+    "final-check/packages/nbreq-winpoll.log": {
+      "bytes": 535,
+      "sha256": "546f7c1567c5ca181f0b118ce1c0dd36a78893e473e12bbcb8b1d49c5aa836c0"
+    },
+    "final-check/packages/nbreq.log": {
+      "bytes": 2360,
+      "sha256": "f89ab637680d6a0727974b512ff034cf90307f2fb1eb9e54ab053ba2f3f964bb"
+    },
+    "final-check/packages/packages.json": {
+      "bytes": 20038,
+      "sha256": "2c73aa2028f3b441c0badf16dbf3235a217a32d32692cdf2707a688a569b56c5"
+    },
+    "final-check/packages/result.json": {
+      "bytes": 232,
+      "sha256": "a21addb05f9c777a9ad47eb35b8b38ea28ee138e1b7dc9c913510d6c7fb49712"
+    },
+    "final-check/packages/steps.json": {
+      "bytes": 870,
+      "sha256": "e121ce4aba8ea1905adb368e0d30594ef7ba203286ce278064b86c740c37c883"
+    },
+    "final-check/consumers/1.85.0-011-compat.log": {
+      "bytes": 2453,
+      "sha256": "3f03f3cc09611f8a0b8c1b89431ac2a07984d814f71d59c988c72e4129dc4de2"
+    },
+    "final-check/consumers/1.85.0-default.log": {
+      "bytes": 3139,
+      "sha256": "623a2bc92d285838679b24aafe64f2b0d27f0ba3a7d6f953e639ae9be7b69f80"
+    },
+    "final-check/consumers/1.85.0-minimal.log": {
+      "bytes": 706,
+      "sha256": "13d24a734cfc532c26b914e7a38d4399ab669544bf5ed304e7367dd43dffddd7"
+    },
+    "final-check/consumers/1.85.0-native-only.log": {
+      "bytes": 1184,
+      "sha256": "59771a77e58d53764f15183757771d508e63790600f3004a8a6227637005514b"
+    },
+    "final-check/consumers/1.85.0-resolver-absent.log": {
+      "bytes": 998,
+      "sha256": "d9047ef9800de2d832e577ee4cf8dcd027c5e1c8f606fd32bdf02a413dc77ffb"
+    },
+    "final-check/consumers/1.85.0-resolver-present.log": {
+      "bytes": 2115,
+      "sha256": "3c8347bfc1bee303830486a7d81613c84e22d899b0e0e180d1757f962e0e1be1"
+    },
+    "final-check/consumers/1.85.0-test-support.log": {
+      "bytes": 1317,
+      "sha256": "e7659032ea5bf65d25f93838c9398a873d8e3a203caf9f9656ba0f692e057cd2"
+    },
+    "final-check/consumers/1.85.0-testing-absent.log": {
+      "bytes": 868,
+      "sha256": "e134dd5662d907f0509466ed03d40a795f7fa3ee72214297b9313acd874d6cda"
+    },
+    "final-check/consumers/1.85.0-testing-present.log": {
+      "bytes": 617,
+      "sha256": "275f5d519b8787dba77697e3226451bf5a2e9a94b1b8f1921aa36a277f389592"
+    },
+    "final-check/consumers/build-package-examples.log": {
+      "bytes": 1380,
+      "sha256": "0453284ca235ca923a2590459c91299144a6aebe4394a78309d0421fe526fc64"
+    },
+    "final-check/consumers/consumer-Cargo.lock": {
+      "bytes": 25047,
+      "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+    },
+    "final-check/consumers/inputs.json": {
+      "bytes": 619,
+      "sha256": "cc5b2a10f5dc147d87594ea6f96ce1437cafd3b8826dba16facf032ff285b301"
+    },
+    "final-check/consumers/legacy-Cargo.lock": {
+      "bytes": 30673,
+      "sha256": "3f13c19cccefeecb7de34902cc26f2e9dc8b68de3dd24cb790ab6a1c4d7862c0"
+    },
+    "final-check/consumers/packaged-examples.log": {
+      "bytes": 374,
+      "sha256": "9d7ce6277085541f385dbd5d5181400b04dc8dd17d62dbea06310960c9d2079c"
+    },
+    "final-check/consumers/resolve-011.log": {
+      "bytes": 861,
+      "sha256": "71ba355d1d09dee97e88a6d543ef58d3ce5f8c32ea910800403b3f0957eb21df"
+    },
+    "final-check/consumers/resolve-consumer.log": {
+      "bytes": 766,
+      "sha256": "5de070412e90342d09f43169b69c9362f8be222a96c26c6e374c41b9aa534fb3"
+    },
+    "final-check/consumers/results.json": {
+      "bytes": 16833,
+      "sha256": "7e0c171bd6b6436f811f3c4df417a437fe693806a2ce3eacc7da917361e2bc3f"
+    },
+    "final-check/consumers/stable-011-compat.log": {
+      "bytes": 2453,
+      "sha256": "c50e4a520b85c1caa4676966518013ca48331ee841d4266acde3b6e1048ed401"
+    },
+    "final-check/consumers/stable-default.log": {
+      "bytes": 3139,
+      "sha256": "4356551036d9b8be885b4a8f5848ac0bf65af15fa791dc091a7822bcd3ffde2d"
+    },
+    "final-check/consumers/stable-minimal.log": {
+      "bytes": 706,
+      "sha256": "c44e8ed19521e9f7fc150197ed21d8e21b00f5a2aa772d35b412b31533cddbe1"
+    },
+    "final-check/consumers/stable-native-only.log": {
+      "bytes": 1184,
+      "sha256": "3f6284cbedb883e5fa30ce97b965baadd3b119895e787b9a73ad853a31eb1fcb"
+    },
+    "final-check/consumers/stable-resolver-absent.log": {
+      "bytes": 895,
+      "sha256": "2cf7eacf6dd0faf5f16a92039506aa90a704d553ce08d79793ab100537f8a042"
+    },
+    "final-check/consumers/stable-resolver-present.log": {
+      "bytes": 2169,
+      "sha256": "9af6bf5b48556898ec5c181884a1bfb57f8a1803112c8eb9dd615b3975146c07"
+    },
+    "final-check/consumers/stable-test-support.log": {
+      "bytes": 1317,
+      "sha256": "64da91cf3ab32f49aa1a012eca4e4ebb4b73d674162a6c51f1d7ee68b3fcd25d"
+    },
+    "final-check/consumers/stable-testing-absent.log": {
+      "bytes": 759,
+      "sha256": "c9102ce07b1c6bb1e3cac5a7a521b6d2eebc02641dde824c586df7f45a83c574"
+    },
+    "final-check/consumers/stable-testing-present.log": {
+      "bytes": 671,
+      "sha256": "1c2399a05013c7a2a9ac64ff2d4ce3cfc5f2236126dcce73466cd1909e576682"
+    },
+    "final-check/consumers/examples/A01-http-blocking-get.log": {
+      "bytes": 39,
+      "sha256": "0f404cbb21d6a7d003b5621aaed992a0c9872af935ea09f0aef111d510b1c539"
+    },
+    "final-check/consumers/examples/A02-http-blocking-post.log": {
+      "bytes": 56,
+      "sha256": "a9ae38288201a96176b3aab3a38a04547ff926a4d7f6a5ab0b4343cc1e38433a"
+    },
+    "final-check/consumers/examples/A03-http-full-get.log": {
+      "bytes": 1008,
+      "sha256": "1e47ff573beee33742725618dbd76366e2ea578539e44e53fd1d8b60b58a52bf"
+    },
+    "final-check/consumers/examples/A04-http-full-post.log": {
+      "bytes": 74,
+      "sha256": "1a03399a9e830542148ede26f30ea4fefe36e97d1473891588218f54efc6186a"
+    },
+    "final-check/consumers/examples/A05-http-nonblocking.log": {
+      "bytes": 112,
+      "sha256": "831c2e597958857a45dbd6daa06bb2b503524a4d15f7a4cceb56d68e989b87dd"
+    },
+    "final-check/consumers/examples/A06-http-callbacks.log": {
+      "bytes": 58,
+      "sha256": "335c690dd33c0aae96c3faa3f347fd07847bfab6f7f5c72b072ba53db9e365c2"
+    },
+    "final-check/consumers/examples/A07-http-cancel.log": {
+      "bytes": 80,
+      "sha256": "33897928ffc68f633ad923582d62f826b2b21c1ceaa1efae31616299c479627c"
+    },
+    "final-check/consumers/examples/A08-http-manual.log": {
+      "bytes": 9,
+      "sha256": "ce5160732537495c19ec06dc34ff9b20fe246b7e5ba0e5c579285a8db26a5bb5"
+    },
+    "final-check/consumers/examples/A09-http-streaming.log": {
+      "bytes": 83,
+      "sha256": "842a47735bbe91000ac71d69714006513ed462c478345ca15fd89a4fc934cfbc"
+    },
+    "final-check/consumers/examples/A10-http-memory-limits.log": {
+      "bytes": 121,
+      "sha256": "3b8f18770ac4e944423335564b8ebc5dafcc28f828d57c48f85f8c7c34e14494"
+    },
+    "final-check/consumers/examples/A11-http-owner-lifecycle.log": {
+      "bytes": 68,
+      "sha256": "d118b432444a1760ed376a49612b52418b345ee693067d95568e37da052b8549"
+    },
+    "final-check/consumers/examples/C01-tcp-blocking.log": {
+      "bytes": 33,
+      "sha256": "68d35282a3fb3c379af47f8eb7bd44de13722500952ba6df1c0216228fc9ed5f"
+    },
+    "final-check/consumers/examples/C02-tcp-nonblocking.log": {
+      "bytes": 82,
+      "sha256": "259f49fdff3499c0493496d28eb671bd8779683d80e25c340fdcd9cafdc7e0f0"
+    },
+    "final-check/consumers/examples/C03-tcp-manual.log": {
+      "bytes": 33,
+      "sha256": "68d35282a3fb3c379af47f8eb7bd44de13722500952ba6df1c0216228fc9ed5f"
+    },
+    "final-check/consumers/examples/http-status-is-response.log": {
+      "bytes": 1008,
+      "sha256": "4719e7bcec0a9081c1fdc487c16bbe976e08391df77e15ae5a06f0cd96cbc672"
+    },
+    "final-check/consumers/examples/response-limit-failure.log": {
+      "bytes": 271,
+      "sha256": "89d484359347ab750a6c77962f1e11bafe6c44f16fd10b1bad6d8b03eb1b37d4"
+    },
+    "final-check/consumers/examples/results.json": {
+      "bytes": 6575,
+      "sha256": "ebe29d26cbfce721e0fe14f1fffc8e5cef042b1b931f4f9d73b1b6d81f9c053a"
+    },
+    "final-check/consumers/examples/summary.json": {
+      "bytes": 158,
+      "sha256": "3be56c4434d8c77d40822e3461e70af93cf84c3044159ff3dc8238b670f0a1f9"
+    },
+    "packages/nbreq-0.2.0.crate": {
+      "bytes": 343565,
+      "sha256": "59b54d263c6951da867df745d5fc1cd9aad29930c659a9f9d378c7bfc6966860"
+    },
+    "packages/nbreq-darwin-0.1.0.crate": {
+      "bytes": 11376,
+      "sha256": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839"
+    },
+    "packages/nbreq-winpoll-0.1.1.crate": {
+      "bytes": 13033,
+      "sha256": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696"
+    },
+    "inputs/Cargo.toml": {
+      "bytes": 4343,
+      "sha256": "1514799788879276627dac1fc34fd90df4327370d08fd761a0b7dca4e507f77b"
+    },
+    "inputs/Cargo.lock": {
+      "bytes": 27658,
+      "sha256": "ddad6c1d1fb29491684fb3e09f7793df4db463ab2564407e7e4d793e925ee4a8"
+    },
+    "inputs/.gitignore": {
+      "bytes": 142,
+      "sha256": "9e4135dd1feb9d18452b056c179ea4deba0592725d73aae90df8d8cdeee6924b"
+    },
+    "inputs/.github/workflows/ci.yml": {
+      "bytes": 5406,
+      "sha256": "51694bc722b6515f8663e2c33f998ee5150330e853d5d8c69aa9cfc664e16eed"
+    },
+    "inputs/tools/f5-observe/Cargo.toml": {
+      "bytes": 535,
+      "sha256": "5e3e918ef86862984440cae7110c244dc953ceccab9c835b22b18dc83e38e9ec"
+    },
+    "inputs/tools/f5-observe/Cargo.lock": {
+      "bytes": 25488,
+      "sha256": "1ac72c2bf0bf0f5540eb7d0910ce5c0695dabfacf52606deacd947c75832b022"
+    },
+    "inputs/tools/f5-observe/src/main.rs": {
+      "bytes": 21870,
+      "sha256": "a26487898f84e0643b3e28787d5c66a923dd402b9d5312247f08a438ce4bc64a"
+    },
+    "inputs/tools/f5-observe/v011/Cargo.toml": {
+      "bytes": 560,
+      "sha256": "f44490e10e3f1b28e2a6926b16ecff52eb95c96e3c6ebeeb990e60fb20066aa9"
+    },
+    "inputs/tools/f5-observe/v011/Cargo.lock": {
+      "bytes": 30884,
+      "sha256": "574bd958102efa93d517f5b5c8f134e4294acdc3b101485d8e97e231a572f021"
+    },
+    "inputs/tools/f5-observe/memory/Cargo.toml": {
+      "bytes": 721,
+      "sha256": "cb92cd5513c233679ce25ce8fee06fe19c0cb62ac909f9bf93e860e5fb1ab507"
+    },
+    "inputs/tools/f5-observe/memory/Cargo.lock": {
+      "bytes": 28024,
+      "sha256": "88932971b92eb5b0824ca4cab73a05fd76f710b79335e2e06260c628d1ec34d1"
+    },
+    "inputs/tools/f5-observe/memory/run.py": {
+      "bytes": 17356,
+      "sha256": "1ae1fd186992c336738deae69edd8350ce5b8edc5ff08cee2faec98f66b5cb55"
+    },
+    "inputs/tools/f5-observe/memory/src/client.rs": {
+      "bytes": 20485,
+      "sha256": "ebcf8fff077cf6772eebb1a5da06e58646e02f1ebe546caf710ca8886a2d26b3"
+    },
+    "inputs/tools/release-consumer/run.py": {
+      "bytes": 6792,
+      "sha256": "59b7ef314532be7218817fcb980850c4bddec2caf4ea21ce8c116a76ea17db3a"
+    },
+    "inputs/tools/release-consumer/package_candidate.py": {
+      "bytes": 5323,
+      "sha256": "0bf0dea8fe467190bb60fcc61e502335555ea13201f218ed81939a00b289dc3b"
+    },
+    "inputs/tools/release-consumer/check_examples.py": {
+      "bytes": 7217,
+      "sha256": "b1e7333095a42a3125880e498f908b1ba251352b752ffc0c8e588351b12720c8"
+    }
+  },
+  "archive": "nbreq-housekeeping-20260915.tar.gz",
+  "bytes": 523926,
+  "sha256": "3188665aba998abac82a9b3fec8c7455b3ca76dff90c3445ab007329eb655d49",
+  "file_count": 136
+}
