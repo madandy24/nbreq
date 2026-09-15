@@ -47,6 +47,11 @@ graph of a downstream application. Any future exact runtime pin needs a document
 reason. Test/tool pins, including the exception below, do not impose those development dependencies
 on applications that use NBReq as a library.
 
+NBReq 0.2 requires rustls 0.23.45 or a compatible newer release. This minimum excludes the
+TLS 1.3 encryption-level validation issue in
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html), reported September 14,
+2026. The advisory applies to earlier allowed/locked rustls versions; it is not an exception.
+
 ## Reviewed advisory exceptions
 
 The test graph pins `time` 0.3.45 through the `rcgen` certificate-fixture generator.

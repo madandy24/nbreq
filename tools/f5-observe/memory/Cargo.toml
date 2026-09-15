@@ -14,7 +14,7 @@ alloc-meter = ["dep:nbreq-f5-meter"]
 [dependencies]
 nbreq = { path = "../../..", default-features = false, features = ["native"] }
 nbreq-f5-meter = { path = "meter", optional = true }
-rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = "=0.13.2"
 time = { version = "=0.3.45", default-features = false, features = ["std"] }
 serde_json = "=1.0.150"

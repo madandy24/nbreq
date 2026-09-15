@@ -2841,7 +2841,11 @@ fn resolved_https_verifies_hostname_and_preserves_explicit_bypass() {
     );
     match wrong_host {
         Err(ExecuteError::Failed(error)) => {
-            assert_eq!(error.transport_stage(), Some(TransportStage::Tls));
+            assert_eq!(
+                error.transport_stage(),
+                Some(TransportStage::Tls),
+                "wrong-host HTTPS failed outside TLS: {error:?}"
+            );
         }
         other => panic!("wrong-host HTTPS must fail at TLS, got {other:?}"),
     }
