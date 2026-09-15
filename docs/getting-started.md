@@ -1,6 +1,6 @@
 # Using NBReq
 
-For complete programs in learning order, see the [HTTP, DNS and TCP examples](../examples/README.md).
+For complete programs in learning order, see the [HTTP, DNS and TCP examples](https://github.com/madandy24/nbreq/blob/432509b8d2d198cb0139def322f2cc82cd4a76c6/examples/README.md).
 
 NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
 workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client

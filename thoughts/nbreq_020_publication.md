@@ -29,3 +29,9 @@ paths before consumer tests. It compared resolved destinations with an unresolve
 (Mac temp aliases and Windows short/long paths). Canonicalize the freshly created root too;
 retain the containment check and both earlier path-component guards. This is a verification
 runner correction, with no library/package change. The failed run and its artifacts are retained.
+
+Pre-publication documentation check found the shared guide's relative examples link was emitted
+unchanged into rustdoc, where `../examples/README.md` has no target. The guide now links to the
+immutable examples index at `432509b` (the identical 0.2 examples). README links remain relative
+for crates.io's normal rewrite. Refresh the root package/source identity after this one-line
+guide correction; the already-published helper packages remain unchanged.
