@@ -76,6 +76,11 @@ jobs:
       - name: Run complete offline verifier
         run: cargo run --locked --offline --manifest-path tools/xtask/Cargo.toml -- verify --offline
 
+      - name: Build and run examples against local fixtures
+        run: |
+          cargo build --locked --offline --examples
+          python tools/release-consumer/check_examples.py --bin-dir target/debug/examples --out "${{ runner.temp }}/nbreq-examples"
+
       - name: Verify fresh consumer dependency graphs
         run: python tools/release-consumer/pre_r5.py --out "${{ runner.temp }}/nbreq-consumers" --toolchains ${{ matrix.toolchain }}
 
@@ -90,6 +95,8 @@ jobs:
             ${{ runner.temp }}/nbreq-consumers/*/Cargo.lock
             ${{ runner.temp }}/nbreq-consumers/*/Cargo.toml
             ${{ runner.temp }}/nbreq-consumers/*/versions.json
+            ${{ runner.temp }}/nbreq-examples/*.json
+            ${{ runner.temp }}/nbreq-examples/*.log
           if-no-files-found: warn
 
   rustsec:

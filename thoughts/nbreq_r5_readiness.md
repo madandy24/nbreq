@@ -1,6 +1,6 @@
 # R5 release readiness
 
-Opened 2026-09-15. **Technical pass complete; owner's README/examples pass is next.** The owner authorized starting R5, with a separate README/examples refresh
+Opened 2026-09-15. **Technical pass complete; README/examples refreshed; integration/final package gates remain.** The owner authorized starting R5, with a separate README/examples refresh
 when work returns to main-tree integration. This report records the technical checks before
 that presentation pass. Root/helper publication, registry-only acceptance and the final package
 freeze remain separate gates in the [release plan](nbreq_020_release_plan.md).
@@ -15,7 +15,7 @@ freeze remain separate gates in the [release plan](nbreq_020_release_plan.md).
 | x86 companion | Patched source passes the complete Windows i686 verifier **24/24 in 107.003 s** on local Rust 1.97.1. Initial full verifier failed one all-feature HTTPS assertion (420/421 passed); diagnostic rerun passed 421/421. Preserve that unconfirmed initial failure and inspect the richer diagnostic if it recurs. |
 | Advisories | Root 0.23.42 scan fails on RUSTSEC-2026-0285. Patched root and both distinct final consumer locks pass with no reported vulnerabilities/warnings against DB `e2e640471715167f73e22eaf761f2e547adafeec`, dated 2026-09-14T18:06:06+02:00, cargo-audit 0.22.2. Existing test-only time exception remains documented; no new exception was added. |
 | Licenses | Original graph regenerates identically. Patched generated report changes only rustls 0.23.42 -> 0.23.45 and passes the hosted byte-for-byte regeneration check. |
-| README/examples | Owner's refresh is pending main-tree integration. Validate affected examples/doctests and freeze fresh final packages afterward. |
+| README/examples | Owner-approved 17-program A/B/C refresh and consumer-focused README are implemented and mirrored to main. [Examples](nbreq_examples_refresh.md) retain Windows stable/MSRV, local/live and normalized-package checks; the [README](nbreq_readme_refresh.md) has four compiled snippets and verified package links/anchors. Main integration, updated hosted CI and final clean package freeze remain. |
 | Evidence | [Manifest](evidence/nbreq_r5_artifacts.json) and [299-file sealed archive](evidence/nbreq-r5-technical-20260915.tar.gz), 4,629,805 bytes, SHA256 `f6f02579763add7843756e8d489a2d44c3f531e04acf13751558c392cacc574f`. Raw working directory `target/release-r5-20260915`. Completed R4 four-hour soaks were not repeated. |
 | Remote checkpoint | Code/workflow commit `bdf5db5` is already pushed and hosted proof is public. Automatic approval review rejected pushing the new 4.63 MB evidence archive, stating that the earlier owner approval covered a different payload. Final report/archive commit remains local pending explicit approval for this archive and the same public `madandy24/nbreq` destination. This does not block the README/examples discussion. |
 

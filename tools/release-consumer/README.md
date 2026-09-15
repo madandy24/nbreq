@@ -5,12 +5,13 @@ Cargo workspace and unpacks the supplied normalized `.crate` files there. It nev
 imports private nbreq modules, changes host networking or publishes anything.
 
 Pass `--package PATH/nbreq-0.2.0.crate --darwin-package PATH/nbreq-darwin-0.1.0.crate
+--winpoll-package PATH/nbreq-winpoll-0.1.1.crate
 --out NEW_EVIDENCE_DIRECTORY`, optionally `--offline` and `--toolchains stable 1.85.0`.
 The output directory must be new. It preserves source, dependency locks, commands and logs;
 the temporary workspace is retained for investigation. Remove it only after checking its exact
 path in `inputs.json` and preserving required evidence.
 
-The Darwin override is explicit because that support crate is not yet published. Passing these
+The Darwin/winpoll overrides are explicit because these support releases are not yet published. Passing these
 checks cannot close the registry-only release gate. Offline resolution uses the cached index;
 it must not be described as a fresh online dependency check.
 
@@ -20,12 +21,22 @@ Resolver and testing capabilities disappear without their features. Common HTTP 
 unchanged against actual registry nbreq 0.1.1 and the candidate package. Every fixture bounds
 accept/read/write waits and joins its worker. Cargo commands have a ten-minute outer bound.
 
-The runner also builds all seven examples from the unpacked root archive and runs the manual,
-spawned, bounded HTTP, FFI owner and TCP echo examples against local fixtures where needed.
+The runner builds all 17 numbered examples from the unpacked root archive and uses
+`check_examples.py` to run all 11 HTTP and three TCP programs against local fixtures. It also
+checks that HTTP 404 is a response and an oversized declared body fails the configured limit.
+Cancellation must produce a verified terminal `Cancelled`; echo checks require exact bytes and EOF.
 Pass `--live-dns example.com --live-https https://example.com/` to additionally exercise the
-packaged Resolver and platform-trusted HTTPS examples using the host's ordinary configuration.
+three packaged DNS programs and the simple HTTPS GET using the host's ordinary configuration.
 These optional checks require working external networking and do not change host settings.
-Example processes have 45-second bounds (60 seconds for live HTTPS).
+Example processes have 45-second bounds. The local-only CI command is:
+
+```sh
+cargo build --locked --offline --examples
+python tools/release-consumer/check_examples.py --bin-dir target/debug/examples --out target/example-results
+```
+
+The result directory must be new. Binary hashes, individual logs and a JSON summary are retained;
+DNS execution is explicitly skipped unless requested. This runner requires Python 3.11 or newer.
 
 The root package allowlist excludes this directory. Use `cargo test --lib` here; the probe bins
 deliberately fail in feature combinations where their imported surface should be absent.

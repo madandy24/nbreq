@@ -1,0 +1,1297 @@
+{
+  "base_commit": "b3abd5cb17ca20cf62c0c35f3f438bcc88a4a979",
+  "scope": "17 new examples; no runtime/dependency changes; Windows evidence only",
+  "source": {
+    "Cargo.toml": "1514799788879276627dac1fc34fd90df4327370d08fd761a0b7dca4e507f77b",
+    "README.md": "ea8b60a4608668f1f9d3002661c23ad39f0f51e0bc6eebbf604c1a9c7d4e49e9",
+    "docs/getting-started.md": "564a66b9630bafe199951ca7f2b4340473b148e555b21bf3867bc697708875bd",
+    ".github/workflows/ci.yml": "51694bc722b6515f8663e2c33f998ee5150330e853d5d8c69aa9cfc664e16eed",
+    "examples/A01-http-blocking-get.rs": "5087364aa80e24ef142047863ec0a32bf5319b82a729cdf1182f45266c294d14",
+    "examples/A02-http-blocking-post.rs": "996bed2b6c611b29faaebe4d055b32af81f2bef915c62db68e3b8cf1e9424c76",
+    "examples/A03-http-full-get.rs": "db19bb339cd80be281285e793f2739fb683495c0bac00f269ad4aa801551043e",
+    "examples/A04-http-full-post.rs": "8a6cabf8a95caa87898be4f01ed6b4f9d44a43595b44f9c62a74ff66e225de52",
+    "examples/A05-http-nonblocking.rs": "bea6e9993bd8f5d73cc8b37789735ec61f1dc2f81fbf23b6c407ccd042aedd99",
+    "examples/A06-http-callbacks.rs": "ae078040ca46a3d7e2f8d20e04e77c302cde4e11300c8e95d8b0b2c06e971db9",
+    "examples/A07-http-cancel.rs": "0596a2f562ee24e137a44a645837143e8b05b8a8876ea251362b01c12ef3f170",
+    "examples/A08-http-manual.rs": "710dde7e9cfaa6d68ed0e2d3616b0861c15c942ccae0ca76d16fe5d11a095078",
+    "examples/A09-http-streaming.rs": "4ce94fc043f36d9235969d3f65c72cfb1ba5925703743a17242d79cb69932a27",
+    "examples/A10-http-memory-limits.rs": "1da82fa6b46804975ca87a77b519525d40f09ea7c05451ac066e16a65492c8ae",
+    "examples/A11-http-owner-lifecycle.rs": "c9808c8397e0ddac906a5f5e99b0824cc4c3d7f4a265b0d7b916aea81b722e09",
+    "examples/B01-dns-blocking.rs": "367f9ff89442620884810efb72a83c0197f1cf291de0c5d1243b116bba06dc62",
+    "examples/B02-dns-nonblocking.rs": "88f761f187d77fafa4f4122df5ee6cd372822dff3942cccf7b5b4fd530806abe",
+    "examples/B03-dns-manual.rs": "b95bd976ff50734a4debee261f9eea0f411c1831fadad74259e74a60091d0b03",
+    "examples/C01-tcp-blocking.rs": "555a77c74997b9fcc81861ca0fa643b82534b7c19e8737b0541c9253558d6bd0",
+    "examples/C02-tcp-nonblocking.rs": "7d238b67e8d56bc7cfc3c5b511ea4f076bfebf6b266299f3288e6d4794759240",
+    "examples/C03-tcp-manual.rs": "3afd2e6323aa3d725c5c940df8b327cfb629e5daef0fe938f4dbf30ee5912177",
+    "examples/README.md": "fe251957735c37f993955253a1608c14090640f47228b4736848196f4e953e97",
+    "examples/support/echo.rs": "2db7c20345f9ae26ee90550531f71778c46d3f16538f3b7e8105f4696dbbc6b7",
+    "examples/support/held_http.rs": "5dc2a3234caa777fd916c78b6d654e0b9606a879c838dd9f744d7d1c8362a1f1",
+    "tools/release-consumer/check_examples.py": "b1e7333095a42a3125880e498f908b1ba251352b752ffc0c8e588351b12720c8",
+    "tools/release-consumer/run.py": "59b7ef314532be7218817fcb980850c4bddec2caf4ea21ce8c116a76ea17db3a",
+    "tools/release-consumer/README.md": "52185d264aa58173224359bbb2119fe89c5a252ef21425bdac36236d3398a3f5"
+  },
+  "final_steps": [
+    {
+      "label": "stable-version",
+      "command": [
+        "rustc",
+        "-vV"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085
+    },
+    {
+      "label": "msrv-version",
+      "command": [
+        "rustup",
+        "run",
+        "1.85.0",
+        "rustc",
+        "-vV"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915
+    },
+    {
+      "label": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.6560000000026776
+    },
+    {
+      "label": "native-only-examples",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--examples",
+        "--no-default-features",
+        "--features",
+        "native"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 9.860000000000582
+    },
+    {
+      "label": "minimal-examples",
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "--examples",
+        "--no-default-features"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.1559999999954016
+    },
+    {
+      "label": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--doc",
+        "--all-features"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 6.796999999998661
+    },
+    {
+      "label": "msrv-doctests",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "--locked",
+        "--offline",
+        "--doc",
+        "--all-features",
+        "--target-dir",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 6.703000000001339
+    },
+    {
+      "label": "package-inventory-test",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--test",
+        "package_contents"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.9840000000040163
+    },
+    {
+      "label": "package",
+      "command": [
+        "cargo",
+        "package",
+        "--locked",
+        "--offline",
+        "--allow-dirty",
+        "-p",
+        "nbreq",
+        "--target-dir",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build",
+        "--config",
+        "patch.crates-io.nbreq-darwin.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/darwin\"",
+        "--config",
+        "patch.crates-io.nbreq-winpoll.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/winpoll\""
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 16.765999999995984
+    },
+    {
+      "label": "packaged-example-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--examples",
+        "--manifest-path",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\package\\nbreq-0.2.0\\Cargo.toml",
+        "--target-dir",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build",
+        "--config",
+        "patch.crates-io.nbreq-darwin.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/darwin\"",
+        "--config",
+        "patch.crates-io.nbreq-winpoll.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/winpoll\""
+      ],
+      "exit_code": 101,
+      "passed": false,
+      "elapsed_s": 0.10899999999674037
+    },
+    {
+      "label": "packaged-example-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--examples",
+        "--manifest-path",
+        "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-examples-package-c35dpxz8\\nbreq-0.2.0\\Cargo.toml",
+        "--target-dir",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build",
+        "--config",
+        "patch.crates-io.nbreq-darwin.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/darwin\"",
+        "--config",
+        "patch.crates-io.nbreq-winpoll.path=\"C:/User/projects/nbreq/target/worktrees/nbreq-r5/support/winpoll\""
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 15.281000000002678
+    },
+    {
+      "label": "packaged-example-execution",
+      "command": [
+        "C:/Users/andre/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
+        "-X",
+        "utf8",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\tools\\release-consumer\\check_examples.py",
+        "--bin-dir",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples",
+        "--out",
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\packaged-execution"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.9069999999992433
+    },
+    {
+      "label": "cancel-negative-build",
+      "command": [
+        "cargo",
+        "build",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 15.85899999999674
+    },
+    {
+      "label": "cancel-negative-execution",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\cancel-negative-control.exe"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 5.0310000000026776
+    }
+  ],
+  "package": {
+    "sha256": "b386bad5f7d51a2b9bed6b1effbbd12e53a812ff98e2a4caad8270faf415cb0f",
+    "bytes": 343869,
+    "examples": [
+      "A01-http-blocking-get",
+      "A02-http-blocking-post",
+      "A03-http-full-get",
+      "A04-http-full-post",
+      "A05-http-nonblocking",
+      "A06-http-callbacks",
+      "A07-http-cancel",
+      "A08-http-manual",
+      "A09-http-streaming",
+      "A10-http-memory-limits",
+      "A11-http-owner-lifecycle",
+      "B01-dns-blocking",
+      "B02-dns-nonblocking",
+      "B03-dns-manual",
+      "C01-tcp-blocking",
+      "C02-tcp-nonblocking",
+      "C03-tcp-manual"
+    ],
+    "relative_links": 32,
+    "dirty_source": true,
+    "registry_only": false,
+    "files": {
+      "nbreq-0.2.0/.cargo_vcs_info.json": "4a9a5fa6e4b2ab60d1a6d2054e78923cfba42d63978b9236b25c8f0d725e8ec6",
+      "nbreq-0.2.0/Cargo.lock": "ddad6c1d1fb29491684fb3e09f7793df4db463ab2564407e7e4d793e925ee4a8",
+      "nbreq-0.2.0/Cargo.toml": "68d4f3011efa3d95dce86b19fd7863aeda331693964a7ca7771d7cd18e0d63f1",
+      "nbreq-0.2.0/Cargo.toml.orig": "1514799788879276627dac1fc34fd90df4327370d08fd761a0b7dca4e507f77b",
+      "nbreq-0.2.0/LICENSE-APACHE": "e03ba41d7fab20700769fe4118bab50d800cb74f990353a05d2f5fff1c228363",
+      "nbreq-0.2.0/LICENSE-MIT": "a8cb2a0ad179cfa665a477d6c8912f7a56b0b4aba54c7a3be34c19866687a641",
+      "nbreq-0.2.0/README.md": "ea8b60a4608668f1f9d3002661c23ad39f0f51e0bc6eebbf604c1a9c7d4e49e9",
+      "nbreq-0.2.0/SECURITY.md": "f4cc1954bdee5abf341d15f37a273b2e164268bba0b3b4c0bfb77156148ddcd9",
+      "nbreq-0.2.0/THIRD_PARTY_LICENSES.html": "4148b045cd4da7e02241be28423b14782a8129742869c29d1af5246ec6f1504e",
+      "nbreq-0.2.0/docs/getting-started.md": "564a66b9630bafe199951ca7f2b4340473b148e555b21bf3867bc697708875bd",
+      "nbreq-0.2.0/docs/migrating-to-0.2.md": "10e6276d3aaebbb93709d5ee165afcf5c2873f664b930dfdcbed787976d8c5bb",
+      "nbreq-0.2.0/examples/A01-http-blocking-get.rs": "5087364aa80e24ef142047863ec0a32bf5319b82a729cdf1182f45266c294d14",
+      "nbreq-0.2.0/examples/A02-http-blocking-post.rs": "996bed2b6c611b29faaebe4d055b32af81f2bef915c62db68e3b8cf1e9424c76",
+      "nbreq-0.2.0/examples/A03-http-full-get.rs": "db19bb339cd80be281285e793f2739fb683495c0bac00f269ad4aa801551043e",
+      "nbreq-0.2.0/examples/A04-http-full-post.rs": "8a6cabf8a95caa87898be4f01ed6b4f9d44a43595b44f9c62a74ff66e225de52",
+      "nbreq-0.2.0/examples/A05-http-nonblocking.rs": "bea6e9993bd8f5d73cc8b37789735ec61f1dc2f81fbf23b6c407ccd042aedd99",
+      "nbreq-0.2.0/examples/A06-http-callbacks.rs": "ae078040ca46a3d7e2f8d20e04e77c302cde4e11300c8e95d8b0b2c06e971db9",
+      "nbreq-0.2.0/examples/A07-http-cancel.rs": "0596a2f562ee24e137a44a645837143e8b05b8a8876ea251362b01c12ef3f170",
+      "nbreq-0.2.0/examples/A08-http-manual.rs": "710dde7e9cfaa6d68ed0e2d3616b0861c15c942ccae0ca76d16fe5d11a095078",
+      "nbreq-0.2.0/examples/A09-http-streaming.rs": "4ce94fc043f36d9235969d3f65c72cfb1ba5925703743a17242d79cb69932a27",
+      "nbreq-0.2.0/examples/A10-http-memory-limits.rs": "1da82fa6b46804975ca87a77b519525d40f09ea7c05451ac066e16a65492c8ae",
+      "nbreq-0.2.0/examples/A11-http-owner-lifecycle.rs": "c9808c8397e0ddac906a5f5e99b0824cc4c3d7f4a265b0d7b916aea81b722e09",
+      "nbreq-0.2.0/examples/B01-dns-blocking.rs": "367f9ff89442620884810efb72a83c0197f1cf291de0c5d1243b116bba06dc62",
+      "nbreq-0.2.0/examples/B02-dns-nonblocking.rs": "88f761f187d77fafa4f4122df5ee6cd372822dff3942cccf7b5b4fd530806abe",
+      "nbreq-0.2.0/examples/B03-dns-manual.rs": "b95bd976ff50734a4debee261f9eea0f411c1831fadad74259e74a60091d0b03",
+      "nbreq-0.2.0/examples/C01-tcp-blocking.rs": "555a77c74997b9fcc81861ca0fa643b82534b7c19e8737b0541c9253558d6bd0",
+      "nbreq-0.2.0/examples/C02-tcp-nonblocking.rs": "7d238b67e8d56bc7cfc3c5b511ea4f076bfebf6b266299f3288e6d4794759240",
+      "nbreq-0.2.0/examples/C03-tcp-manual.rs": "3afd2e6323aa3d725c5c940df8b327cfb629e5daef0fe938f4dbf30ee5912177",
+      "nbreq-0.2.0/examples/README.md": "fe251957735c37f993955253a1608c14090640f47228b4736848196f4e953e97",
+      "nbreq-0.2.0/examples/support/echo.rs": "2db7c20345f9ae26ee90550531f71778c46d3f16538f3b7e8105f4696dbbc6b7",
+      "nbreq-0.2.0/examples/support/held_http.rs": "5dc2a3234caa777fd916c78b6d654e0b9606a879c838dd9f744d7d1c8362a1f1",
+      "nbreq-0.2.0/src/atomic.rs": "6301e060b07b0cfb9dc020906950a2eff02105da01192ef64cdd1a3fef7a6e0b",
+      "nbreq-0.2.0/src/backend/mod.rs": "186c615883a77959b08f0ca50c65dd06c3cbb2d0917750b2fbcc1f09e68ce60c",
+      "nbreq-0.2.0/src/backend/native.rs": "9ec62cc5a77f1ed1a94e96ca5b992cbd7d5473f0692cef796b88a1c5e4c5c27b",
+      "nbreq-0.2.0/src/backend/native_dns/tests.rs": "770383861cee0e898df0db3f6c3063f5ff93113171c071a18ac9fa81b696230d",
+      "nbreq-0.2.0/src/backend/native_dns.rs": "3bed8c83042b0639350511a7df0b9ab8e21f5216ee87565f1961f0ee0bf9c38b",
+      "nbreq-0.2.0/src/backend/native_dns_config.rs": "9ebb775fc80db3fbf1dbc903d290f3628b4891e3631c66d7c65eaca0b39c349c",
+      "nbreq-0.2.0/src/backend/native_dns_wire.rs": "93f07287cef249f483445f096b707f995f557e81d4eec8d46a8bd5b6b3d70835",
+      "nbreq-0.2.0/src/backend/native_http/fuzz.rs": "2018c483ae77a678ca927854888b592a7f486b0d9f0ff67e73857c63be031fc5",
+      "nbreq-0.2.0/src/backend/native_http/http1.rs": "b8b65b992dbce884273103e4fe3af3ce7b6966c975e54189150bcaebe667d4f8",
+      "nbreq-0.2.0/src/backend/native_http/tests/address_fallback.rs": "1b760c575f97ecdd18b6e5cdce236da7ddbd0371ff74b1e2301497ccf835210b",
+      "nbreq-0.2.0/src/backend/native_http/tests/request_ownership.rs": "643f31c0175bf5e1947c316a0d178e94e17d82526cec23091e6200a153dde918",
+      "nbreq-0.2.0/src/backend/native_http/tests/retained_capacity.rs": "912fed98e6f46a2b0acbd7c745fea08b3e2b4f4250262c462011ee8d146f59f5",
+      "nbreq-0.2.0/src/backend/native_http/tests/tls_lifecycle.rs": "a69e7b4d20bb898f0368c3265395aaf6c393b41d7d360c017ff913be76e71461",
+      "nbreq-0.2.0/src/backend/native_http/tests.rs": "9bca1444da9cafd269fc46ba38614fb490ad18f10c3f294a16022f0dbec4b2da",
+      "nbreq-0.2.0/src/backend/native_http.rs": "292a92bc5b5164603d6b31557422088283dfa482996ddb930a6257297a77459d",
+      "nbreq-0.2.0/src/backend/native_poll.rs": "f8a1e15cecff37db4f286ff76551b7c1c4234ffb99ad565a182af4a926f6f429",
+      "nbreq-0.2.0/src/backend/native_tls/worker/tests.rs": "98b23fefd80430f43691c4158bb4f576e7103fdf6076ba791b5b1e78ac73f28d",
+      "nbreq-0.2.0/src/backend/native_tls/worker.rs": "95ec28ba07058726070ef0c9cca26131f6e2c50a59832b78e6fef20b00a79ddc",
+      "nbreq-0.2.0/src/backend/native_tls.rs": "01208991d6520ae084f1cbcbe60b044fdd7f4c5b10350c73cd3093e3813bea83",
+      "nbreq-0.2.0/src/backend/scaffold.rs": "05c9343b15721339961730b3a1c750cec7f4f738bb711e57c23016562c834228",
+      "nbreq-0.2.0/src/body.rs": "79e534d6b008762dfedef31c59f1b5de216903668c660734e202d6141f63568c",
+      "nbreq-0.2.0/src/body_budget.rs": "c158cce8e00043323249bc10e4a3927be5b301a6ced9d27cec8633c14c9d76eb",
+      "nbreq-0.2.0/src/callback.rs": "629099afa5b7b8d7c918222cd2099fd514047a298a32dd549d41261dc55c0153",
+      "nbreq-0.2.0/src/client.rs": "82866e59eed12590b5ef7db7e66c6f12e83a3d3c39810f1dde6da60e205d5ac5",
+      "nbreq-0.2.0/src/context.rs": "48da28f45e5098cde1ac2aeba523974144ad96f87f1e7f6e47091cafe80a96ad",
+      "nbreq-0.2.0/src/dispatch.rs": "89eb6ecf322da7d9ececdeb33b99c8a65c26b8b41f8d2b29c02047eb5bd171b4",
+      "nbreq-0.2.0/src/dns.rs": "364d7d704a7947721c1e3b274f910463eb58d34accc9c4d9bc8a9e9d20ba51b0",
+      "nbreq-0.2.0/src/dns_wiring_tests.rs": "106297f3d8c666d4913951fd37d8bb369bda909709c4e63923682a9bd3d05c4d",
+      "nbreq-0.2.0/src/engine.rs": "fc71073f74e58571d32cdfab315d3efce56820e05cb06a3bf97f1c5dc2f17307",
+      "nbreq-0.2.0/src/fuzzing.rs": "3301e2c4f45ec7223113af17a573a78acc9aa829b766750ea5ebb4d9eeb7ef6b",
+      "nbreq-0.2.0/src/lib.rs": "4bd6ffa1bd82876d756c0eeb2ecd60bb290fa361e2e7559ce7d5437659f0475f",
+      "nbreq-0.2.0/src/lifecycle_tests.rs": "211f640333914b07902275ac4780158693e22f0ab3eef9cb89b192d7737e18d4",
+      "nbreq-0.2.0/src/memory_limits_tests.rs": "39446377ad4d910163fa3f2837c3bb428b37fbb24cd6f816dcc815798c1f3796",
+      "nbreq-0.2.0/src/metrics.rs": "8e664d8a2e1eacbf2b7d46bfffda5c4359d5b49bb8555485e7990ed3b29921ce",
+      "nbreq-0.2.0/src/reactor.rs": "66dcdb07d0bad05610fcaf55ae379fdad70323447728386ded8760a80877177a",
+      "nbreq-0.2.0/src/registry.rs": "462c36523e7ab6dc435c90fae2adbac6fac388fee771cc1eec16daa6ab8d7640",
+      "nbreq-0.2.0/src/response_body_tests.rs": "6c442e56e1f68d0f3993291c5ff053b5a838ed173e109d6e39909e3b42463f58",
+      "nbreq-0.2.0/src/stream.rs": "7d6242ba17aabaa32cdaf2f850d23e7c03c34b25d9cf8b1eb7cf281ecc95885c",
+      "nbreq-0.2.0/src/tcp/io.rs": "b2d7081834ede51559a82b41b5d196eb240ee63fcf89f35a4e04876f91d3489e",
+      "nbreq-0.2.0/src/tcp/mod.rs": "4561e6f64d90f4f7a75b0ce76a123e14225d954f31b40b37ed2debb6e3469bc8",
+      "nbreq-0.2.0/src/testing.rs": "1c6578630c76a7bfadd7d7d9dad81f5dccca01c5fe2a595ee8748773164d0688",
+      "nbreq-0.2.0/src/types.rs": "bcdb9ec82047496922750614f50062085bd6b42a3c9803e18ff1be4161a58a76",
+      "nbreq-0.2.0/src/waiter.rs": "ca5793aeffb3a9881c865f3536c2b919b37999effcf26f39f10c60118dfab342",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/a.seed": "a22efad6deb469001cf7e45e18dd8d224c793c050ad4dd6a340d7828f893a6d1",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/aaaa.seed": "905900ff313e5f0f024180d9bf8fd031e9c62fd05f10d376eea9d22f3a9468b5",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/cname.seed": "ee4e7843ec7a0377786ba9e5ca5d50e7f82590beb8e533657eaeb05363130431",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/nxdomain.seed": "36a82a17f58b759aec29667f736ad7b2b0dd59f3bea0870a67ea2411cc4d4a92",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/root-cname.seed": "44aa4c9b3ab47b5eaccb4dfb00789ac808c4274209c2aae290e6ac64ab0e5358",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_dns_response/truncated.seed": "09dda2f24b95822fbf83c467b82aa3ed0b1acfb432f2575e6297aab2793d9cec",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/chunked.seed": "5e0bf15a85e6688c8129edae5e3a47a16d29a1496bc07f56b578d1271df3b852",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/close_delimited.seed": "cc9e386ec9857a1e00485df23ebac1467154001c2c8e813289080aaede68fa98",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/conflicting_length.seed": "af77e7a618052ef40022db6d9507f33163a9d55cc9c7e56f51e3b1bbf1f2c42b",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/fixed.seed": "f5b2520bd34503c6d2b5a3a8d51c98b54b2772781c4f84c50cdec5e587e65cba",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/informational.seed": "8aa995c493558dc720c876e4181ef2d5b3d09dc71348e72f6f32909887611d98",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_response_decoder/malformed_chunk.seed": "5540bd79396bc8d2524e707681448388d8e07fff2d1cd7cb697209c7561135ca",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_streaming_response_decoder/chunked_tiny_queue.seed": "21ef4b1f1769ec8309e8512efcfbf99e08e5b660afe335274b78416b8585f6e3",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_streaming_response_decoder/close_delimited.seed": "0e24d5807bc7a666141ab2050f3b13cdf140309ac4722c74ed625e85a03855b6",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_streaming_response_decoder/discard_redirect.seed": "e211b94cb0b6d91fb5a65daa8048473e8cc4836fb3b1d3f7de3dd3c4b778a2e2",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_streaming_response_decoder/fixed_tiny_queue.seed": "f1f94f319c5c77d96e85a3d83bcf605a2b84494420946a1ff7f3494e6f346d2a",
+      "nbreq-0.2.0/tests/fixtures/fuzz/native_streaming_response_decoder/no_body.seed": "7fd76f2eb56cc3a3816c26f2fa32c5dcd32d211d01768e61ae9cd554fdd8ba75",
+      "nbreq-0.2.0/tests/http_adversarial.rs": "927b7bebb4be064b6aba1e0ebb91f495444239059c0a52d365531be9311ebeb3",
+      "nbreq-0.2.0/tests/package_contents.rs": "cd85658568069a92999463d31e9b8be5b35488b3bb97d8355e58fef4d96bdd25",
+      "nbreq-0.2.0/tests/public_contract.rs": "7b9409ab70882ef482528a64f35ca16fe44f2bdf3f85ad0588960eeda629021c",
+      "nbreq-0.2.0/tests/tls_roots.rs": "b7fa83ac580f5a2d64b2b82f2b08235239e73894f76e2a4ee8bd15fe7df7bfef"
+    }
+  },
+  "stable_local": [
+    {
+      "label": "A01-http-blocking-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A01-http-blocking-get.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "966bdfff86a455d6471fec18ddb7f9a83a9cd52642a7b4bb1f5cdb924ed76804"
+    },
+    {
+      "label": "A02-http-blocking-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A02-http-blocking-post.exe",
+        "http://127.0.0.1:49715/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046000000002095476,
+      "binary_sha256": "1dd3a58a214ecad3f3f1e26fb180b4a386b08b799aaab3e57a1727955474ae10"
+    },
+    {
+      "label": "A03-http-full-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "f9809001250b472e1ff76074610b9835c4514838aa38a61aa4d056fe4a502ec8"
+    },
+    {
+      "label": "A04-http-full-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A04-http-full-post.exe",
+        "http://127.0.0.1:49715/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.04700000000593718,
+      "binary_sha256": "64c2cbefa4ae42d11034abc86bf720f22c6ae6abc63aac463c74a8f4062e8e08"
+    },
+    {
+      "label": "A05-http-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A05-http-nonblocking.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0629999999946449,
+      "binary_sha256": "8fba86700911ff2df6d811af391ed1f14a40a759f345fd173e88254fd94ccf51"
+    },
+    {
+      "label": "A06-http-callbacks",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A06-http-callbacks.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.04700000000593718,
+      "binary_sha256": "095394704060e6a484a369ddbbe96111fc4fe261d16a077b84820fad2c3633a0"
+    },
+    {
+      "label": "A08-http-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A08-http-manual.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "27d4a9a5223603c6417dba5d34290abcdad85eac85786c47f38a90e0bbebfe91"
+    },
+    {
+      "label": "A09-http-streaming",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A09-http-streaming.exe",
+        "http://127.0.0.1:49715/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "06a9488ec4d038234a12914803139e69bc24028a5515ea45854d220b172d187b"
+    },
+    {
+      "label": "A10-http-memory-limits",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "9eff0aea8e175e851e669f0f7a170513848829caa669a0f812a5f1e6a97b8846"
+    },
+    {
+      "label": "A11-http-owner-lifecycle",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A11-http-owner-lifecycle.exe",
+        "http://127.0.0.1:49715/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "215cf7da8d554c2be99039bddd7d94e10ef30672f98dcfb9c431b5227fddd1e2"
+    },
+    {
+      "label": "http-status-is-response",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:49715/missing"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "f9809001250b472e1ff76074610b9835c4514838aa38a61aa4d056fe4a502ec8"
+    },
+    {
+      "label": "response-limit-failure",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:49715/oversize"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "9eff0aea8e175e851e669f0f7a170513848829caa669a0f812a5f1e6a97b8846"
+    },
+    {
+      "label": "A07-http-cancel",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A07-http-cancel.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "14a59731300075840371ad54fc4eef8441399617f668d31d7c8ec4cc118ebe8d"
+    },
+    {
+      "label": "C01-tcp-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C01-tcp-blocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "8f73c737da8fab1f5ebd05c7fcdd6bf4611f58bf765938fd05049997975460cb"
+    },
+    {
+      "label": "C02-tcp-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C02-tcp-nonblocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "d47ee6245eafe32c938cee4f77904bceedef9b80df11e6855381fa6ba9770a05"
+    },
+    {
+      "label": "C03-tcp-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C03-tcp-manual.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.07800000000133878,
+      "binary_sha256": "8c1b85a78d87436658d2172f75b3708aaa17f5cc6e4cef3fd7edf2849a5740b1"
+    }
+  ],
+  "msrv_local": [
+    {
+      "label": "A01-http-blocking-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A01-http-blocking-get.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.14099999999598367,
+      "binary_sha256": "dce9e3dc35d0adfa6abdbd5bc05e39f63e1fa0db816866860cb02a856263cf1e"
+    },
+    {
+      "label": "A02-http-blocking-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A02-http-blocking-post.exe",
+        "http://127.0.0.1:61156/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0940000000045984,
+      "binary_sha256": "adb81b59931fcce664192c5773370d702c447e704b2f399a9aa79e7c06413e5a"
+    },
+    {
+      "label": "A03-http-full-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.07799999999406282,
+      "binary_sha256": "dbe46933727af4c7ca3385bc58f8db4c57403fdbbfeda616ea0349f51d0741b8"
+    },
+    {
+      "label": "A04-http-full-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A04-http-full-post.exe",
+        "http://127.0.0.1:61156/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.10900000000401633,
+      "binary_sha256": "6945a9a5e1320108887e911aafdb76c2fe8f1e74ace75d4e9b79930254c11431"
+    },
+    {
+      "label": "A05-http-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A05-http-nonblocking.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.11000000000058208,
+      "binary_sha256": "fc7dce21025e4947b937015275e3644dd4ba3cca2071e87677331b721b14bdd4"
+    },
+    {
+      "label": "A06-http-callbacks",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A06-http-callbacks.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.10899999999674037,
+      "binary_sha256": "7c644fbd69294938fa1201c37ee0a75490ada47db80b327e59474c8412c8e7ff"
+    },
+    {
+      "label": "A08-http-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A08-http-manual.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "63e2d658e66e7f983f53db062b2284b7f6278fa682e5241f74f689a9c4b52c1f"
+    },
+    {
+      "label": "A09-http-streaming",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A09-http-streaming.exe",
+        "http://127.0.0.1:61156/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "d6868721c07678779742a96bf3aa8abbcb8d0b3ed3ca5cd21a908c1a56366018"
+    },
+    {
+      "label": "A10-http-memory-limits",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.07800000000133878,
+      "binary_sha256": "a759f4d418aec1a0e1e4099e3cb6d7970fe61ef1335ad4eeeec5c61a713eb862"
+    },
+    {
+      "label": "A11-http-owner-lifecycle",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A11-http-owner-lifecycle.exe",
+        "http://127.0.0.1:61156/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "44df4d72172e3bb7d2e6f7f5e320c830fdf6d6f28dbbac7becfcc08c7712dc21"
+    },
+    {
+      "label": "http-status-is-response",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:61156/missing"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "dbe46933727af4c7ca3385bc58f8db4c57403fdbbfeda616ea0349f51d0741b8"
+    },
+    {
+      "label": "response-limit-failure",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:61156/oversize"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 0.04700000000593718,
+      "binary_sha256": "a759f4d418aec1a0e1e4099e3cb6d7970fe61ef1335ad4eeeec5c61a713eb862"
+    },
+    {
+      "label": "A07-http-cancel",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\A07-http-cancel.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "9ed0417ddbcd05e1ae31299b9b9e217b10854e7802585ed2649db3cd4b6aa766"
+    },
+    {
+      "label": "C01-tcp-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\C01-tcp-blocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "61191ae2d850fea5c8583ba55e840fe0652616a61e4572b67999219ec4ee1192"
+    },
+    {
+      "label": "C02-tcp-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\C02-tcp-nonblocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0930000000007567,
+      "binary_sha256": "081618e4f290df92de6d1b79504d8d060cc79739ef4ccc18326c17beeb366df7"
+    },
+    {
+      "label": "C03-tcp-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-msrv\\debug\\examples\\C03-tcp-manual.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "1f39bbb85e3ac20555cb5904cda7e7c3661980d9aa1242ed995b28eb6e6b963c"
+    }
+  ],
+  "live": [
+    {
+      "label": "A01-http-blocking-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A01-http-blocking-get.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.10900000000401633,
+      "binary_sha256": "966bdfff86a455d6471fec18ddb7f9a83a9cd52642a7b4bb1f5cdb924ed76804"
+    },
+    {
+      "label": "A02-http-blocking-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A02-http-blocking-post.exe",
+        "http://127.0.0.1:61159/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.125,
+      "binary_sha256": "1dd3a58a214ecad3f3f1e26fb180b4a386b08b799aaab3e57a1727955474ae10"
+    },
+    {
+      "label": "A03-http-full-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.09399999999732245,
+      "binary_sha256": "f9809001250b472e1ff76074610b9835c4514838aa38a61aa4d056fe4a502ec8"
+    },
+    {
+      "label": "A04-http-full-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A04-http-full-post.exe",
+        "http://127.0.0.1:61159/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.07800000000133878,
+      "binary_sha256": "64c2cbefa4ae42d11034abc86bf720f22c6ae6abc63aac463c74a8f4062e8e08"
+    },
+    {
+      "label": "A05-http-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A05-http-nonblocking.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "8fba86700911ff2df6d811af391ed1f14a40a759f345fd173e88254fd94ccf51"
+    },
+    {
+      "label": "A06-http-callbacks",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A06-http-callbacks.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.04700000000593718,
+      "binary_sha256": "095394704060e6a484a369ddbbe96111fc4fe261d16a077b84820fad2c3633a0"
+    },
+    {
+      "label": "A08-http-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A08-http-manual.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "27d4a9a5223603c6417dba5d34290abcdad85eac85786c47f38a90e0bbebfe91"
+    },
+    {
+      "label": "A09-http-streaming",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A09-http-streaming.exe",
+        "http://127.0.0.1:61159/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "06a9488ec4d038234a12914803139e69bc24028a5515ea45854d220b172d187b"
+    },
+    {
+      "label": "A10-http-memory-limits",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "9eff0aea8e175e851e669f0f7a170513848829caa669a0f812a5f1e6a97b8846"
+    },
+    {
+      "label": "A11-http-owner-lifecycle",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A11-http-owner-lifecycle.exe",
+        "http://127.0.0.1:61159/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "215cf7da8d554c2be99039bddd7d94e10ef30672f98dcfb9c431b5227fddd1e2"
+    },
+    {
+      "label": "http-status-is-response",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:61159/missing"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "f9809001250b472e1ff76074610b9835c4514838aa38a61aa4d056fe4a502ec8"
+    },
+    {
+      "label": "response-limit-failure",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:61159/oversize"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 0.09399999999732245,
+      "binary_sha256": "9eff0aea8e175e851e669f0f7a170513848829caa669a0f812a5f1e6a97b8846"
+    },
+    {
+      "label": "A07-http-cancel",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A07-http-cancel.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "14a59731300075840371ad54fc4eef8441399617f668d31d7c8ec4cc118ebe8d"
+    },
+    {
+      "label": "C01-tcp-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C01-tcp-blocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "8f73c737da8fab1f5ebd05c7fcdd6bf4611f58bf765938fd05049997975460cb"
+    },
+    {
+      "label": "C02-tcp-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C02-tcp-nonblocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "d47ee6245eafe32c938cee4f77904bceedef9b80df11e6855381fa6ba9770a05"
+    },
+    {
+      "label": "C03-tcp-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C03-tcp-manual.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "8c1b85a78d87436658d2172f75b3708aaa17f5cc6e4cef3fd7edf2849a5740b1"
+    },
+    {
+      "label": "live-B01-dns-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\B01-dns-blocking.exe",
+        "example.com"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "628097487e2e06378936cc822dae1c801beae8177e099b4ada3eb1761d894be3"
+    },
+    {
+      "label": "live-B02-dns-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\B02-dns-nonblocking.exe",
+        "example.com"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "f4996fe64c8d8d77f6080e157e735ae470139fa14964c660567b2dae3947955e"
+    },
+    {
+      "label": "live-B03-dns-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\B03-dns-manual.exe",
+        "example.com"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "e9644026d2d7e46065e440fd0125aa3ebae35614d4963e6b2068ea0eec045e91"
+    },
+    {
+      "label": "live-https",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A01-http-blocking-get.exe",
+        "https://httpbin.org/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 1.0,
+      "binary_sha256": "966bdfff86a455d6471fec18ddb7f9a83a9cd52642a7b4bb1f5cdb924ed76804"
+    }
+  ],
+  "live_posts": [
+    {
+      "name": "A02-http-blocking-post",
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "name": "A04-http-full-post",
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "name": "A09-http-streaming",
+      "exit_code": 0,
+      "passed": true
+    }
+  ],
+  "packaged": [
+    {
+      "label": "A01-http-blocking-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A01-http-blocking-get.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "8cd3eb9def36a42aabc6d935956028ffe74d91ac5b34575733a81224701d0a6d"
+    },
+    {
+      "label": "A02-http-blocking-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A02-http-blocking-post.exe",
+        "http://127.0.0.1:62109/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "c96edb0878d149b7a46dc64952fdf6fe4ad52073d7570a559654d66cad7ccd5a"
+    },
+    {
+      "label": "A03-http-full-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "c139cc57ea0723749783e89aa83f901e721403a5c77ce9eaadb7de14ee6317d8"
+    },
+    {
+      "label": "A04-http-full-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A04-http-full-post.exe",
+        "http://127.0.0.1:62109/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "6d7bd546dfdc5a06c03443a8f0b31d78ac561a53ba5197778e82972b865481f0"
+    },
+    {
+      "label": "A05-http-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A05-http-nonblocking.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "756d77721987a7ce1358617250643fd50d3ae272f8ffe4d6be30e6f4eb32187b"
+    },
+    {
+      "label": "A06-http-callbacks",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A06-http-callbacks.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "a130fdabac1e97e62f9b492a366d269aa402afb972bf5eae53e073ce192334ed"
+    },
+    {
+      "label": "A08-http-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A08-http-manual.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "398c868b2c73fa49495f87a3078ceb9140ad950d029978502790b36d7a5ba037"
+    },
+    {
+      "label": "A09-http-streaming",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A09-http-streaming.exe",
+        "http://127.0.0.1:62109/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "d9013d34a67c8c1077daa8a6adc47c96af427036295988121ea5a94eb3661c6b"
+    },
+    {
+      "label": "A10-http-memory-limits",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "71c195ece37e967071c30c621be544c38d522428d55283c7ccbfd1528ee12606"
+    },
+    {
+      "label": "A11-http-owner-lifecycle",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A11-http-owner-lifecycle.exe",
+        "http://127.0.0.1:62109/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.01600000000325963,
+      "binary_sha256": "84f4ba5f948ded1b7091d209aea86f704919f4fcd3eef9dc49d125b2341f6254"
+    },
+    {
+      "label": "http-status-is-response",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:62109/missing"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "c139cc57ea0723749783e89aa83f901e721403a5c77ce9eaadb7de14ee6317d8"
+    },
+    {
+      "label": "response-limit-failure",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:62109/oversize"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "71c195ece37e967071c30c621be544c38d522428d55283c7ccbfd1528ee12606"
+    },
+    {
+      "label": "A07-http-cancel",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\A07-http-cancel.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "44bf83729dcbc216681edf7a31e4c95b006e7cbfde22634671bc1e890d6857fd"
+    },
+    {
+      "label": "C01-tcp-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\C01-tcp-blocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "7772526863d9fca4919b3a3f89b9357c7740d255b150c2f73d3af7220119da59"
+    },
+    {
+      "label": "C02-tcp-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\C02-tcp-nonblocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06199999999807915,
+      "binary_sha256": "1e6d3ce1bd1f18bf76b26b9518db726716fed70d474df234481fe25027620699"
+    },
+    {
+      "label": "C03-tcp-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\examples-final-checks\\package-build\\debug\\examples\\C03-tcp-manual.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "3064d842c0875ff98e37f851fb6c358efe6daaf4728d1b8c1871c04171147239"
+    }
+  ],
+  "initial_fixture_failure": [
+    {
+      "label": "A01-http-blocking-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A01-http-blocking-get.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "a2171507515233438a75d397e38c10fc9e227e902905b3668dc92ebf5f9d168f"
+    },
+    {
+      "label": "A02-http-blocking-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A02-http-blocking-post.exe",
+        "http://127.0.0.1:63434/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "bc54a4b8358c83ad837a5fc49f99217133f8b81e0e633c03833c55cd5d16eb9b"
+    },
+    {
+      "label": "A03-http-full-get",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.06300000000192085,
+      "binary_sha256": "fb5c6ef2ac2d533b8c6ddf3b3cbb0a63c583a3c89d7046d20fde5d839e6fcc02"
+    },
+    {
+      "label": "A04-http-full-post",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A04-http-full-post.exe",
+        "http://127.0.0.1:63434/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "ecf5f3ca73f96ba93b821e1f03bc6c57bb54a046a73898c92abf00816999478c"
+    },
+    {
+      "label": "A05-http-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A05-http-nonblocking.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.046000000002095476,
+      "binary_sha256": "79c7716aeffe18db2c4d0b02d2562604bc281dc39e185ba0b444cb3bf665fc69"
+    },
+    {
+      "label": "A06-http-callbacks",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A06-http-callbacks.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "d765d32b6321fd63deb91816dbc0aee61304dddda808e2bb4c460fb72f965e8e"
+    },
+    {
+      "label": "A08-http-manual",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A08-http-manual.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.0319999999992433,
+      "binary_sha256": "7a706291b064715e3e9c4084f33ef06b9ef27ca7701dc21570bd1b6abcb3450c"
+    },
+    {
+      "label": "A09-http-streaming",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A09-http-streaming.exe",
+        "http://127.0.0.1:63434/post"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "873d233973fb751859605dc91f66bad96e1c9cc6eb28b6f68a05fb61bbd76571"
+    },
+    {
+      "label": "A10-http-memory-limits",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "be74c9c1ab733a855d9e263accb604d612e3ff6fb6e3e350d95ab31bdbf9a324"
+    },
+    {
+      "label": "A11-http-owner-lifecycle",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A11-http-owner-lifecycle.exe",
+        "http://127.0.0.1:63434/get"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.030999999995401595,
+      "binary_sha256": "8454f67f4b538f46452baae58392f788c37a3c2e57dfca096becfdf60a6bab6a"
+    },
+    {
+      "label": "http-status-is-response",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A03-http-full-get.exe",
+        "http://127.0.0.1:63434/missing"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "fb5c6ef2ac2d533b8c6ddf3b3cbb0a63c583a3c89d7046d20fde5d839e6fcc02"
+    },
+    {
+      "label": "response-limit-failure",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A10-http-memory-limits.exe",
+        "http://127.0.0.1:63434/oversize"
+      ],
+      "exit_code": 1,
+      "passed": true,
+      "elapsed_s": 0.046999999998661224,
+      "binary_sha256": "be74c9c1ab733a855d9e263accb604d612e3ff6fb6e3e350d95ab31bdbf9a324"
+    },
+    {
+      "label": "A07-http-cancel",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\A07-http-cancel.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "82b4adecde4081f498839416e2ee4fd1f8c863284569fe2d7f91eaf26c033d51"
+    },
+    {
+      "label": "C01-tcp-blocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C01-tcp-blocking.exe"
+      ],
+      "exit_code": 0,
+      "passed": true,
+      "elapsed_s": 0.031000000002677552,
+      "binary_sha256": "a5505571508bdb5b6a4d4e0d82cd470d516e5fc4e5fb5032581b1ace16af623c"
+    },
+    {
+      "label": "C02-tcp-nonblocking",
+      "command": [
+        "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\target\\debug\\examples\\C02-tcp-nonblocking.exe"
+      ],
+      "exit_code": 1,
+      "passed": false,
+      "elapsed_s": 0.0629999999946449,
+      "binary_sha256": "cd39f6d3271ed04a288f0c1d5f6c644dbef1431ef52fb12182c9785c0bce7f61"
+    }
+  ],
+  "cancellation_positive": "server received the request; cancelling it now\ncompletion: Cancelled (verified)\n",
+  "cancellation_negative": "server received the request; cancelling it now\nError: \"expected Cancelled, got TimedOut(PendingRequest { handle: RequestHandle { client: Client { shared: Shared { id: 1, stopped: false, run_mode: Spawned, .. } }, id: RequestId { engine: 1, sequence: 1 } }, state: RequestState { id: RequestId { engine: 1, sequence: 1 }, terminal: false } })\"\n",
+  "stable_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "msrv_version": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-pc-windows-msvc\nrelease: 1.85.0\nLLVM version: 19.1.7\n",
+  "clippy": "cargo clippy --locked --offline --all-targets --all-features -- -D warnings: passed",
+  "limitations": [
+    "Updated CI has not been dispatched",
+    "Uncommitted package rehearsal with explicit local helpers; not registry-only or a release artifact"
+  ]
+}

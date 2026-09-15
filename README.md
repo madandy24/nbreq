@@ -1,11 +1,8 @@
 # NBReq
 
-NBReq is a Rust HTTP client for programs that need concurrent network access, prompt cancellation,
-deterministic shutdown, and synchronous or callback-oriented APIs without adopting an async
-runtime.
-
-This guide covers NBReq 0.2. See the [migration notes](docs/migrating-to-0.2.md) when upgrading
-an application from 0.1.1.
+HTTP, DNS and TCP for Rust applications that need concurrent networking, prompt cancellation and
+control over resource use. Start with a blocking request, submit work to a background engine, or
+drive networking from your own event loop. No async runtime required.
 
 ## Highlights
 
@@ -21,150 +18,162 @@ an application from 0.1.1.
 - Public DNS resolution and cleartext TCP connections using the same Engine ownership and shutdown.
 - Shared buffered responses, optional consuming buffer transfer, and opt-in retained-body limits.
 
-## Quick start
+## Start with a GET
 
-The default build is self-contained Rust HTTP/1.1. Create one independently owned Engine and use
-its GET/POST convenience methods for ordinary buffered requests:
-
-```rust
-use std::time::Duration;
-
-use nbreq::{Engine, EngineConfig};
-
-let engine = Engine::new(EngineConfig::spawned())?;
-let response = engine
-    .get("https://example.com/")
-    .connect_timeout(Duration::from_secs(5))
-    .total_timeout(Duration::from_secs(15))
-    .call()?;
-
-println!("status {}, {} bytes", response.status(), response.body().len());
-engine.shutdown()?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-HTTP error status codes are responses. DNS, connection, TLS, timeout, limit, cancellation, and
-shutdown outcomes remain distinct. The convenience builder uses the same Engine, connection pool,
-limits, and request path as an explicit Client; it installs no hidden global runtime. Use
-`Engine::client()` for callbacks, direct waiters, prompt cancellation, manual driving, or streaming.
-
-See the [consumer guide](docs/getting-started.md) for callbacks, direct waiters, manual driving,
-streaming uploads/responses, cancellation, GUI/FFI ownership, and shutdown.
-
-The default feature set includes both the native network stack and the public `Resolver` API.
-HTTP-only consumers can omit the public Resolver and Windows search-suffix registry reader while
-retaining native HTTP plus exact-name DNS for HTTP and hostname `TcpConnector`:
+Requires Rust 1.85 or newer. This guide covers NBReq 0.2.0.
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2", default-features = false, features = ["native"] }
+nbreq = "0.2"
 ```
-
-The `resolver` feature implies `native`; disabling it never selects a blocking OS resolver or a
-second network owner.
-
-macOS supports the ordinary default System Configuration resolver topology. Richer split/scoped
-DNS configurations are rejected explicitly. See the guide's platform matrix for the tested scope.
-
-Security issues should be reported privately as described in [SECURITY.md](SECURITY.md), not in a
-public issue.
-
-## Historical curl reference
-
-NBReq's curl Multi pilot proved the public lifecycle and supplied differential transport evidence
-while the native implementation was built. It is deliberately absent from the 0.1.0 public crate:
-the pilot requires a locally patched binding, while maintaining a published fork would create a
-permanent support obligation for a reference backend. The accepted source, tests, scripts, and GDS
-artifacts remain recoverable from project history. Native NBReq is the supported crate backend.
-
-Engine configuration independently bounds accepted/inflight requests, queued commands, and
-callback-bearing requests/events. A terminal callback retains both its inflight and callback permit
-until it returns; blocking-only requests do not consume callback capacity.
-
-`Engine::metrics()` returns an owner-observed, nonblocking snapshot of saturating request and
-connection counters plus current and high-water bounded-resource pressure. It contains no URL,
-origin, header, body, address, certificate, or backend-native error data; fields may be slightly
-cross-field inconsistent while work is moving. Native connection counters describe capacity
-lifecycles beginning at DNS/connect reservation, matching the active cap rather than claiming that
-every reserved slot completed a TCP handshake.
-`EngineMetrics::connection_metrics_available()` distinguishes those native-owned physical
-connection measurements from internal scaffold snapshots, where the connection fields remain zero.
-When a buffered waiter or streaming reader observes a terminal result, its matching outcome counter
-has already advanced; this ordering is part of the canonical terminal commit rather than eventual
-reactor bookkeeping.
-
-## Native backend status
-
-The default features build NBReq's nonblocking HTTP/1.1 stack and public Resolver using `mio` for
-portable OS readiness and notification, `httparse` for response-head parsing, a bounded
-Engine-owned DNS wire codec and resolver, and rustls for owner-driven TLS. None is an executor and
-NBReq adopts no async runtime. The backend owns bounded socket and stream queues, all timeout
-clocks, cancellation, joined shutdown, conservative pooling, redirects, and direct
-`ResponseReader` delivery. Windows
-and exact-source Ubuntu 20.04 prove the accepted buffered and streaming paths, including bounded
-fixed/chunked `UploadBody` pumping. The Windows build also passes live GDS traffic and shutdown on
-Ubuntu 20.04's stock Wine 5. Native Windows keeps Mio; only a first-registration missing-AFD error
-on old Wine selects a documented `WSAPoll` compatibility path with a 50 ms safety bound. NBReq
-proper forbids unsafe code; the minimal WinSock FFI is isolated in the implementation-detail
-`nbreq-winpoll` crate behind a safe API. `Engine::new` and an unqualified builder select native in
-ordinary builds.
-
-Explicit selection remains available when a caller wants to state the choice:
 
 ```rust
-use nbreq::{Engine, HttpBackend};
+use std::time::Duration;
+use nbreq::Engine;
 
-let engine = Engine::builder()
-    .http_backend(HttpBackend::Native)
-    .build()?;
+let engine = Engine::builder().build()?;
+let response = engine
+    .get("https://httpbin.org/get")
+    .total_timeout(Duration::from_secs(15))
+    .call()?;
+
+println!("HTTP {}", response.status());
+println!("{}", String::from_utf8_lossy(response.body()));
 engine.shutdown()?;
-# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`HttpBackend::Native` remains present under every feature combination. A
-`--no-default-features` build therefore still compiles its portable configuration surface, but
-network construction returns `Unsupported`; the lifecycle scaffold is internal test support rather
-than a second public runtime.
+The snippets use `?` inside a function returning `Result`. For a complete program, start with
+[A01: blocking GET](examples/A01-http-blocking-get.rs), then try
+[A02: blocking POST](examples/A02-http-blocking-post.rs).
 
-## Dependency versions
+## More control when you need it
 
-Runtime dependencies use Cargo-compatible version ranges with tested lower bounds, so an
-application can share compatible dependencies with other libraries. The repository's `Cargo.lock`
-records the graph used for locked validation; an application's own lockfile controls its resolved
-graph. Release checks also exercise fresh consumer resolution on stable Rust and the advertised
-minimum Rust version. Compatible ranges permit updates; they do not automatically update an
-existing application lockfile or guarantee that every future dependency release will be compatible.
+- **Choose how to run.** Blocking calls, nonblocking submission and callbacks share the same
+  request path. Manual driving lets an existing application loop own network progress.
+- **Own the lifecycle.** One `Engine` owns network work, connection pools and workers. Cheap
+  `Client` handles let other parts of your application submit requests. Explicit shutdown cancels
+  outstanding work and joins the owned workers.
+- **Bound your workload.** Configure connection and request limits, body budgets and queue sizes.
+  Stream larger bodies incrementally; share buffered responses or take their allocation without
+  copying when uniquely owned. [Memory controls](docs/getting-started.md#buffered-http-memory-controls)
+  and [A10: memory limits](examples/A10-http-memory-limits.rs) explain the choices.
+- **Use verified HTTPS.** TLS certificate and hostname verification is enabled by default, using
+  platform trust. Applications can also supply private CA roots.
 
-Development tools and test-only dependencies may remain exactly pinned. The test-only `time`
-exception and dependency security policy are described in [SECURITY.md](SECURITY.md).
+Keep an Engine for the lifetime of a service so requests can reuse its connections and DNS cache.
+The following snippets each assume a running, spawned `engine` and `Duration` as above.
 
-## Documentation
+### Cancel outstanding work
 
-- [Consumer guide](docs/getting-started.md)
-- [Upgrading from 0.1.1](docs/migrating-to-0.2.md)
-- Runnable examples: [bounded HTTP](examples/bounded_http.rs), [DNS resolution](examples/resolve.rs),
-  [TCP echo client](examples/tcp_echo.rs), [manual HTTP](examples/manual.rs), and
-  [callbacks](examples/spawned.rs).
+```rust
+use nbreq::{Completion, Request};
 
-`test-support` exposes deterministic controls for downstream conformance tests; it is not needed
-by ordinary consumers.
+let pending = engine.client().submit(
+    Request::get("https://httpbin.org/get")
+        .total_timeout(Duration::from_secs(15))
+        .build()?,
+)?;
 
-## Project
+// The application can do other work, then decide it no longer needs the request.
+pending.handle().cancel()?;
+match pending.wait() {
+    Completion::Cancelled => println!("Request cancelled"),
+    other => println!("Request finished before cancellation: {other:?}"),
+}
+```
 
-NBReq is developed by [Cave Rock Software Limited](https://www.caverock.com/).
+Check the terminal result: completion can win a race with cancellation. Use `engine.cancel_all()`
+to cancel all outstanding work while keeping the Engine available for new requests.
+[A07: cancellation](examples/A07-http-cancel.rs) uses a local server to demonstrate and verify
+`Cancelled` after the server has received the request.
 
-## License
+### Resolve a hostname
 
-NBReq is licensed under either of the following, at your option:
+```rust
+use nbreq::ResolveRequest;
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)); or
-- MIT License ([LICENSE-MIT](LICENSE-MIT)).
+let answer = engine.resolver().execute(
+    ResolveRequest::hostname("example.com")
+        .total_timeout(Duration::from_secs(10))
+        .build()?,
+)?;
 
-The generated [component and dependency license report](THIRD_PARTY_LICENSES.html) records the
-locked Windows, Linux, and macOS release graph.
+println!("DNS {:?}", answer.status());
+for address in answer.addresses() {
+    println!("{}", address.address());
+}
+```
 
-## Contribution
+Choose address families, ordering, caching and search-suffix behavior when needed. DNS also
+supports nonblocking submission, callbacks, cancellation and manual driving.
+See the [DNS examples](examples/README.md#b--dns).
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+### Exchange bytes over TCP
+
+With an echo server listening on `127.0.0.1:9000`:
+
+```rust
+use nbreq::TcpConnectRequest;
+
+let request = TcpConnectRequest::literal("127.0.0.1:9000".parse()?)
+    .connect_timeout(Duration::from_secs(5))
+    .read_inactivity_timeout(Duration::from_secs(10))
+    .write_inactivity_timeout(Duration::from_secs(10))
+    .build()?;
+let mut connection = engine.tcp_connector().execute(request)?;
+
+connection.send(b"hello\n".to_vec())?;
+connection.finish()?; // Half-close our output; keep reading the reply.
+let mut buffer = [0_u8; 256];
+while let Some(count) = connection.read(&mut buffer)? {
+    println!("Received {count} bytes");
+}
+```
+
+TCP supports hostname connections, separate reader/writer halves, cancellation, bounded queues
+and nonblocking I/O. The [TCP examples](examples/README.md#c--tcp) start their own local echo server,
+so you can run them without setting one up.
+
+## Learn more
+
+- [Getting started](docs/getting-started.md): request options, streaming, manual driving,
+  memory controls, error handling and embedding in GUI/FFI applications.
+- [17 runnable examples](examples/README.md): **A** HTTP, **B** DNS, **C** TCP; simplest first.
+- [Migrating from 0.1.1](docs/migrating-to-0.2.md): changes to response ownership and resource limits.
+
+## Scope and configuration
+
+NBReq provides native HTTP/1.1 and HTTPS, DNS resolution and cleartext TCP on Windows, Linux,
+and Intel/Apple Silicon macOS. TCP does not add TLS or message framing. macOS currently supports
+the ordinary default DNS configuration; richer split/scoped configurations are rejected explicitly.
+See the [platform scope](docs/getting-started.md#platform-scope) for tested versions and Wine coverage.
+
+HTTP 4xx/5xx statuses are responses; transport, timeout, limit and cancellation failures are
+separate outcomes. Resource budgets cover NBReq's specified resources, not total process RAM.
+Shutdown joins owned work; executing callbacks or platform certificate checks can delay it.
+The [guide](docs/getting-started.md) covers these contracts in detail.
+
+Default features include HTTP, HTTPS, TCP and the public DNS resolver. HTTP/TCP consumers can
+use `default-features = false, features = ["native"]` to omit the public Resolver while retaining
+internal DNS. See [feature selection](docs/getting-started.md#backend-and-feature-selection).
+
+Runtime dependencies use Cargo-compatible version ranges. Your application's lockfile controls
+updates; release checks cover locked and fresh consumer graphs on stable Rust and the minimum
+supported version. See [dependency policy and security reporting](SECURITY.md).
+
+## Project and license
+
+NBReq is developed by [Cave Rock Software Limited](https://www.caverock.com/), and is licensed under
+either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option. The generated
+[component and dependency license report](THIRD_PARTY_LICENSES.html) records the locked release graph.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
 
 Copyright (c) 2026 Cave Rock Software Limited.
+
+## History
+
+An early prototype used curl as a comparison backend. The supported crate uses NBReq's native
+implementation; the prototype remains available in Git history.

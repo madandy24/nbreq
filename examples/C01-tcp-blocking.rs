@@ -1,4 +1,8 @@
-//! Connect to an echo server: `cargo run --example tcp_echo -- 127.0.0.1:9000`.
+//! Blocking echo exchange: `cargo run --example C01-tcp-blocking -- [IP:PORT]`.
+//! With no address, starts a local echo server; no other setup is needed.
+#[path = "support/echo.rs"]
+mod echo;
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -9,13 +13,13 @@ fn exchange(engine: &Engine, address: SocketAddr) -> Result<(), Box<dyn std::err
         .connect_timeout(Duration::from_secs(5))
         .read_inactivity_timeout(Duration::from_secs(10))
         .write_inactivity_timeout(Duration::from_secs(10))
-        .send_queue_bytes(16 * 1024)
-        .receive_queue_bytes(16 * 1024)
+        .send_queue_bytes(1024)
+        .receive_queue_bytes(1024)
         .build()?;
     let mut connection = engine.tcp_connector().execute(request)?;
     let sent = b"hello from nbreq\n";
     connection.send(sent.to_vec())?;
-    connection.finish()?; // Drain our output and half-close; the reader remains usable.
+    connection.finish()?; // Drain output and half-close; the reader remains usable.
 
     let mut received = Vec::new();
     let mut buffer = [0_u8; 256];
@@ -25,20 +29,30 @@ fn exchange(engine: &Engine, address: SocketAddr) -> Result<(), Box<dyn std::err
         }
         received.extend_from_slice(&buffer[..count]);
     }
-    if received != sent {
-        return Err("echo server returned different bytes".into());
-    }
+    assert_eq!(received, sent, "echo must match the sent bytes");
     println!("echoed {} bytes and received EOF", received.len());
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let address = std::env::args()
-        .nth(1)
-        .ok_or("usage: tcp_echo IP:PORT")?
-        .parse()?;
+    let destination = std::env::args().nth(1);
+    let server = if destination.is_none() {
+        Some(echo::Server::start()?)
+    } else {
+        None
+    };
+    let address = match destination {
+        Some(address) => address.parse()?,
+        None => server
+            .as_ref()
+            .ok_or("missing local echo server")?
+            .address(),
+    };
     let engine = Engine::builder().build()?;
     let result = exchange(&engine, address);
     engine.shutdown()?;
+    if let Some(server) = server {
+        server.stop()?;
+    }
     result
 }

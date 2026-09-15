@@ -23,7 +23,7 @@ and [memory work](nbreq_memory_plan.md); it does not replace their historical ev
 | Package inventory | The three clean pre-R5 `a44cac5` archives remain historical evidence, with exact hashes in the [manifest](evidence/nbreq_pre_r5_artifacts.json). Do not publish that root archive: its manifest still permits rustls versions affected by newly reported RUSTSEC-2026-0285. Freeze fresh root packages after the patched graph and owner's README/examples pass. Registry-only resolution remains open. |
 | Active slice | R5 technical pass complete: all 10 patched hosted jobs pass (eight platform/stable/MSRV complete verifiers with fresh consumers, plus advisory and license jobs). Windows i686 verifier passes 24/24; 16 fresh consumer cases pass and both distinct locks pass advisory scans. Initial rustls advisory failure is fixed; the isolated initial x86 HTTPS assertion remains documented with cause unconfirmed and richer diagnostics. [Details](nbreq_r5_readiness.md). |
 | Evidence | The [R5 report](nbreq_r5_readiness.md), [manifest](evidence/nbreq_r5_artifacts.json) and [299-file archive](evidence/nbreq-r5-technical-20260915.tar.gz) retain exact source, both hosted runs, consumer locks, advisory identity, local failures/passes and mirror provenance. [Pre-R5](evidence/nbreq_pre_r5_artifacts.json), [R4](evidence/nbreq_r4_artifacts.json) and earlier evidence remain intact. |
-| Next slice | Return to the owner's README/example requirements, reconcile the intended main-tree integration and validate affected examples/doctests and links before final package freeze. Then separately authorize/publish the helpers, prove registry-only root installation, and complete R6 root publication/smoke. R5 technical checks are verified for bdf5db5; future changes need checks appropriate to their scope. |
+| Next slice | The owner-approved examples and README refreshes are implemented and mirrored to main. See the [examples checkpoint](nbreq_examples_refresh.md) and [README checkpoint](nbreq_readme_refresh.md) for Windows stable/MSRV, local/live execution, snippet and package-link checks. Complete intended main-tree integration, updated hosted CI and final clean package freeze. Then separately authorize/publish the helpers, prove registry-only root installation, and complete R6 root publication/smoke. |
 | GDS boundary | Preserve its source and installed DLL. M4 device/application memory acceptance waits for GDS availability. Do not export GDS policy as nbreq defaults. |
 
 ## Pre-R5 pass — independent-review follow-up (2026-09-15)
@@ -70,9 +70,14 @@ checks are complete; the owner's README/examples discussion can proceed independ
 
 ## Main-tree README and examples refresh — owner requested
 
-The owner wants a README and examples refresh before the full release, scheduled for the return
-to the main working tree and its integration/push. The pre-R5 branch is a durable checkpoint;
-this request does not merge main or edit the consumer-facing files now.
+The owner approved the A/B/C examples redesign and implementation, including an explicit verified
+cancellation example and removal of the old programs. The [examples checkpoint](nbreq_examples_refresh.md)
+records the 17 new programs, docs/package/tooling updates and Windows stable/MSRV plus live evidence.
+Work continues in the R5 worktree and is mirrored to main without merging its mixed changes.
+The [README presentation](nbreq_readme_refresh.md) is also implemented: convenience GET first,
+short cancellation/DNS/TCP snippets, guide/example links, and curl history brief and last.
+All four snippets compile on stable/MSRV and relative package links/anchors resolve.
+Final integration/push and clean-package freeze remain to be completed before release.
 
 Before freezing the final publication packages:
 

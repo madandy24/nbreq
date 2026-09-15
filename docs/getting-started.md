@@ -1,5 +1,7 @@
 # Using NBReq
 
+For complete programs in learning order, see the [HTTP, DNS and TCP examples](../examples/README.md).
+
 NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
 workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client
 neither owns nor extends the Engine's lifetime. Keep the Engine in the service or module that is
@@ -46,8 +48,9 @@ let response = engine
     .call()?;
 
 let created = engine
-    .post("https://example.com/items")
+    .post("https://httpbin.org/post")
     .header("Content-Type", "application/json")
+    .total_timeout(Duration::from_secs(30))
     .send(br#"{"name":"thing"}"#)?;
 
 println!("GET {}, POST {}", response.status(), created.status());
@@ -197,7 +200,7 @@ let engine = Engine::new(EngineConfig::spawned())?;
 let client = engine.client();
 
 let (body, mut sender) = UploadBody::chunked(256 * 1024)?;
-let request = StreamRequest::post("https://example.com/upload")
+let request = StreamRequest::post("https://httpbin.org/post")
     .header("Content-Type", "application/octet-stream")
     .body_stream(body)
     .build()?;

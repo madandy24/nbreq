@@ -1,10 +1,11 @@
 """Exercise frozen .crate files from independent temporary Cargo workspaces; never publish."""
 from pathlib import Path, PurePosixPath
-import argparse, hashlib, http.server, json, os, shutil, socket, subprocess, tarfile, tempfile, threading
+import argparse, hashlib, json, os, shutil, subprocess, sys, tarfile, tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
 parser.add_argument('--darwin-package', type=Path, required=True)
+parser.add_argument('--winpoll-package', type=Path, required=True)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--offline', action='store_true')
 parser.add_argument('--toolchains', nargs='+', default=['stable', '1.85.0'])
@@ -48,17 +49,20 @@ def run(label, command, cwd, expected=0, contains=None, timeout=600):
 
 main_package = args.package.resolve()
 darwin_package = args.darwin_package.resolve()
+winpoll_package = args.winpoll_package.resolve()
 package = unpack(main_package)
 darwin = unpack(darwin_package)
+winpoll = unpack(winpoll_package)
 consumer = work/'consumer'
 shutil.copytree(out/'consumer-source',consumer)
 patch = ['--config', 'patch.crates-io.nbreq.path='+json.dumps(package.as_posix()),
-         '--config', 'patch.crates-io.nbreq-darwin.path='+json.dumps(darwin.as_posix())]
+         '--config', 'patch.crates-io.nbreq-darwin.path='+json.dumps(darwin.as_posix()),
+         '--config', 'patch.crates-io.nbreq-winpoll.path='+json.dumps(winpoll.as_posix())]
 network = ['--offline'] if args.offline else []
 metadata = dict(temporary_workspace=str(work),registry_gate_closed=False,
-               support_override='Explicit unpacked nbreq-darwin archive; not registry-only proof',
+               support_override='Explicit unpacked Darwin/winpoll archives; not registry-only proof',
                dependency_resolution='fresh cached index' if args.offline else 'fresh online index',
-               packages={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (main_package,darwin_package)})
+               packages={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (main_package,darwin_package,winpoll_package)})
 (out/'inputs.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
 run('resolve-consumer',['cargo',*patch,'generate-lockfile',*network],consumer)
 shutil.copy2(consumer/'Cargo.lock',out/'consumer-Cargo.lock')
@@ -91,51 +95,13 @@ for toolchain in args.toolchains:
     run(toolchain+'-011-compat',['rustup','run',toolchain,'cargo','test','--locked',*network,'--lib','--','--test-threads=1'],legacy,contains='test result: ok. 3 passed')
 
 run('build-package-examples',['rustup','run',args.toolchains[0],'cargo',*patch,'build','--manifest-path',str(package/'Cargo.toml'),'--locked',*network,'--examples'],consumer)
-suffix = '.exe' if os.name == 'nt' else ''
-def example(name): return str(out/'build/debug/examples'/(name+suffix))
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body=b'packaged example response'
-        self.send_response(200)
-        self.send_header('Content-Length',str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self,*args): pass
-http = http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
-http_thread=threading.Thread(target=lambda:http.serve_forever(poll_interval=0.05))
-http_thread.start()
-try:
-    for name in ('manual','spawned','bounded_http'):
-        run('example-'+name,[example(name),f'http://127.0.0.1:{http.server_port}/'],consumer,contains='HTTP 200',timeout=45)
-finally:
-    http.shutdown(); http.server_close(); http_thread.join()
-run('example-ffi_owner',[example('ffi_owner')],consumer,timeout=45)
-listener=socket.socket()
-listener.bind(('127.0.0.1',0)); listener.listen(1); listener.settimeout(30)
-echo_errors=[]
-def echo():
-    try:
-        with listener.accept()[0] as connection:
-            connection.settimeout(15)
-            body=b''
-            while True:
-                block=connection.recv(256)
-                if not block: break
-                body+=block
-                assert len(body)<=1024
-            assert body==b'hello from nbreq\n'
-            connection.sendall(body)
-    except Exception as error: echo_errors.append(str(error))
-echo_thread=threading.Thread(target=echo); echo_thread.start()
-try:
-    run('example-tcp_echo',[example('tcp_echo'),f'127.0.0.1:{listener.getsockname()[1]}'],consumer,contains='echoed 17 bytes',timeout=45)
-finally:
-    echo_thread.join(); listener.close()
-assert not echo_errors, echo_errors
+example_command = [sys.executable, str(consumer/'check_examples.py'),
+                   '--bin-dir', str(out/'build/debug/examples'), '--out', str(out/'examples')]
 if args.live_dns:
-    run('example-resolve-live',[example('resolve'),args.live_dns],consumer,timeout=45)
+    example_command += ['--live-dns', args.live_dns]
 if args.live_https:
-    run('example-https-live',[example('native_platform_https'),args.live_https],consumer,contains='platform_https_status=200',timeout=60)
+    example_command += ['--live-https', args.live_https]
+run('packaged-examples', example_command, consumer, contains='Example checks passed:', timeout=900)
 metadata['status']='passed'
 (out/'inputs.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
-print('External consumer checks passed; Darwin registry-only gate remains open.',flush=True)
+print('External consumer checks passed; support registry-only gate remains open.',flush=True)

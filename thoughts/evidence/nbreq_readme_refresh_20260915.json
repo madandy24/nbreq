@@ -1,0 +1,67 @@
+{
+  "status": "passed",
+  "scope": "README only; snippets compile, no live network execution needed",
+  "steps": [
+    {
+      "label": "package-inventory",
+      "command": [
+        "cargo",
+        "package",
+        "--list",
+        "--allow-dirty",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.17199999999866122
+    },
+    {
+      "label": "stable-snippets",
+      "command": [
+        "cargo",
+        "check",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.25
+    },
+    {
+      "label": "msrv-snippets",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "check",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.23500000000058208
+    }
+  ],
+  "snippets": 4,
+  "relative_links": [
+    "examples/A01-http-blocking-get.rs",
+    "examples/A02-http-blocking-post.rs",
+    "docs/getting-started.md#buffered-http-memory-controls",
+    "examples/A10-http-memory-limits.rs",
+    "examples/A07-http-cancel.rs",
+    "examples/README.md#b--dns",
+    "examples/README.md#c--tcp",
+    "docs/getting-started.md",
+    "examples/README.md",
+    "docs/migrating-to-0.2.md",
+    "docs/getting-started.md#platform-scope",
+    "docs/getting-started.md",
+    "docs/getting-started.md#backend-and-feature-selection",
+    "SECURITY.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "THIRD_PARTY_LICENSES.html"
+  ],
+  "files": {
+    "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-r5\\README.md": "30e3f537b384de442f2870efb8853f7ad72c9bc50d2e779af96ab6c335c2b355",
+    "C:\\User\\projects\\nbreq\\README.md": "39e5aac8b52d63f22fdab3685e9c784d8b7ac820a312862d4a96f02c046ede24",
+    "C:\\User\\projects\\nbreq\\target\\readme-refresh-checks\\snippets\\Cargo.toml": "e15de875dcf420057592c0ca76a5451af9c1d6f12afd8b376561674c643076c4",
+    "C:\\User\\projects\\nbreq\\target\\readme-refresh-checks\\snippets\\Cargo.lock": "948b555582b3472f521ed30a996dfa02354ca52fb3057e4b40f428dfc5d11987",
+    "C:\\User\\projects\\nbreq\\target\\readme-refresh-checks\\snippets\\src\\lib.rs": "95426fc44f709c99ef8a1a82f7fc707986072ce0c098547cfc4e2cc0594611a3"
+  }
+}

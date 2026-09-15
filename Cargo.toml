@@ -20,13 +20,11 @@ include = [
     "/tests/**",
     "!/tests/fixtures/fuzz/**",
     "/tests/fixtures/fuzz/**/*.seed",
-    "/examples/ffi_owner.rs",
-    "/examples/manual.rs",
-    "/examples/native_platform_https.rs",
-    "/examples/spawned.rs",
-    "/examples/resolve.rs",
-    "/examples/tcp_echo.rs",
-    "/examples/bounded_http.rs",
+    "/examples/A*.rs",
+    "/examples/B*.rs",
+    "/examples/C*.rs",
+    "/examples/support/*.rs",
+    "/examples/README.md",
     "/docs/getting-started.md",
     "/docs/migrating-to-0.2.md",
     "/README.md",
@@ -96,29 +94,69 @@ unimplemented = "deny"
 unwrap_used = "deny"
 
 [[example]]
-name = "native_platform_https"
+name = "A01-http-blocking-get"
 required-features = ["native"]
 
 [[example]]
-name = "spawned"
+name = "A02-http-blocking-post"
 required-features = ["native"]
 
 [[example]]
-name = "manual"
+name = "A03-http-full-get"
 required-features = ["native"]
 
 [[example]]
-name = "ffi_owner"
+name = "A04-http-full-post"
 required-features = ["native"]
 
 [[example]]
-name = "resolve"
+name = "A05-http-nonblocking"
+required-features = ["native"]
+
+[[example]]
+name = "A06-http-callbacks"
+required-features = ["native"]
+
+[[example]]
+name = "A07-http-cancel"
+required-features = ["native"]
+
+[[example]]
+name = "A08-http-manual"
+required-features = ["native"]
+
+[[example]]
+name = "A09-http-streaming"
+required-features = ["native"]
+
+[[example]]
+name = "A10-http-memory-limits"
+required-features = ["native"]
+
+[[example]]
+name = "A11-http-owner-lifecycle"
+required-features = ["native"]
+
+[[example]]
+name = "B01-dns-blocking"
 required-features = ["resolver"]
 
 [[example]]
-name = "tcp_echo"
+name = "B02-dns-nonblocking"
+required-features = ["resolver"]
+
+[[example]]
+name = "B03-dns-manual"
+required-features = ["resolver"]
+
+[[example]]
+name = "C01-tcp-blocking"
 required-features = ["native"]
 
 [[example]]
-name = "bounded_http"
+name = "C02-tcp-nonblocking"
+required-features = ["native"]
+
+[[example]]
+name = "C03-tcp-manual"
 required-features = ["native"]
