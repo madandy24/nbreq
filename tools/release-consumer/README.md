@@ -37,6 +37,8 @@ and Rust 1.85, both alone and alongside an explicit newer compatible Mio require
 default/native-only/minimal/test-support tests and negative feature probes, preserving locks,
 compiler versions and logs. It uses local root, Darwin and winpoll overrides, so these checks
 do not establish registry-only installation.
+Pass `--toolchains stable` or `--toolchains 1.85.0` to select the installed toolchain in a CI
+matrix job. Inputs include the source commit, host platform and selected toolchains.
 
 `python package_candidate.py --out NEW_EVIDENCE_DIRECTORY` requires a clean candidate checkout
 and packages all three crates with locked offline verification into that fresh directory. Root

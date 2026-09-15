@@ -28,6 +28,9 @@ jobs:
           - name: Windows stable
             os: windows-latest
             toolchain: stable
+          - name: Windows MSRV 1.85
+            os: windows-latest
+            toolchain: 1.85.0
           - name: Ubuntu MSRV 1.85
             os: ubuntu-latest
             toolchain: 1.85.0
@@ -73,6 +76,22 @@ jobs:
       - name: Run complete offline verifier
         run: cargo run --locked --offline --manifest-path tools/xtask/Cargo.toml -- verify --offline
 
+      - name: Verify fresh consumer dependency graphs
+        run: python tools/release-consumer/pre_r5.py --out "${{ runner.temp }}/nbreq-consumers" --toolchains ${{ matrix.toolchain }}
+
+      - name: Preserve consumer locks and results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: consumers-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/nbreq-consumers/*.json
+            ${{ runner.temp }}/nbreq-consumers/*.log
+            ${{ runner.temp }}/nbreq-consumers/*/Cargo.lock
+            ${{ runner.temp }}/nbreq-consumers/*/Cargo.toml
+            ${{ runner.temp }}/nbreq-consumers/*/versions.json
+          if-no-files-found: warn
+
   rustsec:
     name: RustSec advisory scan
     runs-on: ubuntu-latest
@@ -93,7 +112,26 @@ jobs:
         run: cargo install --locked --version 0.22.2 cargo-audit
 
       - name: Scan exact lock graph
-        run: cargo audit --file Cargo.lock
+        shell: bash
+        run: cargo audit --db "$RUNNER_TEMP/nbreq-advisory-db" --file Cargo.lock --json | tee cargo-audit.json
+
+      - name: Record advisory database identity
+        if: always()
+        shell: bash
+        run: |
+          git -C "$RUNNER_TEMP/nbreq-advisory-db" log -1 --format='%H %cI' | tee advisory-db.txt
+          cargo audit --version | tee -a advisory-db.txt
+          sha256sum Cargo.lock | tee -a advisory-db.txt
+
+      - name: Preserve advisory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: advisory-evidence
+          path: |
+            cargo-audit.json
+            advisory-db.txt
+          if-no-files-found: error
 
   licenses:
     name: Component and dependency licenses

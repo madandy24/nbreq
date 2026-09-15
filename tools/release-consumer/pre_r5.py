@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out', type=Path, required=True)
+parser.add_argument('--toolchains', nargs='+', default=['stable', '1.85.0'])
 args = parser.parse_args()
 source = Path(__file__).resolve().parent
 root = source.parents[1]
@@ -36,9 +38,11 @@ inputs = {p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdiges
           for p in [root/'Cargo.toml',root/'Cargo.lock',root/'src/body_budget.rs',
                     root/'support/winpoll/Cargo.toml',root/'support/darwin/Cargo.toml']}
 (out/'inputs.json').write_text(json.dumps(dict(files=inputs,
+    commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
+    platform=platform.platform(),machine=platform.machine(),toolchains=args.toolchains,
     graph='fresh online, independent consumer lock per toolchain/case',
     support='local root/Darwin/winpoll overrides; not registry-only acceptance'),indent=2),encoding='utf-8')
-for toolchain in ['stable','1.85.0']:
+for toolchain in args.toolchains:
     run(toolchain+'-rustc',['rustup','run',toolchain,'rustc','-vV'],root)
     for case in ['fresh','mio-coexist']:
         label = toolchain+'-'+case
@@ -72,5 +76,5 @@ for toolchain in ['stable','1.85.0']:
             assert versions['mio'] == '1.2.3'
         (consumer/'versions.json').write_text(json.dumps(versions,indent=2),encoding='utf-8')
         print(label+' passed '+json.dumps(versions),flush=True)
-(out/'result.json').write_text(json.dumps(dict(status='passed',steps=len(records),cases=4,
+(out/'result.json').write_text(json.dumps(dict(status='passed',steps=len(records),cases=2*len(args.toolchains),
     registry_only=False,source_files=inputs),indent=2),encoding='utf-8')
