@@ -1,0 +1,451 @@
+{
+  "mode": "published",
+  "source_commit": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+  "run_id": 34948730581,
+  "url": "https://github.com/madandy24/nbreq/actions/runs/34948730581",
+  "jobs_passed": 8,
+  "consumer_tests": 464,
+  "consumer_cases": 16,
+  "negative_probes": 32,
+  "example_cases": 128,
+  "registry_only": true,
+  "support_from_registry": true,
+  "artifacts": [
+    {
+      "artifact": "registry-published-Intel Mac stable",
+      "sha256": "07fd7ba13041e01d6e8fbd256b02b61eeec9b18e19b49ead67d3fe7b31f3d138",
+      "platform": "macOS-15.7.9-x86_64-i386-64bit-Mach-O",
+      "machine": "x86_64",
+      "toolchains": [
+        "stable"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "stable-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "stable-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-Windows stable",
+      "sha256": "277859a5426f8e601b525ecb260ee29bce855b7c51b20448fcf8d921dd0f5bfd",
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "machine": "AMD64",
+      "toolchains": [
+        "stable"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "stable-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "stable-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-ARM Mac stable",
+      "sha256": "87afd3559f561121ea64cfeb4c2dd2c319a39b10db3b6da0983410e728f0db14",
+      "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "toolchains": [
+        "stable"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "stable-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "stable-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-Windows MSRV",
+      "sha256": "db905f742c559fb2c1669daa442c9d1639ebab026497b48b493ef6f89ec79d64",
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "machine": "AMD64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "1.85.0-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "1.85.0-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-ARM Mac MSRV",
+      "sha256": "04ab065ab25c7fe1ad9a9a300c6fd9a43e09b120a0fe945120bc00ed1057f2fc",
+      "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "1.85.0-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "1.85.0-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-Intel Mac MSRV",
+      "sha256": "a17a71af80c58fbf6af1765b51cc1845d3294e1b4752db4de8dc3e11ef940259",
+      "platform": "macOS-15.7.9-x86_64-i386-64bit-Mach-O",
+      "machine": "x86_64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "1.85.0-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "1.85.0-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-Ubuntu stable",
+      "sha256": "d6aa40388ea4975aaf309d21f5331536807fc1d4654ede59aeb2a6c9472e8ab6",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "toolchains": [
+        "stable"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "stable-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "stable-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    },
+    {
+      "artifact": "registry-published-Ubuntu MSRV",
+      "sha256": "c2e683f9e0828d852bc60bd982b426c98ffa02eb1440a7adcbcaddddd111297c",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+      "package_source": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+      "cases": [
+        {
+          "label": "1.85.0-fresh",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+        },
+        {
+          "label": "1.85.0-mio-coexist",
+          "registry_only": true,
+          "support_from_registry": true,
+          "packages": {
+            "nbreq": {
+              "version": "0.2.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-darwin": {
+              "version": "0.1.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+            "nbreq-winpoll": {
+              "version": "0.1.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+          },
+          "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+        }
+      ]
+    }
+  ],
+  "audits": [
+    {
+      "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074",
+      "exit_code": 0
+    },
+    {
+      "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793",
+      "exit_code": 0
+    }
+  ],
+  "advisory_database": "e2e640471715167f73e22eaf761f2e547adafeec 2026-09-14T18:06:06+02:00",
+  "raw_directory": "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\hosted-published"
+}

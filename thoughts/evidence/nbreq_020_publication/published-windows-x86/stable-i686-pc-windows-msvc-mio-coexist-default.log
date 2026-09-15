@@ -1,0 +1,17 @@
+   Compiling nbreq-release-consumer v0.0.0 (C:\Users\andre\AppData\Local\Temp\nbreq-020-registry-p08zjmyf\stable-i686-pc-windows-msvc-mio-coexist)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.56s
+     Running unittests src\lib.rs (C:\User\projects\nbreq\target\release-publication-20260915\published-windows-x86\build\debug\deps\nbreq_release_consumer-0b90c4996234c5aa.exe)
+
+running 9 tests
+test common_http::cancellation_delivers_one_callback_before_join_returns ... ok
+test common_http::explicit_http_borrow_and_clone_survive_shutdown ... ok
+test common_http::manual_waiter_is_driven_by_its_owner ... ok
+test v020::native::bounded_http_tracks_retention_and_checks_spare_upload_capacity ... ok
+test v020::native::fixed_upload_and_streamed_response_use_public_owners ... ok
+test v020::native::manual_tcp_uses_passive_io_between_owner_drives ... ok
+test v020::native::tcp_refusal_preserves_input_and_half_close_keeps_reader ... ok
+test v020::public_resolver_configuration_is_available ... ok
+test v020::shared_response_can_transfer_after_last_alias_drops ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+

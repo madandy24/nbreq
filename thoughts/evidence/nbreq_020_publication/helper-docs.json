@@ -1,0 +1,22 @@
+[
+  {
+    "url": "https://docs.rs/nbreq-darwin/0.1.0/nbreq_darwin/",
+    "status": 200,
+    "final_url": "https://docs.rs/nbreq-darwin/0.1.0/nbreq_darwin/",
+    "title": [
+      "nbreq_darwin - Rust"
+    ],
+    "rustdoc": true,
+    "bytes": 16888
+  },
+  {
+    "url": "https://docs.rs/nbreq-winpoll/0.1.1/nbreq_winpoll/",
+    "status": 200,
+    "final_url": "https://docs.rs/nbreq-winpoll/0.1.1/nbreq_winpoll/",
+    "title": [
+      "nbreq_winpoll - Rust"
+    ],
+    "rustdoc": true,
+    "bytes": 16889
+  }
+]

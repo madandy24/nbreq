@@ -1,0 +1,174 @@
+[
+  {
+    "label": "A01-http-blocking-get",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A01-http-blocking-get.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.09399999999732245,
+    "binary_sha256": "e52a9f8eae263a4be00087a227ec1e99c36e3b787049266f2d29b7c339378f95"
+  },
+  {
+    "label": "A02-http-blocking-post",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A02-http-blocking-post.exe",
+      "http://127.0.0.1:64345/post"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.0930000000007567,
+    "binary_sha256": "2efa7b8d817aa9099afb7008dc7f5e140a938dcf9f261a1f6d504bd21785c2b0"
+  },
+  {
+    "label": "A03-http-full-get",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A03-http-full-get.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.10900000000401633,
+    "binary_sha256": "a27c9069af49717e7268aa772bae77782400969435a60f0389f1aacdf584432e"
+  },
+  {
+    "label": "A04-http-full-post",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A04-http-full-post.exe",
+      "http://127.0.0.1:64345/post"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.10900000000401633,
+    "binary_sha256": "e6aef66b50c5354b641a8938bf71f1feee71b2cd53817cc3d0ce56e3b9c5101f"
+  },
+  {
+    "label": "A05-http-nonblocking",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A05-http-nonblocking.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.11000000000058208,
+    "binary_sha256": "fd3a137a351f0fc4c45666e01621d7a6fe124fae6f03efd05caa7615660465a0"
+  },
+  {
+    "label": "A06-http-callbacks",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A06-http-callbacks.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.11000000000058208,
+    "binary_sha256": "be2df9b7ffd5133290e6b3add3e0968b3ebd3c32509b2207d8fffa261a62160d"
+  },
+  {
+    "label": "A08-http-manual",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A08-http-manual.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.09399999999732245,
+    "binary_sha256": "c1c620853ae77e376feeeac7bded9908eb685f8727d188a04e53fd3fb0bcb17f"
+  },
+  {
+    "label": "A09-http-streaming",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A09-http-streaming.exe",
+      "http://127.0.0.1:64345/post"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.0930000000007567,
+    "binary_sha256": "1c93474bd326e6ee6d9204ec04aae241d5ed7faf0a732675a36017aa2df93abb"
+  },
+  {
+    "label": "A10-http-memory-limits",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A10-http-memory-limits.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.0940000000045984,
+    "binary_sha256": "1e415d7fb69e681baced6b462c7afa0a8991163ea7769497277323bba21ebdb6"
+  },
+  {
+    "label": "A11-http-owner-lifecycle",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A11-http-owner-lifecycle.exe",
+      "http://127.0.0.1:64345/get"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.09399999999732245,
+    "binary_sha256": "805cbde6558bdc8062be2836850cd458eb12762839de45a0b0f7fe8ffaf2e1b0"
+  },
+  {
+    "label": "http-status-is-response",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A03-http-full-get.exe",
+      "http://127.0.0.1:64345/missing"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.07800000000133878,
+    "binary_sha256": "a27c9069af49717e7268aa772bae77782400969435a60f0389f1aacdf584432e"
+  },
+  {
+    "label": "response-limit-failure",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A10-http-memory-limits.exe",
+      "http://127.0.0.1:64345/oversize"
+    ],
+    "exit_code": 1,
+    "passed": true,
+    "elapsed_s": 0.07800000000133878,
+    "binary_sha256": "1e415d7fb69e681baced6b462c7afa0a8991163ea7769497277323bba21ebdb6"
+  },
+  {
+    "label": "A07-http-cancel",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\A07-http-cancel.exe"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.10900000000401633,
+    "binary_sha256": "092bee0ac080d01439de3c5b16e296f55592cb42ff3c4ec201d75a0b60110dc5"
+  },
+  {
+    "label": "C01-tcp-blocking",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\C01-tcp-blocking.exe"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.11000000000058208,
+    "binary_sha256": "f5fc5a4b4ec9bd592ea553ac281d5118522367f1429303b9dd222517ed702a4d"
+  },
+  {
+    "label": "C02-tcp-nonblocking",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\C02-tcp-nonblocking.exe"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.13999999999941792,
+    "binary_sha256": "ca4528972efebd37cab97d82c3393e91fcaf1784e03805c2f7364cd248a05ca6"
+  },
+  {
+    "label": "C03-tcp-manual",
+    "command": [
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples\\C03-tcp-manual.exe"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.11000000000058208,
+    "binary_sha256": "61c9aa6be752ca9b51cd65bce2841e9c8089542132e03bd27294690f9433eae6"
+  }
+]

@@ -11,8 +11,9 @@ The output directory must be new. It preserves source, dependency locks, command
 the temporary workspace is retained for investigation. Remove it only after checking its exact
 path in `inputs.json` and preserving required evidence.
 
-The Darwin/winpoll overrides are explicit because these support releases are not yet published. Passing these
-checks cannot close the registry-only release gate. Offline resolution uses the cached index;
+The Darwin/winpoll overrides let this runner check supplied support candidates independently
+of their published versions. Passing these checks cannot close the registry-only release gate;
+use `registry.py` below for that evidence. Offline resolution uses the cached index;
 it must not be described as a fresh online dependency check.
 
 Default/native-only tests use ordinary Engines and bounded loopback fixtures. Only the separately

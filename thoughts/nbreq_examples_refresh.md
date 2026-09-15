@@ -13,7 +13,7 @@ sequence and removal of superseded examples, with an explicit cancellation demon
 | Teaching rules | One main idea per example; real public NBReq calls visible in each program. Short finite deadlines, verified TLS, clear shutdown, no Tokio or implied async/await API. Shared support contains server plumbing only. |
 | Cancellation proof | Local server acknowledges receipt and withholds the response. Cancel the handle; require the canonical `Completion::Cancelled`, not merely a successful cancel command. |
 | Validation | Build all examples on stable and Rust 1.85, native-only feature build, lint/format/doctests, local HTTP/TCP/cancellation execution, separately labelled live HTTPS/DNS smoke. Check packaged sources and links; automate executable examples in CI. |
-| Remaining | README presentation, main integration/push and final local packages/consumers are complete. [Housekeeping](nbreq_housekeeping.md) records the updated hosted run. Helper publication and registry-only proof remain separate release gates. |
+| Remaining | This presentation slice and all 0.2.0 release gates are complete. [Publication](nbreq_020_publication.md) records actual registry-root checks across all four platforms on stable/MSRV, building all 17 examples and passing 16 local cases per job, plus native Windows x86. Earlier live-network checks below retain their original scope. |
 
 The old examples may be removed after replacement; Git retains their history. Historical reports
 and sealed evidence continue to describe their original seven-example inventory.

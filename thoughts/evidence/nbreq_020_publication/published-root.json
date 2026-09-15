@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "created_at": "2026-09-15T08:43:42.225291Z",
+  "sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+  "bytes": 343650,
+  "source_commit": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+  "url": "https://crates.io/crates/nbreq/0.2.0",
+  "index_visible": true,
+  "download_matches_candidate": true
+}

@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "toolchain": "stable-i686-pc-windows-msvc",
+  "rust_version": "1.97.1",
+  "operating_system": "Windows-11-10.0.26200-SP0",
+  "registry_only": true,
+  "steps": 19,
+  "consumer_cases": 2,
+  "consumer_tests": 58,
+  "negative_probes": 4,
+  "example_cases": 16,
+  "package_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+  "pe_machine": "0x14c",
+  "binary_sha256": "092bee0ac080d01439de3c5b16e296f55592cb42ff3c4ec201d75a0b60110dc5",
+  "wine_execution": false
+}

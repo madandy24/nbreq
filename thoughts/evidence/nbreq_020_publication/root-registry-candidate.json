@@ -1,0 +1,53 @@
+{
+  "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+  "old_sha256": "59b54d263c6951da867df745d5fc1cd9aad29930c659a9f9d378c7bfc6966860",
+  "sha256": "05d2504522350118ef702fb3aa01288bd5939da62dc5e1727807fd03813686ed",
+  "bytes": 343615,
+  "files": 95,
+  "changed_files": [
+    "nbreq-0.2.0/Cargo.lock",
+    "nbreq-0.2.0/README.md"
+  ],
+  "readme_change": "Only checkout CRLF normalization; text unchanged",
+  "dependency_changes": [
+    {
+      "before": {
+        "name": "nbreq-darwin",
+        "version": "0.1.0",
+        "dependencies": [
+          "core-foundation",
+          "system-configuration"
+        ]
+      },
+      "after": {
+        "name": "nbreq-darwin",
+        "version": "0.1.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839",
+        "dependencies": [
+          "core-foundation",
+          "system-configuration"
+        ]
+      }
+    },
+    {
+      "before": {
+        "name": "nbreq-winpoll",
+        "version": "0.1.1",
+        "dependencies": [
+          "windows-sys 0.61.2"
+        ]
+      },
+      "after": {
+        "name": "nbreq-winpoll",
+        "version": "0.1.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696",
+        "dependencies": [
+          "windows-sys 0.61.2"
+        ]
+      }
+    }
+  ],
+  "package": "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\dry-nbreq-registry\\package\\tmp-crate\\nbreq-0.2.0.crate"
+}

@@ -1,0 +1,86 @@
+{
+  "status": "passed",
+  "readme_url": "https://crates.io/crates/nbreq/0.2.0",
+  "rendered_readme": "https://static.crates.io/readmes/nbreq/nbreq-0.2.0.html",
+  "docs_url": "https://docs.rs/nbreq/0.2.0/nbreq/",
+  "readme_highlights_before_get": true,
+  "curl_mentions": 1,
+  "history_last": true,
+  "release_wording": true,
+  "rustdoc_examples_link": "https://github.com/madandy24/nbreq/blob/432509b8d2d198cb0139def322f2cc82cd4a76c6/examples/README.md",
+  "readme_repository_links": [
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/A01-http-blocking-get.rs",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/A02-http-blocking-post.rs",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md#buffered-http-memory-controls",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/A10-http-memory-limits.rs",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/A07-http-cancel.rs",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/README.md#b--dns",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/README.md#c--tcp",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md",
+    "https://github.com/madandy24/nbreq/blob/HEAD/examples/README.md",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/migrating-to-0.2.md",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md#platform-scope",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md",
+    "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md#backend-and-feature-selection",
+    "https://github.com/madandy24/nbreq/blob/HEAD/SECURITY.md",
+    "https://github.com/madandy24/nbreq/blob/HEAD/LICENSE-APACHE",
+    "https://github.com/madandy24/nbreq/blob/HEAD/LICENSE-MIT",
+    "https://github.com/madandy24/nbreq/blob/HEAD/THIRD_PARTY_LICENSES.html"
+  ],
+  "fetched_targets": [
+    {
+      "url": "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md",
+      "status": 200,
+      "final_url": "https://github.com/madandy24/nbreq/blob/HEAD/docs/getting-started.md",
+      "sha256": "2292ba6af48cdeabb9b9308e167467ef038010e5b8be507ac483c4480425100c",
+      "title": [
+        "nbreq/docs/getting-started.md at d866179719f1cd4e2efcda7e4a533fe590ae3dd6 \u00b7 madandy24/nbreq \u00b7 GitHub"
+      ]
+    },
+    {
+      "url": "https://github.com/madandy24/nbreq/blob/HEAD/examples/README.md",
+      "status": 200,
+      "final_url": "https://github.com/madandy24/nbreq/blob/HEAD/examples/README.md",
+      "sha256": "e9434eaebfa9aa8d82a0a96988ad5b814d9dafa34a75ae529c86486e285de404",
+      "title": [
+        "nbreq/examples/README.md at d866179719f1cd4e2efcda7e4a533fe590ae3dd6 \u00b7 madandy24/nbreq \u00b7 GitHub"
+      ]
+    },
+    {
+      "url": "https://github.com/madandy24/nbreq/blob/HEAD/docs/migrating-to-0.2.md",
+      "status": 200,
+      "final_url": "https://github.com/madandy24/nbreq/blob/HEAD/docs/migrating-to-0.2.md",
+      "sha256": "d634518ec6fd9c90b1dd25937fa871bbcaa70be1037d6c88bb643d07bd5a9a84",
+      "title": [
+        "nbreq/docs/migrating-to-0.2.md at d866179719f1cd4e2efcda7e4a533fe590ae3dd6 \u00b7 madandy24/nbreq \u00b7 GitHub"
+      ]
+    },
+    {
+      "url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.Engine.html",
+      "status": 200,
+      "final_url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.Engine.html",
+      "sha256": "509e4d6e5a46ad7f75dae8a4f88618ad4f33061736cda33071dfd951ce7c02b7",
+      "title": [
+        "Engine in nbreq - Rust"
+      ]
+    },
+    {
+      "url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.Resolver.html",
+      "status": 200,
+      "final_url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.Resolver.html",
+      "sha256": "16d08e35a57105378bbef48e849b11dcc77feda404aa025d20877eeee0c747ce",
+      "title": [
+        "Resolver in nbreq - Rust"
+      ]
+    },
+    {
+      "url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.TcpConnector.html",
+      "status": 200,
+      "final_url": "https://docs.rs/nbreq/0.2.0/nbreq/struct.TcpConnector.html",
+      "sha256": "a2458d734066e4a5a1d2fbb35ea5bc04a23f81619c9d0394797682b5acba80fd",
+      "title": [
+        "TcpConnector in nbreq - Rust"
+      ]
+    }
+  ]
+}

@@ -33,8 +33,9 @@ was missing. These are compilation/link checks, not a repetition of the complete
 
 README and example presentation, main integration/push and the final clean package freeze are
 complete. The [housekeeping checkpoint](nbreq_housekeeping.md) records explicit public-upload
-approval, source/package identities and updated hosted CI. Helper publication and registry-only
-proof remain release gates. This README slice itself made no GDS changes or crate publication.
+approval, source/package identities and updated hosted CI. The subsequent [publication pass](nbreq_020_publication.md)
+completed helper/root publication, registry-only checks and actual public README/docs inspection.
+This README slice itself made no GDS changes or crate publication.
 
 ## Original main reconciliation check — subsequently completed by housekeeping
 

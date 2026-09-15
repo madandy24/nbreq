@@ -1,0 +1,11 @@
+    Updating crates.io index
+     Locking 106 packages to latest Rust 1.85 compatible versions
+      Adding icu_collections v2.1.1 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_locale_core v2.1.1 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_normalizer v2.1.1 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_normalizer_data v2.1.1 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_properties v2.1.2 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_properties_data v2.1.2 (available: v2.3.0, requires Rust 1.88)
+      Adding icu_provider v2.1.1 (available: v2.3.1, requires Rust 1.88)
+      Adding idna_adapter v1.2.1 (available: v1.2.2, requires Rust 1.86)
+      Adding wasip2 v1.0.1+wasi-0.2.4 (available: v1.0.4+wasi-0.2.12, requires Rust 1.87.0)

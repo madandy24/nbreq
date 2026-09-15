@@ -1,0 +1,328 @@
+[
+  {
+    "label": "stable-i686-pc-windows-msvc-rustc",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "rustc",
+      "-vV"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.2960000000020955
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-resolve",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "generate-lockfile"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 1.4219999999986612
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-metadata",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "metadata",
+      "--locked",
+      "--all-features",
+      "--format-version",
+      "1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.7030000000013388
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-default",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 44.01600000000326
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-native",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "native,v020",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 9.764999999999418
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-minimal",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "v020",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 3.2190000000045984
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-test-support",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--features",
+      "test-support",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 13.31199999999808
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-resolver-absent",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "check",
+      "--locked",
+      "--bin",
+      "resolver_probe",
+      "--no-default-features",
+      "--features",
+      "native,v020"
+    ],
+    "exit_code": 101,
+    "passed": true,
+    "elapsed_s": 14.828000000001339
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-fresh-testing-absent",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "check",
+      "--locked",
+      "--bin",
+      "testing_probe"
+    ],
+    "exit_code": 101,
+    "passed": true,
+    "elapsed_s": 3.25
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-resolve",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "generate-lockfile"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 5.796999999998661
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-metadata",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "metadata",
+      "--locked",
+      "--all-features",
+      "--format-version",
+      "1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 0.15600000000267755
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-default",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 1.8439999999973224
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-native",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "native,v020",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 2.5939999999973224
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-minimal",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "v020",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 4.093000000000757
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-test-support",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "test",
+      "--locked",
+      "--lib",
+      "--features",
+      "test-support",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 2.860000000000582
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-resolver-absent",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "check",
+      "--locked",
+      "--bin",
+      "resolver_probe",
+      "--no-default-features",
+      "--features",
+      "native,v020"
+    ],
+    "exit_code": 101,
+    "passed": true,
+    "elapsed_s": 0.6869999999980791
+  },
+  {
+    "label": "stable-i686-pc-windows-msvc-mio-coexist-testing-absent",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "check",
+      "--locked",
+      "--bin",
+      "testing_probe"
+    ],
+    "exit_code": 101,
+    "passed": true,
+    "elapsed_s": 0.6100000000005821
+  },
+  {
+    "label": "build-examples",
+    "command": [
+      "rustup",
+      "run",
+      "stable-i686-pc-windows-msvc",
+      "cargo",
+      "build",
+      "--locked",
+      "--examples",
+      "--manifest-path",
+      "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-020-registry-p08zjmyf\\nbreq-0.2.0\\Cargo.toml"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 58.171000000002095
+  },
+  {
+    "label": "examples",
+    "command": [
+      "C:\\Users\\andre\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+      "C:\\User\\projects\\nbreq\\tools\\release-consumer\\check_examples.py",
+      "--bin-dir",
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\build\\debug\\examples",
+      "--out",
+      "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\published-windows-x86\\examples"
+    ],
+    "exit_code": 0,
+    "passed": true,
+    "elapsed_s": 2.187999999994645
+  }
+]

@@ -1,0 +1,36 @@
+{
+  "mode": "published",
+  "archive_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+  "package_vcs": {
+    "git": {
+      "sha1": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6"
+    },
+    "path_in_vcs": ""
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "machine": "AMD64",
+  "toolchains": [
+    "stable-i686-pc-windows-msvc"
+  ],
+  "temporary_workspace": "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-020-registry-p08zjmyf",
+  "registry_only": true,
+  "support_from_registry": true,
+  "helper_hashes": {
+    "nbreq-darwin": [
+      "0.1.0",
+      "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839"
+    ],
+    "nbreq-winpoll": [
+      "0.1.1",
+      "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696"
+    ]
+  },
+  "test_source_files": {
+    "src\\common_http.rs": "c862c5095706bfccbaa61f7cd4390384f44a982692bb3b66b1f53c3ca9e5584e",
+    "src\\fixture.rs": "53f7ede41f3a9f8cb29c68991a9a0c9e44aa09c30dc49dae8f940e1f8eb9fa32",
+    "src\\lib.rs": "a669852eef9f080ce9a04c8372e7ec90d6e49a48a0890aeb90e24d1e6c0cea56",
+    "src\\v020.rs": "9bdb2b81b975b8280d26f09fd91fdfeedf06b94c70766ead3cc3a6e56ddaa066",
+    "probes\\resolver.rs": "10ffb318d1e84baebaacd3f2ae4dfb0599627d5f926dae08df52fc8a2ef3a5cb",
+    "probes\\testing.rs": "a748342fd939ee8269e70d486f84c3c89e5fd839ce6d7eeeb2df73e9917f61fa"
+  }
+}

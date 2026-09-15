@@ -2,8 +2,9 @@
 
 Opened 2026-09-15. **Historical technical pass complete; final README/examples, main integration and local package freeze are recorded in [housekeeping](nbreq_housekeeping.md).** The owner authorized starting R5, with a separate README/examples refresh
 when work returns to main-tree integration. This report records the technical checks before
-that presentation pass. Root/helper publication, registry-only acceptance and the final package
-freeze remain separate gates in the [release plan](nbreq_020_release_plan.md).
+that presentation pass. Root/helper publication, registry-only acceptance and final package
+verification subsequently completed under the [publication pass](nbreq_020_publication.md);
+this report retains the original technical source and evidence identities.
 
 ## Resume checkpoint
 

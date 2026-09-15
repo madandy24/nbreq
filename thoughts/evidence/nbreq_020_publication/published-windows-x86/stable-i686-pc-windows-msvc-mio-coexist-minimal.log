@@ -1,0 +1,12 @@
+   Compiling windows-sys v0.61.2
+   Compiling mio v1.2.3
+   Compiling nbreq-release-consumer v0.0.0 (C:\Users\andre\AppData\Local\Temp\nbreq-020-registry-p08zjmyf\stable-i686-pc-windows-msvc-mio-coexist)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.92s
+     Running unittests src\lib.rs (C:\User\projects\nbreq\target\release-publication-20260915\published-windows-x86\build\debug\deps\nbreq_release_consumer-0fc9c602842a39e7.exe)
+
+running 2 tests
+test v020::minimal_build_rejects_network_construction ... ok
+test v020::shared_response_can_transfer_after_last_alias_drops ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

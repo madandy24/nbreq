@@ -1,0 +1,49 @@
+{
+  "status": "passed",
+  "steps": 19,
+  "cases": [
+    {
+      "label": "stable-i686-pc-windows-msvc-fresh",
+      "registry_only": true,
+      "support_from_registry": true,
+      "packages": {
+        "nbreq": {
+          "version": "0.2.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "nbreq-darwin": {
+          "version": "0.1.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "nbreq-winpoll": {
+          "version": "0.1.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      },
+      "lock_sha256": "01e7a99656ad116ba629b3585802f47c827569753b822305216081d86ba40074"
+    },
+    {
+      "label": "stable-i686-pc-windows-msvc-mio-coexist",
+      "registry_only": true,
+      "support_from_registry": true,
+      "packages": {
+        "nbreq": {
+          "version": "0.2.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "nbreq-darwin": {
+          "version": "0.1.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "nbreq-winpoll": {
+          "version": "0.1.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      },
+      "lock_sha256": "64afbc45ed0cf37bcb4425f0751dabf5cdef36803b6efddbbfe361239b7ee793"
+    }
+  ],
+  "registry_only": true,
+  "support_from_registry": true,
+  "archive_sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721"
+}

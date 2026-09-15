@@ -1,0 +1,30 @@
+[package]
+name = "nbreq-release-consumer"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+autobins = false
+
+[workspace]
+
+[features]
+default = ["native", "resolver", "v020"]
+native = ["nbreq/native"]
+resolver = ["native", "nbreq/resolver"]
+test-support = ["nbreq/test-support"]
+v020 = []
+
+[dependencies]
+nbreq = { version = "=0.2.0", default-features = false }
+
+[[bin]]
+name = "resolver_probe"
+path = "probes/resolver.rs"
+
+[[bin]]
+name = "testing_probe"
+path = "probes/testing.rs"
+
+[lints.rust]
+unsafe_code = "forbid"

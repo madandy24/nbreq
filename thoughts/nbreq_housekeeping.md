@@ -3,6 +3,10 @@
 2026-09-15. Owner authorized housekeeping after the README/examples pass: reconcile both trees,
 commit completed work, integrate the release history into main and prepare final verification.
 
+Subsequent release: **nbreq 0.2.0 is published and tagged at `d866179`**, with registry-only
+platform/MSRV and x86 checks complete. See [publication](nbreq_020_publication.md) for current
+state. This report retains the earlier housekeeping source and package identities.
+
 ## Resume checkpoint
 
 | Item | State |
@@ -54,7 +58,8 @@ Wine DNS, older clean-candidate and new housekeeping archives, **9,889,225 bytes
 The normal fast-forward push to `https://github.com/madandy24/nbreq` main succeeded; the exact
 remote commit was independently confirmed. Archive hashes and inventories are recorded;
 the inherited archive audit found no credential-shaped matches. The local snapshot branch
-was excluded. Helper/root publication and release tags still require their own authorization.
+was excluded. Helper/root publication and the release tag occurred later under the owner's
+continuation instruction; their exact identities and verification belong to the publication record.
 
 ## CI observation — Intel Mac fragmented-response deadline
 

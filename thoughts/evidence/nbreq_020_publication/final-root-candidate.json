@@ -1,0 +1,25 @@
+{
+  "source_commit": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+  "sha256": "d165747c1d62c0fa0705d901bec454ab0cae27738b4e0342bd23286ef1bfb721",
+  "bytes": 343650,
+  "files": 95,
+  "package": "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\final-root-dry-run\\package\\tmp-crate\\nbreq-0.2.0.crate",
+  "changed_from_previous_registry_candidate": [
+    "nbreq-0.2.0/.cargo_vcs_info.json",
+    "nbreq-0.2.0/docs/getting-started.md"
+  ],
+  "rustdoc_command": [
+    "cargo",
+    "doc",
+    "--locked",
+    "--no-deps",
+    "--manifest-path",
+    "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-020-final-doc-ugdfidfa\\nbreq-0.2.0\\Cargo.toml",
+    "--target-dir",
+    "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\final-root-dry-run"
+  ],
+  "rustdoc_exit_code": 0,
+  "rendered_examples_link": "https://github.com/madandy24/nbreq/blob/432509b8d2d198cb0139def322f2cc82cd4a76c6/examples/README.md",
+  "isolated_source": "C:\\Users\\andre\\AppData\\Local\\Temp\\nbreq-020-final-doc-ugdfidfa",
+  "registry_helpers": true
+}

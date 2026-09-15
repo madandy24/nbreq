@@ -1,0 +1,22 @@
+[
+  {
+    "name": "nbreq-darwin",
+    "version": "0.1.0",
+    "sha256": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839",
+    "bytes": 11376,
+    "created_at": "2026-09-15T08:17:12.941219Z",
+    "url": "https://crates.io/crates/nbreq-darwin/0.1.0",
+    "index_visible": true,
+    "download_matches_frozen_candidate": true
+  },
+  {
+    "name": "nbreq-winpoll",
+    "version": "0.1.1",
+    "sha256": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696",
+    "bytes": 13033,
+    "created_at": "2026-09-15T08:17:49.636911Z",
+    "url": "https://crates.io/crates/nbreq-winpoll/0.1.1",
+    "index_visible": true,
+    "download_matches_frozen_candidate": true
+  }
+]

@@ -1,0 +1,75 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling stable_deref_trait v1.2.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling windows-link v0.2.1
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_properties_data v2.1.2
+   Compiling cfg-if v1.0.4
+   Compiling getrandom v0.2.17
+   Compiling untrusted v0.9.0
+   Compiling smallvec v1.16.1
+   Compiling zeroize v1.9.0
+   Compiling windows-sys v0.61.2
+   Compiling rustls v0.23.45
+   Compiling cc v1.4.6
+   Compiling httparse v1.10.1
+   Compiling rustls-pki-types v1.15.1
+   Compiling getrandom v0.3.4
+   Compiling once_cell v1.21.4
+   Compiling log v0.4.34
+   Compiling percent-encoding v2.3.2
+   Compiling subtle v2.6.1
+   Compiling utf8_iter v1.0.4
+   Compiling form_urlencoded v1.2.2
+   Compiling windows-strings v0.5.1
+   Compiling windows-result v0.4.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.5
+   Compiling windows-registry v0.6.1
+   Compiling ring v0.17.14
+   Compiling synstructure v0.13.2
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling rustls-webpki v0.103.15
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling mio v1.2.3
+   Compiling nbreq-winpoll v0.1.1
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling icu_provider v2.1.1
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling nbreq v0.2.0
+   Compiling nbreq-release-consumer v0.0.0 (C:\Users\andre\AppData\Local\Temp\nbreq-020-registry-p08zjmyf\stable-i686-pc-windows-msvc-fresh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.69s
+     Running unittests src\lib.rs (C:\User\projects\nbreq\target\release-publication-20260915\published-windows-x86\build\debug\deps\nbreq_release_consumer-4cd901a7f29b1773.exe)
+
+running 9 tests
+test common_http::cancellation_delivers_one_callback_before_join_returns ... ok
+test common_http::explicit_http_borrow_and_clone_survive_shutdown ... ok
+test common_http::manual_waiter_is_driven_by_its_owner ... ok
+test v020::native::bounded_http_tracks_retention_and_checks_spare_upload_capacity ... ok
+test v020::native::fixed_upload_and_streamed_response_use_public_owners ... ok
+test v020::native::manual_tcp_uses_passive_io_between_owner_drives ... ok
+test v020::native::tcp_refusal_preserves_input_and_half_close_keeps_reader ... ok
+test v020::public_resolver_configuration_is_available ... ok
+test v020::shared_response_can_transfer_after_last_alias_drops ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+

@@ -1,0 +1,17 @@
+A01-http-blocking-get
+A02-http-blocking-post
+A03-http-full-get
+A04-http-full-post
+A05-http-nonblocking
+A06-http-callbacks
+A08-http-manual
+A09-http-streaming
+A10-http-memory-limits
+A11-http-owner-lifecycle
+http-status-is-response
+response-limit-failure
+A07-http-cancel
+C01-tcp-blocking
+C02-tcp-nonblocking
+C03-tcp-manual
+Example checks passed: 16 executions
