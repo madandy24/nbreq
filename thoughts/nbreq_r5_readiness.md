@@ -1,6 +1,6 @@
 # R5 release readiness
 
-Opened 2026-09-15. **Technical pass complete; README/examples refreshed; integration/final package gates remain.** The owner authorized starting R5, with a separate README/examples refresh
+Opened 2026-09-15. **Historical technical pass complete; final README/examples, main integration and local package freeze are recorded in [housekeeping](nbreq_housekeeping.md).** The owner authorized starting R5, with a separate README/examples refresh
 when work returns to main-tree integration. This report records the technical checks before
 that presentation pass. Root/helper publication, registry-only acceptance and the final package
 freeze remain separate gates in the [release plan](nbreq_020_release_plan.md).
@@ -9,15 +9,15 @@ freeze remain separate gates in the [release plan](nbreq_020_release_plan.md).
 
 | Field | State |
 | --- | --- |
-| Worktree | `target/worktrees/nbreq-r5`, branch `codex/r5-release`, based on pushed pre-R5 `620751b`. Preserve the main checkout's mixed work. |
+| Worktree | Original worktree `target/worktrees/nbreq-r5`, branch `codex/r5-release`, based on pre-R5 `620751b`. Main's mixed work was preserved in `cb18acc` and reconciled during housekeeping; integrated main `451a769` is pushed. |
 | Runtime source | Rust implementation is unchanged from `a44cac5`; R5 now raises rustls to 0.23.45 after a newly published advisory. Current root/tool manifests and locks change accordingly. One existing test gains diagnostic context without weakening its assertion. |
 | Hosted matrix | Patched source **`bdf5db590e4da6ee5a1534f408a370787453cff5`** passes all 10 jobs in run `34930899817`: eight complete platform/stable/MSRV verifiers plus consumer graphs, advisory and license jobs. Initial run `34930282926` passed its eight verification jobs and license job; only the newly discovered advisory failed. Both runs are retained. Local helper overrides remain explicit. |
 | x86 companion | Patched source passes the complete Windows i686 verifier **24/24 in 107.003 s** on local Rust 1.97.1. Initial full verifier failed one all-feature HTTPS assertion (420/421 passed); diagnostic rerun passed 421/421. Preserve that unconfirmed initial failure and inspect the richer diagnostic if it recurs. |
 | Advisories | Root 0.23.42 scan fails on RUSTSEC-2026-0285. Patched root and both distinct final consumer locks pass with no reported vulnerabilities/warnings against DB `e2e640471715167f73e22eaf761f2e547adafeec`, dated 2026-09-14T18:06:06+02:00, cargo-audit 0.22.2. Existing test-only time exception remains documented; no new exception was added. |
 | Licenses | Original graph regenerates identically. Patched generated report changes only rustls 0.23.42 -> 0.23.45 and passes the hosted byte-for-byte regeneration check. |
-| README/examples | Owner-approved 17-program A/B/C refresh and consumer-focused README are implemented and mirrored to main. [Examples](nbreq_examples_refresh.md) retain Windows stable/MSRV, local/live and normalized-package checks; the [README](nbreq_readme_refresh.md) has four compiled snippets and verified package links/anchors. Main integration, updated hosted CI and final clean package freeze remain. |
+| README/examples | Owner-approved 17-program A/B/C refresh and consumer-focused README are committed and integrated into main. [Examples](nbreq_examples_refresh.md) and [README](nbreq_readme_refresh.md) retain their scoped evidence; [housekeeping](nbreq_housekeeping.md) records the clean final packages, local consumers and updated hosted CI. |
 | Evidence | [Manifest](evidence/nbreq_r5_artifacts.json) and [299-file sealed archive](evidence/nbreq-r5-technical-20260915.tar.gz), 4,629,805 bytes, SHA256 `f6f02579763add7843756e8d489a2d44c3f531e04acf13751558c392cacc574f`. Raw working directory `target/release-r5-20260915`. Completed R4 four-hour soaks were not repeated. |
-| Remote checkpoint | Code/workflow commit `bdf5db5` is already pushed and hosted proof is public. Automatic approval review rejected pushing the new 4.63 MB evidence archive, stating that the earlier owner approval covered a different payload. Final report/archive commit remains local pending explicit approval for this archive and the same public `madandy24/nbreq` destination. This does not block the README/examples discussion. |
+| Remote checkpoint | Original tested code/workflow `bdf5db5` remains the source identity of this technical archive. The owner subsequently approved the four housekeeping/main archives explicitly; main `451a769`, including this report/archive and the final presentation, is pushed. The earlier approval gap is resolved. |
 
 The existing workflow only ran on main pushes, PRs or manual dispatch, so the pre-R5 branch push
 did not supply hosted candidate proof. This pass adds a Windows MSRV job alongside the existing
@@ -48,9 +48,10 @@ the historical fault; NBReq's own dependency graph does not include it. One prel
 needed missing crate downloads; another overbroad probe assertion was corrected. Those were
 verification-tool issues, not changes to the candidate's dependencies or runtime acceptance.
 
-The scoped changes were mirrored into main after content checks, preserving its unreleased
-notices and otherwise different F5 tool dependency versions. That tool's lock was updated in
-place only for rustls and the already-accepted Wine graph. Main remains unmerged and uncommitted.
+At that technical checkpoint, scoped changes were mirrored into main after content checks,
+preserving its then-unreleased notices and different F5 tool dependency versions. That tool's
+lock changed only for rustls and the accepted Wine graph. Subsequent housekeeping reconciled
+and committed the remaining work and pushed main; the original state remains in its snapshot.
 Consumers adopting the new minimum may need to update their own Cargo.lock; GDS rebuild and
 application acceptance remain owned by the GDS work.
 

@@ -1,19 +1,19 @@
 # R5 examples refresh
 
-Opened 2026-09-15. Status: implemented, verified on Windows and mirrored to main. Owner approved the A/B/C learning
+Opened 2026-09-15. Status: implemented, verified and committed; integrated main `451a769` is pushed. Owner approved the A/B/C learning
 sequence and removal of superseded examples, with an explicit cancellation demonstration.
 
 ## Resume checkpoint
 
 | Field | State |
 | --- | --- |
-| Workspace | Continue from R5 `b3abd5c` in `target/worktrees/nbreq-r5`; mirror scoped changes to main after comparison. No merge or publication implied. |
+| Workspace | Implemented in R5 and committed as `655a6e3`; reconciled main `451a769` is pushed. Use [housekeeping](nbreq_housekeeping.md) and the release plan for current source and verification identities. |
 | Scope | 17 complete programs: A01–A11 HTTP, B01–B03 DNS, C01–C03 TCP. HTTP cancellation is A07, ahead of manual/streaming/budgets/owner lifecycle. |
 | Endpoints | HTTP defaults to httpbin HTTPS GET/POST, DNS to example.com. Destinations are overridable. Cancellation and default TCP use bounded local fixtures. |
 | Teaching rules | One main idea per example; real public NBReq calls visible in each program. Short finite deadlines, verified TLS, clear shutdown, no Tokio or implied async/await API. Shared support contains server plumbing only. |
 | Cancellation proof | Local server acknowledges receipt and withholds the response. Cancel the handle; require the canonical `Completion::Cancelled`, not merely a successful cancel command. |
 | Validation | Build all examples on stable and Rust 1.85, native-only feature build, lint/format/doctests, local HTTP/TCP/cancellation execution, separately labelled live HTTPS/DNS smoke. Check packaged sources and links; automate executable examples in CI. |
-| Remaining | README presentation is now implemented; see the [README checkpoint](nbreq_readme_refresh.md). Final integration/package/registry gates remain. Main mirror preserves its unreleased notices and unrelated work. |
+| Remaining | README presentation, main integration/push and final local packages/consumers are complete. [Housekeeping](nbreq_housekeeping.md) records the updated hosted run. Helper publication and registry-only proof remain separate release gates. |
 
 The old examples may be removed after replacement; Git retains their history. Historical reports
 and sealed evidence continue to describe their original seven-example inventory.

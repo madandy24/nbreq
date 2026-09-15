@@ -1,0 +1,1611 @@
+{
+  "schema": "nbreq-housekeeping-hosted-v1",
+  "source_commit": "451a7699248c60359dbda6b221e0dc9daa544719",
+  "hosted_run": 34943196228,
+  "hosted_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228",
+  "jobs_passed": 10,
+  "jobs": [
+    {
+      "id": 104299326479,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLlsDw",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299326479",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299326479",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:25Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:46:57Z",
+      "name": "RustSec advisory scan",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:56Z",
+          "completed_at": "2026-09-15T07:43:57Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:43:59Z"
+        },
+        {
+          "name": "Install stable Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:43:59Z",
+          "completed_at": "2026-09-15T07:43:59Z"
+        },
+        {
+          "name": "Select stable Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:43:59Z",
+          "completed_at": "2026-09-15T07:43:59Z"
+        },
+        {
+          "name": "Install cargo-audit",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:43:59Z",
+          "completed_at": "2026-09-15T07:46:51Z"
+        },
+        {
+          "name": "Scan exact lock graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:46:51Z",
+          "completed_at": "2026-09-15T07:46:54Z"
+        },
+        {
+          "name": "Record advisory database identity",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:46:54Z",
+          "completed_at": "2026-09-15T07:46:54Z"
+        },
+        {
+          "name": "Preserve advisory evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:46:54Z",
+          "completed_at": "2026-09-15T07:46:55Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-15T07:46:55Z",
+          "completed_at": "2026-09-15T07:46:55Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-15T07:46:55Z",
+          "completed_at": "2026-09-15T07:46:55Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299326479",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000000174,
+      "runner_name": "GitHub Actions 1000000174",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299289695,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjcXw",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299289695",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299289695",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:46:03Z",
+      "name": "Component and dependency licenses",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:43:58Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:58Z",
+          "completed_at": "2026-09-15T07:44:01Z"
+        },
+        {
+          "name": "Install stable Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:01Z",
+          "completed_at": "2026-09-15T07:44:01Z"
+        },
+        {
+          "name": "Select stable Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:01Z",
+          "completed_at": "2026-09-15T07:44:01Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:01Z",
+          "completed_at": "2026-09-15T07:44:02Z"
+        },
+        {
+          "name": "Install cargo-about",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:02Z",
+          "completed_at": "2026-09-15T07:45:50Z"
+        },
+        {
+          "name": "Regenerate locked license report",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:45:50Z",
+          "completed_at": "2026-09-15T07:46:00Z"
+        },
+        {
+          "name": "Reject license-report drift",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:46:00Z",
+          "completed_at": "2026-09-15T07:46:00Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-15T07:46:00Z",
+          "completed_at": "2026-09-15T07:46:00Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-15T07:46:00Z",
+          "completed_at": "2026-09-15T07:46:00Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299289695",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000000176,
+      "runner_name": "GitHub Actions 1000000176",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299289692,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjcXA",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299289692",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299289692",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:47:11Z",
+      "name": "Verify (Ubuntu stable)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:43:57Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:44:00Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:00Z",
+          "completed_at": "2026-09-15T07:44:02Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:02Z",
+          "completed_at": "2026-09-15T07:44:02Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:02Z",
+          "completed_at": "2026-09-15T07:44:03Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:03Z",
+          "completed_at": "2026-09-15T07:44:03Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:03Z",
+          "completed_at": "2026-09-15T07:44:06Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:06Z",
+          "completed_at": "2026-09-15T07:46:21Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:46:21Z",
+          "completed_at": "2026-09-15T07:46:31Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:46:31Z",
+          "completed_at": "2026-09-15T07:47:07Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:47:07Z",
+          "completed_at": "2026-09-15T07:47:09Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:47:09Z",
+          "completed_at": "2026-09-15T07:47:09Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:47:09Z",
+          "completed_at": "2026-09-15T07:47:09Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299289692",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000000175,
+      "runner_name": "GitHub Actions 1000000175",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299313011,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLk3cw",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299313011",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299313011",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:22Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:49:59Z",
+      "name": "Verify (Windows stable)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:43:57Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:44:05Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:05Z",
+          "completed_at": "2026-09-15T07:44:09Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:09Z",
+          "completed_at": "2026-09-15T07:44:10Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:10Z",
+          "completed_at": "2026-09-15T07:44:12Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:12Z",
+          "completed_at": "2026-09-15T07:44:12Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:12Z",
+          "completed_at": "2026-09-15T07:44:23Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:23Z",
+          "completed_at": "2026-09-15T07:48:26Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:48:26Z",
+          "completed_at": "2026-09-15T07:48:47Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:48:47Z",
+          "completed_at": "2026-09-15T07:49:54Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:49:54Z",
+          "completed_at": "2026-09-15T07:49:55Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:49:55Z",
+          "completed_at": "2026-09-15T07:49:57Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:49:57Z",
+          "completed_at": "2026-09-15T07:49:57Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299313011",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000000181,
+      "runner_name": "GitHub Actions 1000000181",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299290357,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLje9Q",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299290357",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299290357",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:44:02Z",
+      "completed_at": "2026-09-15T07:48:39Z",
+      "name": "Verify (macOS 15 Apple Silicon MSRV 1.85)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:44:02Z",
+          "completed_at": "2026-09-15T07:44:03Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:44:03Z",
+          "completed_at": "2026-09-15T07:44:08Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:08Z",
+          "completed_at": "2026-09-15T07:44:17Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:17Z",
+          "completed_at": "2026-09-15T07:44:17Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:17Z",
+          "completed_at": "2026-09-15T07:44:17Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:17Z",
+          "completed_at": "2026-09-15T07:44:17Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:17Z",
+          "completed_at": "2026-09-15T07:44:21Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:21Z",
+          "completed_at": "2026-09-15T07:47:16Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:47:16Z",
+          "completed_at": "2026-09-15T07:48:01Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:48:01Z",
+          "completed_at": "2026-09-15T07:48:34Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:48:34Z",
+          "completed_at": "2026-09-15T07:48:36Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:48:36Z",
+          "completed_at": "2026-09-15T07:48:36Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:48:36Z",
+          "completed_at": "2026-09-15T07:48:38Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299290357",
+      "labels": [
+        "macos-15"
+      ],
+      "runner_id": 1000000177,
+      "runner_name": "GitHub Actions 1000000177",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299290264,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjemA",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299290264",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299290264",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:43:59Z",
+      "completed_at": "2026-09-15T07:47:57Z",
+      "name": "Verify (macOS 15 Apple Silicon stable)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:59Z",
+          "completed_at": "2026-09-15T07:44:00Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:44:00Z",
+          "completed_at": "2026-09-15T07:44:04Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:04Z",
+          "completed_at": "2026-09-15T07:44:04Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:04Z",
+          "completed_at": "2026-09-15T07:44:04Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:04Z",
+          "completed_at": "2026-09-15T07:44:04Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:04Z",
+          "completed_at": "2026-09-15T07:44:04Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:04Z",
+          "completed_at": "2026-09-15T07:44:06Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:06Z",
+          "completed_at": "2026-09-15T07:46:32Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:46:32Z",
+          "completed_at": "2026-09-15T07:47:19Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:47:19Z",
+          "completed_at": "2026-09-15T07:47:53Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:47:53Z",
+          "completed_at": "2026-09-15T07:47:54Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:47:54Z",
+          "completed_at": "2026-09-15T07:47:55Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:47:55Z",
+          "completed_at": "2026-09-15T07:47:56Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299290264",
+      "labels": [
+        "macos-15"
+      ],
+      "runner_id": 1000000178,
+      "runner_name": "GitHub Actions 1000000178",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299290512,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjfkA",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299290512",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299290512",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:43:57Z",
+      "completed_at": "2026-09-15T07:52:45Z",
+      "name": "Verify (macOS 15 Intel MSRV 1.85)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:10Z",
+          "completed_at": "2026-09-15T07:43:12Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:12Z",
+          "completed_at": "2026-09-15T07:43:20Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:43:21Z",
+          "completed_at": "2026-09-15T07:43:40Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:43:40Z",
+          "completed_at": "2026-09-15T07:43:40Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:43:40Z",
+          "completed_at": "2026-09-15T07:43:40Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:43:40Z",
+          "completed_at": "2026-09-15T07:43:40Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:43:40Z",
+          "completed_at": "2026-09-15T07:43:45Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:43:45Z",
+          "completed_at": "2026-09-15T07:48:54Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:48:54Z",
+          "completed_at": "2026-09-15T07:49:53Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:49:53Z",
+          "completed_at": "2026-09-15T07:51:51Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:51:51Z",
+          "completed_at": "2026-09-15T07:51:52Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:51:52Z",
+          "completed_at": "2026-09-15T07:51:53Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:51:53Z",
+          "completed_at": "2026-09-15T07:51:54Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299290512",
+      "labels": [
+        "macos-15-intel"
+      ],
+      "runner_id": 1000000179,
+      "runner_name": "GitHub Actions 1000000179",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299328824,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLl1OA",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299328824",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299328824",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:26Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:50:27Z",
+      "name": "Verify (Windows MSRV 1.85)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:56Z",
+          "completed_at": "2026-09-15T07:43:57Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:44:05Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:05Z",
+          "completed_at": "2026-09-15T07:44:23Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:23Z",
+          "completed_at": "2026-09-15T07:44:23Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:23Z",
+          "completed_at": "2026-09-15T07:44:25Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:25Z",
+          "completed_at": "2026-09-15T07:44:25Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:25Z",
+          "completed_at": "2026-09-15T07:44:36Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:36Z",
+          "completed_at": "2026-09-15T07:48:41Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:48:41Z",
+          "completed_at": "2026-09-15T07:49:07Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:49:07Z",
+          "completed_at": "2026-09-15T07:50:22Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:50:22Z",
+          "completed_at": "2026-09-15T07:50:23Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:50:23Z",
+          "completed_at": "2026-09-15T07:50:25Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:50:25Z",
+          "completed_at": "2026-09-15T07:50:26Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299328824",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000000182,
+      "runner_name": "GitHub Actions 1000000182",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299289613,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjcDQ",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299289613",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299289613",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:54:20Z",
+      "completed_at": "2026-09-15T08:02:39Z",
+      "name": "Verify (macOS 15 Intel stable)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:54:22Z",
+          "completed_at": "2026-09-15T07:54:24Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:54:24Z",
+          "completed_at": "2026-09-15T07:54:31Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:54:31Z",
+          "completed_at": "2026-09-15T07:54:49Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:54:49Z",
+          "completed_at": "2026-09-15T07:54:49Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:54:49Z",
+          "completed_at": "2026-09-15T07:54:49Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-15T07:54:49Z",
+          "completed_at": "2026-09-15T07:54:49Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:54:49Z",
+          "completed_at": "2026-09-15T07:54:55Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:54:55Z",
+          "completed_at": "2026-09-15T08:00:18Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T08:00:18Z",
+          "completed_at": "2026-09-15T08:01:15Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T08:01:15Z",
+          "completed_at": "2026-09-15T08:02:32Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T08:02:32Z",
+          "completed_at": "2026-09-15T08:02:34Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T08:02:34Z",
+          "completed_at": "2026-09-15T08:02:35Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T08:02:35Z",
+          "completed_at": "2026-09-15T08:02:36Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299289613",
+      "labels": [
+        "macos-15-intel"
+      ],
+      "runner_id": 1000000184,
+      "runner_name": "GitHub Actions 1000000184",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104299289890,
+      "run_id": 34943196228,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/madandy24/nbreq/actions/runs/34943196228",
+      "run_attempt": 2,
+      "node_id": "CR_kwDOUCHQes8AAAAYSLjdIg",
+      "head_sha": "451a7699248c60359dbda6b221e0dc9daa544719",
+      "url": "https://api.github.com/repos/madandy24/nbreq/actions/jobs/104299289890",
+      "html_url": "https://github.com/madandy24/nbreq/actions/runs/34943196228/job/104299289890",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-15T07:54:17Z",
+      "started_at": "2026-09-15T07:43:56Z",
+      "completed_at": "2026-09-15T07:46:55Z",
+      "name": "Verify (Ubuntu MSRV 1.85)",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-15T07:43:57Z",
+          "completed_at": "2026-09-15T07:43:58Z"
+        },
+        {
+          "name": "Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-15T07:43:58Z",
+          "completed_at": "2026-09-15T07:44:01Z"
+        },
+        {
+          "name": "Install Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-15T07:44:01Z",
+          "completed_at": "2026-09-15T07:44:07Z"
+        },
+        {
+          "name": "Select Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-15T07:44:07Z",
+          "completed_at": "2026-09-15T07:44:07Z"
+        },
+        {
+          "name": "Record toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-15T07:44:07Z",
+          "completed_at": "2026-09-15T07:44:07Z"
+        },
+        {
+          "name": "Record macOS architecture",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-15T07:44:07Z",
+          "completed_at": "2026-09-15T07:44:07Z"
+        },
+        {
+          "name": "Fetch exact locked graph",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-15T07:44:07Z",
+          "completed_at": "2026-09-15T07:44:09Z"
+        },
+        {
+          "name": "Run complete offline verifier",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-15T07:44:09Z",
+          "completed_at": "2026-09-15T07:46:05Z"
+        },
+        {
+          "name": "Build and run examples against local fixtures",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-15T07:46:05Z",
+          "completed_at": "2026-09-15T07:46:17Z"
+        },
+        {
+          "name": "Verify fresh consumer dependency graphs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-15T07:46:17Z",
+          "completed_at": "2026-09-15T07:46:51Z"
+        },
+        {
+          "name": "Preserve consumer locks and results",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-15T07:46:51Z",
+          "completed_at": "2026-09-15T07:46:52Z"
+        },
+        {
+          "name": "Post Check out source",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-15T07:46:52Z",
+          "completed_at": "2026-09-15T07:46:53Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-15T07:46:53Z",
+          "completed_at": "2026-09-15T07:46:53Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/madandy24/nbreq/check-runs/104299289890",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000000183,
+      "runner_name": "GitHub Actions 1000000183",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions"
+    }
+  ],
+  "consumer_jobs": [
+    {
+      "job": "consumers-macOS 15 Intel stable",
+      "platform": "macOS-15.7.9-x86_64-i386-64bit-Mach-O",
+      "machine": "x86_64",
+      "toolchains": [
+        "stable"
+      ],
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/stable-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/stable-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "3f27a7b508e3a0c2a86752e978bc23c80422544bd00ea3a21381459b648a9c0d"
+    },
+    {
+      "job": "consumers-macOS 15 Intel MSRV 1.85",
+      "platform": "macOS-15.7.9-x86_64-i386-64bit-Mach-O",
+      "machine": "x86_64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-apple-darwin\nrelease: 1.85.0\nLLVM version: 19.1.7",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/1.85.0-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/1.85.0-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "231e0273d839583f2ea67126e321568661a3f98b5c8343d12ee3c59b21055066"
+    },
+    {
+      "job": "consumers-Ubuntu MSRV 1.85",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-unknown-linux-gnu\nrelease: 1.85.0\nLLVM version: 19.1.7",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/1.85.0-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/1.85.0-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "7af77b84cdd34e6d6ba00955cd93b400e4fd7a78fd2d2cec6df9b23859ed4f9c"
+    },
+    {
+      "job": "consumers-macOS 15 Apple Silicon MSRV 1.85",
+      "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: aarch64-apple-darwin\nrelease: 1.85.0\nLLVM version: 19.1.7",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/1.85.0-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/1.85.0-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "bca176c58aa14a62528d9b9f29f96840a13827f6e43f96f4298d03dc0491ab66"
+    },
+    {
+      "job": "consumers-Windows stable",
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "machine": "AMD64",
+      "toolchains": [
+        "stable"
+      ],
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.1\nLLVM version: 22.1.8",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/stable-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/stable-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "0ee6f92c918af494275a69ca04097891aeec99d72b4a7c30404a87f652e15829"
+    },
+    {
+      "job": "consumers-Windows MSRV 1.85",
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "machine": "AMD64",
+      "toolchains": [
+        "1.85.0"
+      ],
+      "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-pc-windows-msvc\nrelease: 1.85.0\nLLVM version: 19.1.7",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/1.85.0-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/1.85.0-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "978d65603ee57a235af2dba05ff421f0339d2e7956a3581674f5faaff366b187"
+    },
+    {
+      "job": "consumers-macOS 15 Apple Silicon stable",
+      "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "toolchains": [
+        "stable"
+      ],
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/stable-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/stable-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "8aa4b5a8cb79701b2f08011e354c6842c0c3679e9a67cec6df713006f191bf2f"
+    },
+    {
+      "job": "consumers-Ubuntu stable",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "toolchains": [
+        "stable"
+      ],
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+      "steps": 17,
+      "locks": [
+        {
+          "path": "nbreq-consumers/stable-fresh/Cargo.lock",
+          "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+        },
+        {
+          "path": "nbreq-consumers/stable-mio-coexist/Cargo.lock",
+          "sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef"
+        }
+      ],
+      "example_cases": 16,
+      "artifact_sha256": "ca5e35380d66ebbccfbcddd6a0c6b765f4ccc7e560e9cadd29d691c0e877ae06"
+    }
+  ],
+  "consumer_stages": 136,
+  "consumer_cases": 16,
+  "consumer_test_executions": 464,
+  "negative_feature_probes": 32,
+  "example_cases": 128,
+  "distinct_consumer_locks": 2,
+  "consumer_audit": "Both lock hashes and hosted advisory DB/tool/root-lock identity exactly match the separately audited R5 evidence",
+  "prior_audits": [
+    {
+      "lock_sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8",
+      "exit_code": 0
+    },
+    {
+      "lock_sha256": "b79b563fb7627bfc2d7c016fe34c7d5c70bc325061be72c2e1f3a7d3e667e7ef",
+      "exit_code": 0
+    }
+  ],
+  "hosted_advisory_provenance": "e2e640471715167f73e22eaf761f2e547adafeec 2026-09-14T18:06:06+02:00\ncargo-audit-audit 0.22.2\nddad6c1d1fb29491684fb3e09f7793df4db463ab2564407e7e4d793e925ee4a8  Cargo.lock\n",
+  "initial_failure": {
+    "attempt": 1,
+    "job": "Verify (macOS 15 Intel stable)",
+    "job_id": 104296408628,
+    "test": "fragmented_and_chunked_responses_complete_through_the_public_api",
+    "outcome": "native HTTP total request timeout expired at the unchanged 2-second request deadline",
+    "cause": "Unconfirmed; rerun success does not diagnose host load or exclude a timing-sensitive defect",
+    "excerpt": "2026-09-15T07:49:07.2856570Z ---- fragmented_and_chunked_responses_complete_through_the_public_api stdout ----\n2026-09-15T07:49:07.3879280Z \n2026-09-15T07:49:07.4785830Z thread 'fragmented_and_chunked_responses_complete_through_the_public_api' (33526) panicked at tests/http_adversarial.rs:780:33:\n2026-09-15T07:49:07.5109780Z native: fragmented response failed: operation failed: the native HTTP total request timeout expired\n2026-09-15T07:49:07.5229750Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n2026-09-15T07:49:07.5426820Z \n2026-09-15T07:49:07.5582990Z \n2026-09-15T07:49:07.5753900Z failures:\n2026-09-15T07:49:07.5928080Z     fragmented_and_chunked_responses_complete_through_the_public_api\n2026-09-15T07:49:07.6061260Z \n2026-09-15T07:49:07.6146540Z test result: FAILED. 15 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.31s\n2026-09-15T07:49:07.6421450Z \n2026-09-15T07:49:07.6738230Z ##[error]Process completed with exit code 1.\n2026-09-15T07:49:08.0770370Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\n2026-09-15T07:49:08.0790530Z ##[group]Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n2026-09-15T07:49:08.0791800Z with:\n2026-09-15T07:49:08.0792360Z   name: consumers-macOS 15 Intel stable\n2026-09-15T07:49:08.0796800Z   path: /Users/runner/work/_temp/nbreq-consumers/*.json\n/Users/runner/work/_temp/nbreq-consumers/*.log",
+    "failed_job_log_sha256": "227956a8b69b79666a4cb73326ed4b689a5345032401f29f89a530c1fda1537f"
+  },
+  "rerun": {
+    "attempt": 2,
+    "failed_jobs_only": true,
+    "source_unchanged": true,
+    "assertions_and_deadlines_unchanged": true
+  },
+  "registry_only": false,
+  "raw_directory": "target/housekeeping-20260915/hosted",
+  "raw_files": {
+    "artifact-10385688321.zip": {
+      "bytes": 105619,
+      "sha256": "ca5e35380d66ebbccfbcddd6a0c6b765f4ccc7e560e9cadd29d691c0e877ae06"
+    },
+    "artifact-10385688406.zip": {
+      "bytes": 105743,
+      "sha256": "8aa4b5a8cb79701b2f08011e354c6842c0c3679e9a67cec6df713006f191bf2f"
+    },
+    "artifact-10385962677.zip": {
+      "bytes": 105866,
+      "sha256": "978d65603ee57a235af2dba05ff421f0339d2e7956a3581674f5faaff366b187"
+    },
+    "artifact-10385974062.zip": {
+      "bytes": 105779,
+      "sha256": "0ee6f92c918af494275a69ca04097891aeec99d72b4a7c30404a87f652e15829"
+    },
+    "artifact-10386083027.zip": {
+      "bytes": 669,
+      "sha256": "28ae152a57bc43e9a2cfc022ab20faa72bd7f0e96757fe29e18121808b47be1f"
+    },
+    "artifact-10386227679.zip": {
+      "bytes": 105790,
+      "sha256": "bca176c58aa14a62528d9b9f29f96840a13827f6e43f96f4298d03dc0491ab66"
+    },
+    "artifact-10386317052.zip": {
+      "bytes": 105656,
+      "sha256": "7af77b84cdd34e6d6ba00955cd93b400e4fd7a78fd2d2cec6df9b23859ed4f9c"
+    },
+    "artifact-10386680498.zip": {
+      "bytes": 105816,
+      "sha256": "231e0273d839583f2ea67126e321568661a3f98b5c8343d12ee3c59b21055066"
+    },
+    "artifact-10386980367.zip": {
+      "bytes": 105759,
+      "sha256": "3f27a7b508e3a0c2a86752e978bc23c80422544bd00ea3a21381459b648a9c0d"
+    },
+    "hosted-34943196228-artifacts.json": {
+      "bytes": 7481,
+      "sha256": "b238786c5d26f68c9d60e2d5c3e8c5660b7e5e74bdec88ba8b1a95801466695a"
+    },
+    "hosted-34943196228-jobs.json": {
+      "bytes": 41327,
+      "sha256": "d563f7bc49aeabdfaf88988e0489ba78e567b52d12ae92c2a36fc41ef2b12d8e"
+    },
+    "hosted-34943196228-logs.zip": {
+      "bytes": 182664,
+      "sha256": "a8fc44af81768eed76fb1650f4e15d0f443100904dc91f3e271f00fd6a0349fe"
+    },
+    "hosted-34943196228-run.json": {
+      "bytes": 13446,
+      "sha256": "c60a5431c94d9921b2fd1bfeebec2a45e19dda03e0838a66eed1ff20137d78fe"
+    }
+  },
+  "first_attempt_raw_files": {
+    "artifact-10385688321.zip": {
+      "bytes": 105619,
+      "sha256": "ca5e35380d66ebbccfbcddd6a0c6b765f4ccc7e560e9cadd29d691c0e877ae06"
+    },
+    "artifact-10385688406.zip": {
+      "bytes": 105743,
+      "sha256": "8aa4b5a8cb79701b2f08011e354c6842c0c3679e9a67cec6df713006f191bf2f"
+    },
+    "artifact-10385962677.zip": {
+      "bytes": 105866,
+      "sha256": "978d65603ee57a235af2dba05ff421f0339d2e7956a3581674f5faaff366b187"
+    },
+    "artifact-10385974062.zip": {
+      "bytes": 105779,
+      "sha256": "0ee6f92c918af494275a69ca04097891aeec99d72b4a7c30404a87f652e15829"
+    },
+    "artifact-10386083027.zip": {
+      "bytes": 669,
+      "sha256": "28ae152a57bc43e9a2cfc022ab20faa72bd7f0e96757fe29e18121808b47be1f"
+    },
+    "artifact-10386227679.zip": {
+      "bytes": 105790,
+      "sha256": "bca176c58aa14a62528d9b9f29f96840a13827f6e43f96f4298d03dc0491ab66"
+    },
+    "artifact-10386317052.zip": {
+      "bytes": 105656,
+      "sha256": "7af77b84cdd34e6d6ba00955cd93b400e4fd7a78fd2d2cec6df9b23859ed4f9c"
+    },
+    "artifact-10386680498.zip": {
+      "bytes": 105816,
+      "sha256": "231e0273d839583f2ea67126e321568661a3f98b5c8343d12ee3c59b21055066"
+    },
+    "discovered-runs.json": {
+      "bytes": 13819,
+      "sha256": "da58f07065c46e2917f26359491a3252f2811c83f98b068c407245e93fd68a79"
+    },
+    "hosted-34943196228-artifacts.json": {
+      "bytes": 6648,
+      "sha256": "5e81cb2bb9b012cfafb9d125de4fdd33afb0827a539a13096c9cdc75bfd3f434"
+    },
+    "hosted-34943196228-jobs.json": {
+      "bytes": 41300,
+      "sha256": "9adf368dead8a9f94d981fb1c7101516c539ecb0a6385f95ea736879bb9413e3"
+    },
+    "hosted-34943196228-logs.zip": {
+      "bytes": 1125440,
+      "sha256": "c5a61abc5b29a10585316c2818b58f12c9828d437f5dbdacf63de411a0615365"
+    },
+    "hosted-34943196228-run.json": {
+      "bytes": 13368,
+      "sha256": "e7a944c96c9a03d2e640d0ba8f6e5e86dd7e96de5547f1cc598b5bf05b2d194e"
+    },
+    "job-104296408628.log": {
+      "bytes": 153708,
+      "sha256": "227956a8b69b79666a4cb73326ed4b689a5345032401f29f89a530c1fda1537f"
+    },
+    "rerun-34943196228.json": {
+      "bytes": 148,
+      "sha256": "397893f789da948e271c65bc08bf996aa21986be92ecca237137e9e40ab93924"
+    }
+  }
+}

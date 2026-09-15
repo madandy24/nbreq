@@ -1,6 +1,6 @@
 # R5 README refresh
 
-2026-09-15. Implemented in the R5 worktree and mirrored to main. The owner requested a consumer
+2026-09-15. Implemented in R5, committed as `655a6e3` and integrated into pushed main `451a769`. The owner requested a consumer
 introduction led by convenience GET, short cancellation/DNS/TCP snippets and guide/example links,
 with curl history brief and last.
 
@@ -31,12 +31,12 @@ local logs and original README backups are under `target/readme-refresh-checks` 
 The initial inventory comparison needed Windows path-separator normalization; no package file
 was missing. These are compilation/link checks, not a repetition of the completed network tests.
 
-README and example presentation is now implemented. Main integration/push, updated hosted CI,
-final clean package freeze, helper publication and registry-only proof remain release gates.
-The prior evidence archive's public-upload approval remains pending. No push, merge, tag,
-publication or GDS changes were performed in this slice.
+README and example presentation, main integration/push and the final clean package freeze are
+complete. The [housekeeping checkpoint](nbreq_housekeeping.md) records explicit public-upload
+approval, source/package identities and updated hosted CI. Helper publication and registry-only
+proof remain release gates. This README slice itself made no GDS changes or crate publication.
 
-## Main reconciliation check
+## Original main reconciliation check — subsequently completed by housekeeping
 
 A read-only comparison on 2026-09-15 found main is an ancestor of the R5 branch, which contains
 18 additional commits. Main has substantial uncommitted/untracked work, mostly copies of completed
