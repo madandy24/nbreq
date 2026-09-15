@@ -1,0 +1,170 @@
+{
+  "schema": "nbreq-020-publication-v1",
+  "status": "helpers_published_root_candidate_verified_locally",
+  "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+  "helpers": [
+    {
+      "name": "nbreq-darwin",
+      "version": "0.1.0",
+      "sha256": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839",
+      "bytes": 11376,
+      "created_at": "2026-09-15T08:17:12.941219Z",
+      "url": "https://crates.io/crates/nbreq-darwin/0.1.0",
+      "index_visible": true,
+      "download_matches_frozen_candidate": true
+    },
+    {
+      "name": "nbreq-winpoll",
+      "version": "0.1.1",
+      "sha256": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696",
+      "bytes": 13033,
+      "created_at": "2026-09-15T08:17:49.636911Z",
+      "url": "https://crates.io/crates/nbreq-winpoll/0.1.1",
+      "index_visible": true,
+      "download_matches_frozen_candidate": true
+    }
+  ],
+  "root_candidate": {
+    "source_commit": "432509b8d2d198cb0139def322f2cc82cd4a76c6",
+    "old_sha256": "59b54d263c6951da867df745d5fc1cd9aad29930c659a9f9d378c7bfc6966860",
+    "sha256": "05d2504522350118ef702fb3aa01288bd5939da62dc5e1727807fd03813686ed",
+    "bytes": 343615,
+    "files": 95,
+    "changed_files": [
+      "nbreq-0.2.0/Cargo.lock",
+      "nbreq-0.2.0/README.md"
+    ],
+    "readme_change": "Only checkout CRLF normalization; text unchanged",
+    "dependency_changes": [
+      {
+        "before": {
+          "name": "nbreq-darwin",
+          "version": "0.1.0",
+          "dependencies": [
+            "core-foundation",
+            "system-configuration"
+          ]
+        },
+        "after": {
+          "name": "nbreq-darwin",
+          "version": "0.1.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "31d7a69844b990331f85dc497f14d0b6a08f8ceaee402e7c6aa19919f3e3c839",
+          "dependencies": [
+            "core-foundation",
+            "system-configuration"
+          ]
+        }
+      },
+      {
+        "before": {
+          "name": "nbreq-winpoll",
+          "version": "0.1.1",
+          "dependencies": [
+            "windows-sys 0.61.2"
+          ]
+        },
+        "after": {
+          "name": "nbreq-winpoll",
+          "version": "0.1.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "9e4fc64245514209beb6e3feccb4b980e1c259546a9e07543e3529e1d7053696",
+          "dependencies": [
+            "windows-sys 0.61.2"
+          ]
+        }
+      }
+    ],
+    "package": "C:\\User\\projects\\nbreq\\target\\release-publication-20260915\\dry-nbreq-registry\\package\\tmp-crate\\nbreq-0.2.0.crate"
+  },
+  "local_candidate": {
+    "status": "passed",
+    "steps": 36,
+    "cases": [
+      {
+        "label": "stable-fresh",
+        "registry_only": false,
+        "support_from_registry": true,
+        "packages": {
+          "nbreq": {
+            "version": "0.2.0",
+            "source": null
+          },
+          "nbreq-darwin": {
+            "version": "0.1.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "nbreq-winpoll": {
+            "version": "0.1.1",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          }
+        },
+        "lock_sha256": "31e25aec731949cc2988258bd9b89feba437f99c39bc4485fc133b686aad4127"
+      },
+      {
+        "label": "stable-mio-coexist",
+        "registry_only": false,
+        "support_from_registry": true,
+        "packages": {
+          "nbreq": {
+            "version": "0.2.0",
+            "source": null
+          },
+          "nbreq-darwin": {
+            "version": "0.1.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "nbreq-winpoll": {
+            "version": "0.1.1",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          }
+        },
+        "lock_sha256": "43bd0406931e324d6dfb08b19d0e45ce860fc14b13c2cb5328d73928591bbf91"
+      },
+      {
+        "label": "1.85.0-fresh",
+        "registry_only": false,
+        "support_from_registry": true,
+        "packages": {
+          "nbreq": {
+            "version": "0.2.0",
+            "source": null
+          },
+          "nbreq-darwin": {
+            "version": "0.1.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "nbreq-winpoll": {
+            "version": "0.1.1",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          }
+        },
+        "lock_sha256": "31e25aec731949cc2988258bd9b89feba437f99c39bc4485fc133b686aad4127"
+      },
+      {
+        "label": "1.85.0-mio-coexist",
+        "registry_only": false,
+        "support_from_registry": true,
+        "packages": {
+          "nbreq": {
+            "version": "0.2.0",
+            "source": null
+          },
+          "nbreq-darwin": {
+            "version": "0.1.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "nbreq-winpoll": {
+            "version": "0.1.1",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          }
+        },
+        "lock_sha256": "43bd0406931e324d6dfb08b19d0e45ce860fc14b13c2cb5328d73928591bbf91"
+      }
+    ],
+    "registry_only": false,
+    "support_from_registry": true,
+    "archive_sha256": "05d2504522350118ef702fb3aa01288bd5939da62dc5e1727807fd03813686ed"
+  },
+  "raw_directory": "target/release-publication-20260915"
+}

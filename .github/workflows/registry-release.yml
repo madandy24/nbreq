@@ -1,0 +1,65 @@
+name: Registry release checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Candidate uses registry helpers; published uses only registry packages
+        type: choice
+        options: [candidate, published]
+        default: candidate
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  consumers:
+    name: Registry (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: Ubuntu stable, os: ubuntu-latest, toolchain: stable}
+          - {name: Ubuntu MSRV, os: ubuntu-latest, toolchain: 1.85.0}
+          - {name: Windows stable, os: windows-latest, toolchain: stable}
+          - {name: Windows MSRV, os: windows-latest, toolchain: 1.85.0}
+          - {name: Intel Mac stable, os: macos-15-intel, toolchain: stable}
+          - {name: Intel Mac MSRV, os: macos-15-intel, toolchain: 1.85.0}
+          - {name: ARM Mac stable, os: macos-15, toolchain: stable}
+          - {name: ARM Mac MSRV, os: macos-15, toolchain: 1.85.0}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install and select Rust
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal
+          rustup default ${{ matrix.toolchain }}
+          rustc -vV
+          cargo --version
+      - name: Package candidate with registry helpers
+        if: inputs.mode == 'candidate'
+        run: cargo package --locked -p nbreq --target-dir "${{ runner.temp }}/registry-package"
+      - name: Check candidate consumers
+        if: inputs.mode == 'candidate'
+        run: python tools/release-consumer/registry.py --mode candidate --package "${{ runner.temp }}/registry-package/package/nbreq-0.2.0.crate" --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
+      - name: Check published consumers
+        if: inputs.mode == 'published'
+        run: python tools/release-consumer/registry.py --mode published --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
+      - name: Preserve registry evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: registry-${{ inputs.mode }}-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/nbreq-registry/*.json
+            ${{ runner.temp }}/nbreq-registry/*.log
+            ${{ runner.temp }}/nbreq-registry/*/Cargo.lock
+            ${{ runner.temp }}/nbreq-registry/*/Cargo.toml
+            ${{ runner.temp }}/nbreq-registry/examples/*.json
+            ${{ runner.temp }}/nbreq-registry/examples/*.log
+          if-no-files-found: warn

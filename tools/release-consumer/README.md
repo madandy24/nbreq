@@ -59,3 +59,18 @@ selects old archives from another target directory nor uploads/publishes anythin
 behavior still requires macOS execution; compiling its gated support crate on Windows is not
 macOS validation. Both scripts require Python 3.11 or later and bound each Cargo command to
 15 minutes.
+
+## Registry release checks
+
+`registry.py --mode candidate --package EXACT_ROOT_ARCHIVE --out NEW_DIRECTORY` tests a
+normalized root candidate with Darwin/winpoll resolved only from crates.io. Its sole local
+override is the unpublished root package. `--mode published --out NEW_DIRECTORY` downloads
+nbreq 0.2.0 and tests it with no local overrides. Both modes check Cargo metadata and lock
+checksums, fresh stable/MSRV consumers with and without Mio coexistence, feature boundaries,
+and all 16 local example cases. `--toolchains` selects installed toolchains for a matrix job.
+
+The manual `Registry release checks` workflow runs these modes on Windows, Linux and both
+Mac architectures, stable and Rust 1.85. It has read-only repository permission and never
+publishes packages. Candidate mode proves registry support dependencies; only published mode
+establishes a fully registry-resolved NBReq consumer. Exact package hashes and source identity
+remain in the evidence records; package/source build times are not performance measurements.
