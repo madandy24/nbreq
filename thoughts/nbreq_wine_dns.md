@@ -4,6 +4,13 @@
 execution and native Windows checks pass. GDS's deployed DLL identity and end-to-end
 startup/remote-scan/shutdown acceptance remain for the GDS session. Nothing was published.
 
+**2026-09-14 pilot update:** The owner reports a live GDS pilot under Wine has run this code
+for several days with no problems observed. This adds real application evidence to the focused
+reproduction/fix checks. Exact pilot DLL hash, Wine/prefix identity, workload and an explicit
+shutdown/remote-scan acceptance transcript were not supplied; do not infer those details.
+W-01 does not block continuing the library release gates. The technical record below preserves
+what this task directly verified on 2026-09-10.
+
 ## Resume checkpoint
 
 | Item | State |
@@ -142,6 +149,33 @@ a later compatible fixed version. Check the resolved graph; `/httpbackend ureq`'
 log is not proof of backend selection. That loader fix remains with the GDS session. Record the
 rebuilt DLL hash and exact deployed Wine/prefix, then repeat external-client startup, remote scan
 retrieval and shutdown. This task has not replaced the installed DLL or performed those GDS steps.
+
+## Final commit, packages and handoff checkpoint
+
+The fix is committed as **`149450d6543376cdb8255b55d7eb286e98207f42`**, branch
+`codex/wine-dns-adapters`. That worktree is clean. Its scoped implementation, diagnostic tool
+and security wording are mirrored into `C:/User/projects/nbreq` for the existing GDS local-build
+path. The sync verified all seven preexisting implementation files matched the candidate base
+before replacing them and checked 32 other modified tracked files were unchanged. Main's dirty
+work, index, previous candidates and installed GDS DLL remain preserved.
+
+[Artifact manifest](evidence/nbreq_wine_dns_artifacts.json) and
+[evidence archive](evidence/nbreq-wine-dns-20260910.tar.gz) retain 112 files, including exact
+packages, source patch, probes, shim source, original panic, successful gates and failed attempts.
+Archive: 4,255,205 bytes; SHA256
+`5d438042cc03009ec7f12c58e4d57b11f1008f5807d9d8cb0ffc8b60433ecc4f`.
+Every archived file was rechecked against its recorded hash.
+
+| Clean package | SHA256 | Verification |
+| --- | --- | --- |
+| nbreq-winpoll 0.1.1 | `85d5bb03211b09c1a8914e3766e7a27843af4d9b0f312a7c5d97c6fe578a41b7` | 12,901 bytes / 10 files; x86 package build; all 13 tests from unmodified archive on Windows x64/Rust 1.85. |
+| nbreq 0.2.0 | `5c9cb9188d84eab632b4bd9c2084d267dd24779e7b0500a1cad7e430d89b472b` | 334,161 bytes / 82 files; x86 package build with explicit local Darwin and winpoll overrides, locked/offline. |
+
+Both VCS records identify the clean fix commit without a dirty flag. These checks do not close
+the registry-only gate. Two initial extracted-helper test attempts inherited the surrounding
+workspace and Cargo refused them before compilation. Extracting the same unmodified archive
+outside the repository resolved that harness issue; its Rust 1.85 tests passed. The failed logs
+are retained. No package source was altered to obtain the result.
 
 ## References
 

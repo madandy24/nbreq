@@ -6,6 +6,13 @@ publication dry runs and current advisory/license checks also pass. Registry-onl
 is still open. Publication is not authorized by this slice.
 GDS production source and its installed DLL are outside this work.
 
+Later on 2026-09-10, scoped work was committed in isolated
+[clean candidate checkpoints](nbreq_020_clean_candidates.md). That record supersedes the
+pre-commit status below. The subsequent [W-01 investigation](nbreq_wine_dns.md) reproduces the
+Wine 5 alignment panic and fixes it in `149450d`, with actual Wine/native checks. It changes the
+Windows dependency graph to winpoll 0.1.1 and refreshes advisory/license evidence. Results below
+remain historical; final release and GDS end-to-end acceptance are still open.
+
 ## Contract review
 
 Compared the public-surface source diff from tag `v0.1.1` with the candidate. The retained HTTP

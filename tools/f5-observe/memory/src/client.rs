@@ -29,6 +29,8 @@ fn metrics_json(metrics: EngineMetrics) -> Value {
         "closed":metrics.connections_closed(), "inflight":current.inflight_requests(),
         "active_connections":current.active_connections(), "idle_connections":current.idle_connections(),
         "stream_reserved_bytes":current.reserved_stream_queue_bytes(),
+        "buffered_reserved_bytes":current.reserved_buffered_body_bytes(),
+        "high_buffered_reserved_bytes":high.reserved_buffered_body_bytes(),
         "high_inflight":high.inflight_requests(), "high_active_connections":high.active_connections(),
         "high_stream_reserved_bytes":high.reserved_stream_queue_bytes(),
         "queued_commands":current.queued_commands(), "queued_callbacks":current.queued_callbacks(),
@@ -211,6 +213,9 @@ fn config(args: &Args) -> Result<EngineConfig> {
         .with_max_idle_connections_per_origin(32);
     if let Some(path) = args.get("--root") {
         config = config.with_additional_tls_root_certificate(fs::read(path)?);
+    }
+    if let Some(bytes) = args.get("--buffered-budget") {
+        config = config.with_max_buffered_body_bytes(bytes.parse()?);
     }
     Ok(config)
 }

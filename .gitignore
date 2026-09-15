@@ -1,6 +1,7 @@
 /target/
 /tools/xtask/target/
 /tools/f5-observe/target/
+/tools/f5-observe/v011/target/
 /.tmp/
 *.rs.bk
 *.pdb

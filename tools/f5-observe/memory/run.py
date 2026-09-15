@@ -181,7 +181,7 @@ class Child:
 
 
 def run_case(plain, binary, folder, source, protocol, connections, size, rounds,
-             extended=False, timeout=45, corrupt=False):
+             extended=False, timeout=45, corrupt=False, buffered_budget=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=False)
     children = []
@@ -205,6 +205,8 @@ def run_case(plain, binary, folder, source, protocol, connections, size, rounds,
                    "--extended", "yes" if extended else "no", "--source", source]
         if protocol == "https":
             command += ["--root", root]
+        if buffered_budget is not None:
+            command += ["--buffered-budget", buffered_budget]
         client = Child(command, folder / "client.stderr")
         children.append(client)
         active = None
