@@ -82,6 +82,11 @@ impl HandshakeWorkers {
             && self.shared.occupied.load(Ordering::Acquire) < WORKERS + QUEUED
     }
 
+    #[cfg(test)]
+    pub(crate) fn occupied_for_test(&self) -> usize {
+        self.shared.occupied.load(Ordering::Acquire)
+    }
+
     // Only the network owner submits, so capacity cannot decrease between its capacity check
     // and submit. Workers only move existing jobs or release tickets.
     pub(crate) fn submit(

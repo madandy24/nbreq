@@ -62,6 +62,7 @@ pub(crate) struct TcpIoShared {
 struct TcpIoState {
     outbound: VecDeque<Vec<u8>>,
     outbound_bytes: usize,
+    outbound_tls_offset: usize,
     pump: VecDeque<Vec<u8>>,
     pump_offset: usize,
     pump_bytes: usize,
@@ -102,6 +103,7 @@ impl TcpIoShared {
             state: Mutex::new(TcpIoState {
                 outbound: VecDeque::new(),
                 outbound_bytes: 0,
+                outbound_tls_offset: 0,
                 pump: VecDeque::new(),
                 pump_offset: 0,
                 pump_bytes: 0,
@@ -162,6 +164,14 @@ impl TcpIoShared {
         if bytes.len() > remaining {
             return Err(TcpSendError::new(TcpSendErrorKind::WouldBlock, bytes));
         }
+        // Charge and retain the same number of bytes. A caller may hand us a tiny Vec
+        // with enormous spare capacity; keep its original allocation intact on refusal,
+        // and compact only after this send has actually won admission.
+        let bytes = if bytes.capacity() > bytes.len() {
+            bytes.into_boxed_slice().into_vec()
+        } else {
+            bytes
+        };
         state.outbound_bytes += bytes.len();
         state.outbound.push_back(bytes);
         drop(state);
@@ -438,6 +448,50 @@ impl TcpIoShared {
         Ok(())
     }
 
+    pub(crate) fn attach_tls_reserve(
+        &self,
+        extra_release: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), Error> {
+        let state = lock_unpoisoned(&self.state);
+        if state.abort.is_some() || !state.upgrading || self.released.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "the TLS upgrade connection was released",
+            ));
+        }
+        let mut release = lock_unpoisoned(&self.on_release);
+        let prior = release
+            .take()
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "live TCP release callback missing"))?;
+        *release = Some(Box::new(move || {
+            extra_release();
+            prior();
+        }));
+        drop(release);
+        drop(state);
+        Ok(())
+    }
+
+    pub(crate) fn complete_upgrade(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        state.upgrading = false;
+        drop(state);
+        self.notify();
+    }
+
+    pub(crate) fn upgrade_boundary_clean(&self) -> bool {
+        let state = lock_unpoisoned(&self.state);
+        state.upgrading
+            && state.abort.is_none()
+            && !state.peer_fin
+            && !state.write_finish_requested
+            && !state.write_finished
+            && state.inbound_bytes == 0
+            && state.outbound_bytes == 0
+            && state.pump_bytes == 0
+            && !self.released.load(Ordering::Acquire)
+    }
+
     pub(crate) fn request_id(&self) -> RequestId {
         self.request_id
     }
@@ -491,7 +545,7 @@ impl TcpIoShared {
         }
     }
 
-    pub(super) fn session_released(&self) -> bool {
+    pub(crate) fn session_released(&self) -> bool {
         self.released.load(Ordering::Acquire)
     }
 
@@ -563,6 +617,20 @@ impl TcpIoOwner {
         self.io.abort(TcpAbort::Cancelled);
     }
 
+    /// Atomically stop future application sends and report whether any accepted
+    /// plaintext remains queued or in the TLS pump. Used for TLS 1.2 peer close.
+    pub(crate) fn close_write_admission_if_idle(&mut self) -> bool {
+        let mut state = lock_unpoisoned(&self.io.state);
+        let idle = state.outbound_bytes == 0 && state.pump_bytes == 0;
+        state.write_finish_requested = true;
+        drop(state);
+        self.io.notify();
+        idle
+    }
+    pub(crate) fn upgrade_boundary_clean(&self) -> bool {
+        self.io.upgrade_boundary_clean()
+    }
+
     pub(crate) fn take_outbound(&mut self) -> Option<Vec<u8>> {
         let mut state = lock_unpoisoned(&self.io.state);
         let chunk = state.outbound.pop_front()?;
@@ -590,6 +658,40 @@ impl TcpIoOwner {
             front.drain(..take).collect()
         };
         state.outbound_bytes -= chunk.len();
+        state.pump_bytes += chunk.len();
+        state.pump.push_back(chunk.clone());
+        drop(state);
+        self.io.notify();
+        Some(chunk)
+    }
+
+    /// TLS keeps the admitted source Vec intact until its final record is staged.
+    /// Credits are conservative while a large source retains its full allocation,
+    /// so later sends cannot refill a logical window over that retained capacity.
+    pub(crate) fn take_tls_outbound_up_to(&mut self, capacity: usize) -> Option<Vec<u8>> {
+        if capacity == 0 {
+            return None;
+        }
+        let mut state = lock_unpoisoned(&self.io.state);
+        if state.upgrading {
+            return None;
+        }
+        let (front_len, chunk) = {
+            let front = state.outbound.front()?;
+            let remaining = front.len() - state.outbound_tls_offset;
+            let take = remaining.min(capacity);
+            (
+                front.len(),
+                front[state.outbound_tls_offset..state.outbound_tls_offset + take].to_vec(),
+            )
+        };
+        let take = chunk.len();
+        state.outbound_tls_offset += take;
+        if state.outbound_tls_offset == front_len {
+            let drained = state.outbound.pop_front().expect("front exists");
+            state.outbound_bytes -= drained.len();
+            state.outbound_tls_offset = 0;
+        }
         state.pump_bytes += chunk.len();
         state.pump.push_back(chunk.clone());
         drop(state);
@@ -834,6 +936,129 @@ mod review_regressions {
             }),
         });
         (engine, io, owner, reserved)
+    }
+
+    #[test]
+    fn tls_upgrade_rejects_cleartext_extracted_after_freeze_and_rechecks_fin() {
+        let (engine, io, mut owner, reserved) = bounded_pair();
+        io.begin_upgrade()
+            .expect("idle connection may freeze for TLS");
+        assert!(owner.upgrade_boundary_clean());
+        assert_eq!(
+            owner
+                .push_inbound(b"late cleartext".to_vec())
+                .expect_err("late cleartext must be rejected")
+                .kind(),
+            ErrorKind::InvalidRequest,
+        );
+        owner.peer_closed();
+        assert!(
+            !owner.upgrade_boundary_clean(),
+            "an extracted FIN invalidates the boundary"
+        );
+        io.abort(TcpAbort::Cancelled);
+        assert_eq!(reserved.load(Ordering::SeqCst), 0);
+        engine.shutdown().expect("Engine shutdown");
+    }
+
+    #[test]
+    fn tls_large_source_retains_admission_charge_until_final_batch() {
+        let (engine, io, mut owner, _reserved) = bounded_pair();
+        io.try_send(b"abcdefgh".to_vec())
+            .expect("fill the send window");
+        for expected in [b"ab", b"cd", b"ef"] {
+            assert_eq!(
+                owner.take_tls_outbound_up_to(2).as_deref(),
+                Some(expected.as_slice())
+            );
+            owner.write_progress(2);
+            assert_eq!(
+                io.try_send(b"x".to_vec())
+                    .expect_err("send window stays occupied")
+                    .kind(),
+                TcpSendErrorKind::WouldBlock,
+                "a partially retained source Vec still occupies the admitted window"
+            );
+        }
+        assert_eq!(
+            owner.take_tls_outbound_up_to(2).as_deref(),
+            Some(b"gh".as_slice())
+        );
+        owner.write_progress(2);
+        io.try_send(b"x".to_vec())
+            .expect("charge releases after the source is fully staged and drained");
+        io.abort(TcpAbort::Cancelled);
+        engine.shutdown().expect("Engine shutdown");
+    }
+
+    #[test]
+    fn tls12_peer_close_atomically_blocks_new_sends() {
+        let (engine, io, mut owner, _reserved) = bounded_pair();
+        assert!(owner.close_write_admission_if_idle());
+        assert_eq!(
+            io.try_send(b"late".to_vec())
+                .expect_err("post-close send refused")
+                .kind(),
+            TcpSendErrorKind::Closed
+        );
+        io.abort(TcpAbort::Cancelled);
+        engine.shutdown().expect("Engine shutdown");
+
+        let (engine, io, mut owner, _reserved) = bounded_pair();
+        io.try_send(b"queued".to_vec())
+            .expect("send wins before close");
+        assert!(
+            !owner.close_write_admission_if_idle(),
+            "pending output requires terminal send failure"
+        );
+        assert_eq!(
+            io.try_send(b"later".to_vec())
+                .expect_err("post-close send refused")
+                .kind(),
+            TcpSendErrorKind::Closed
+        );
+        io.abort(TcpAbort::Cancelled);
+        engine.shutdown().expect("Engine shutdown");
+    }
+
+    #[test]
+    fn accepted_send_compacts_spare_capacity_but_refusal_preserves_caller_vec() {
+        let (engine, io, mut owner, _reserved) = bounded_pair();
+        let mut accepted = Vec::with_capacity(1024 * 1024);
+        accepted.extend_from_slice(b"tiny");
+        io.try_send(accepted).expect("small payload admitted");
+        {
+            let state = lock_unpoisoned(&io.state);
+            let queued = state.outbound.front().expect("accepted payload queued");
+            assert_eq!(queued.len(), 4);
+            assert_eq!(queued.capacity(), 4);
+        }
+        let mut refused = Vec::with_capacity(1024 * 1024);
+        refused.extend_from_slice(b"excess");
+        let original_capacity = refused.capacity();
+        let original_pointer = refused.as_ptr();
+        let error = io
+            .try_send(refused)
+            .expect_err("window has only four bytes free");
+        assert_eq!(error.kind(), TcpSendErrorKind::WouldBlock);
+        let refused = error.into_remaining();
+        assert_eq!(refused.capacity(), original_capacity);
+        assert_eq!(refused.as_ptr(), original_pointer);
+
+        let mut too_large = Vec::with_capacity(1024 * 1024);
+        too_large.extend_from_slice(b"nine bytes");
+        let original_capacity = too_large.capacity();
+        let original_pointer = too_large.as_ptr();
+        let error = io
+            .try_send(too_large)
+            .expect_err("chunk exceeds eight-byte window");
+        assert_eq!(error.kind(), TcpSendErrorKind::ChunkTooLarge);
+        let too_large = error.into_remaining();
+        assert_eq!(too_large.capacity(), original_capacity);
+        assert_eq!(too_large.as_ptr(), original_pointer);
+        drop(owner.take_outbound());
+        io.abort(TcpAbort::Cancelled);
+        engine.shutdown().expect("Engine shutdown");
     }
 
     #[test]

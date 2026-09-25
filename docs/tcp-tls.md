@@ -1,13 +1,18 @@
 # TLS for TCP connections
 
 This guide describes the TCP TLS API under development after NBReq 0.2.0. It is not
-available in the published 0.2.0 crate. Implementation and verification status are
-tracked in the repository's [TCP TLS plan](../thoughts/nbreq_tcp_tls_plan.md).
+available in the published 0.2.0 crate. Use this development checkout to build the
+[immediate TLS and STARTTLS examples](../examples/README.md#c--tcp).
 
 Use immediate TLS when the server expects a TLS handshake as soon as TCP connects,
 such as an IMAP server on port 993. Use an explicit upgrade when the application
 protocol starts in cleartext and negotiates TLS, such as SMTP STARTTLS on port 25.
 NBReq supplies the transport; the application supplies the mail protocol.
+
+The default features include both `native` and `resolver`. TLS requires `native`;
+connecting to a hostname also requires `resolver`. With `native` alone, connect to
+a literal socket address and supply the certificate's DNS name or IP identity
+separately through `TlsOptions`.
 
 ## Immediate TLS
 
@@ -96,7 +101,7 @@ The handshake timeout defaults to ten seconds, starts at admission, and includes
 queueing for certificate verification. For immediate TLS it also covers DNS and
 TCP establishment, with an earlier TCP connect deadline taking precedence. A
 waiter-local timeout returns the still-live waiter; it does not cancel the
-operation. Zero handshake timeout is rejected at admission.
+operation. Zero or unrepresentable handshake timeouts are rejected at admission.
 
 Cancellation is abortive. Engine shutdown closes sockets and joins its owned
 workers. An executing platform certificate check may delay joining; the timeout
@@ -107,8 +112,12 @@ does not make that platform operation interruptible.
 `finish` drains accepted application output and sends TLS `close_notify` before
 closing the write side. In TLS 1.3 the local reader remains usable, so the peer can
 continue sending application data.
-TLS 1.2 peer closure ends both application directions; unsent accepted output
-causes an explicit failure instead of a successful finish.
+TLS 1.2 peer closure ends both application directions. With no pending application
+output, NBReq replies with `close_notify`. With pending output, it aborts the
+transport and reports a send failure: skipping already-encrypted records to send
+a later close alert would break TLS framing or record sequencing. Bytes already
+accepted by the operating system cannot be recalled. This is never reported as a
+successful finish.
 
 Orderly closure delivers queued authenticated input before EOF. A bare TCP EOF is
 a TLS truncation failure, not a successful TLS close. Abrupt TLS or transport
@@ -123,6 +132,14 @@ TLS connections share the Engine reactor and bounded certificate-verification
 service. They add no per-connection thread. Each connection reserves its selected
 plain send/receive windows plus a 256 KiB TLS staging allowance against the shared
 queued-byte limit. These are admission reservations, not eager allocations.
+The current implementation keeps one 64 KiB encrypted staging buffer per live TLS
+transport to bound copying and avoid buffer-merging allocation peaks; other
+staging is acquired as work requires it.
+
+For example, 16 KiB send and receive windows reserve 288 KiB per TLS connection;
+32 such connections reserve 9 MiB. The default 256 KiB windows reserve 768 KiB per
+TLS connection, so the default 16 MiB shared budget admits at most 21 of them when
+no other work uses that budget. Configure the windows and shared budget together.
 
 Small windows remain supported: retained decrypted records are delivered in pieces
 as the application provides capacity. Accepted plaintext output keeps its queue

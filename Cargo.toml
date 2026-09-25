@@ -27,6 +27,7 @@ include = [
     "/examples/README.md",
     "/docs/getting-started.md",
     "/docs/migrating-to-0.2.md",
+    "/docs/tcp-tls.md",
     "/README.md",
     "/SECURITY.md",
     "/THIRD_PARTY_LICENSES.html",
@@ -159,4 +160,12 @@ required-features = ["native"]
 
 [[example]]
 name = "C03-tcp-manual"
+required-features = ["native"]
+
+[[example]]
+name = "C04-tcp-tls"
+required-features = ["native"]
+
+[[example]]
+name = "C05-tcp-starttls"
 required-features = ["native"]

@@ -13,7 +13,8 @@ use crate::tcp::io::{TcpAbort, TcpIoConfig, TcpIoOwner, TcpIoShared};
 use crate::{
     Client, Completion, EngineConfig, Error, ErrorKind, LimitKind, Request, RequestHandle,
     RequestId, ResponseReader, RunMode, StreamRequest, TcpConnectCompletion, TcpConnectRequest,
-    TcpConnection, TcpConnectionHandle, TcpConnector, TlsConnectCompletion, TlsOptions,
+    TcpConnection, TcpConnectionHandle, TcpConnector, TlsConnectCompletion, TlsConnection,
+    TlsOptions,
 };
 #[cfg(feature = "resolver")]
 use crate::{ResolveCompletion, ResolveRequest};
@@ -403,6 +404,7 @@ pub(crate) struct TcpConnectState {
 struct TlsConnectInner {
     completion: Option<TlsConnectCompletion>,
     terminal: bool,
+    delivery_ready: bool,
     callback: Option<TlsConnectCallback>,
     callback_active: bool,
     occupancy_permit: Option<AdmissionPermit>,
@@ -412,10 +414,16 @@ struct TlsConnectInner {
     callback_permit: Option<AdmissionPermit>,
 }
 
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) struct TlsConnectState {
     id: RequestId,
     connector: TcpConnector,
     upgrade: bool,
+    send_window: usize,
+    receive_window: usize,
+    read_inactivity_timeout: Option<Duration>,
+    write_inactivity_timeout: Option<Duration>,
+    max_resolve_results: usize,
     inner: Mutex<TlsConnectInner>,
     changed: Condvar,
     metrics: Arc<Metrics>,
@@ -438,7 +446,11 @@ impl TlsConnectState {
         lock_unpoisoned(&self.inner).terminal
     }
     pub(crate) fn try_completion(&self) -> Option<TlsConnectCompletion> {
-        lock_unpoisoned(&self.inner).completion.take()
+        let mut inner = lock_unpoisoned(&self.inner);
+        inner
+            .delivery_ready
+            .then(|| inner.completion.take())
+            .flatten()
     }
     pub(crate) fn wait(&self) -> TlsConnectCompletion {
         assert!(
@@ -448,7 +460,7 @@ impl TlsConnectState {
         let inner = lock_unpoisoned(&self.inner);
         let mut inner = self
             .changed
-            .wait_while(inner, |inner| !inner.terminal)
+            .wait_while(inner, |inner| !inner.delivery_ready)
             .unwrap_or_else(|p| p.into_inner());
         inner
             .completion
@@ -463,19 +475,19 @@ impl TlsConnectState {
         let inner = lock_unpoisoned(&self.inner);
         let (mut inner, _) = self
             .changed
-            .wait_timeout_while(inner, duration, |inner| !inner.terminal)
+            .wait_timeout_while(inner, duration, |inner| !inner.delivery_ready)
             .unwrap_or_else(|p| p.into_inner());
-        inner.terminal.then(|| {
+        inner.delivery_ready.then(|| {
             inner
                 .completion
                 .take()
                 .expect("terminal TLS connect waiter has already been consumed")
         })
     }
-    fn commit(&self, completion: TlsConnectCompletion) -> (bool, Option<CallbackJob>) {
+    fn commit(&self, completion: TlsConnectCompletion) -> bool {
         let mut inner = lock_unpoisoned(&self.inner);
         if inner.terminal {
-            return (false, None);
+            return false;
         }
         if !self.upgrade {
             match &completion {
@@ -490,8 +502,15 @@ impl TlsConnectState {
         drop(inner.queue_permit.take());
         drop(inner.metric_permit.take());
         drop(inner.dns_borrow.take());
+        true
+    }
+    fn publish_terminal(&self) -> Option<CallbackJob> {
+        let mut inner = lock_unpoisoned(&self.inner);
+        debug_assert!(inner.terminal && !inner.delivery_ready);
+        inner.delivery_ready = true;
+        let job = Self::take_callback(self.id, &mut inner);
         self.changed.notify_all();
-        (true, Self::take_callback(self.id, &mut inner))
+        job
     }
     fn activate_callback(&self) -> Option<CallbackJob> {
         let mut inner = lock_unpoisoned(&self.inner);
@@ -499,7 +518,7 @@ impl TlsConnectState {
         Self::take_callback(self.id, &mut inner)
     }
     fn take_callback(id: RequestId, inner: &mut TlsConnectInner) -> Option<CallbackJob> {
-        if !inner.callback_active || !inner.terminal {
+        if !inner.callback_active || !inner.delivery_ready {
             return None;
         }
         let callback = inner.callback.take()?;
@@ -998,6 +1017,7 @@ pub(crate) struct TlsConnectSink {
     state: Arc<TlsConnectState>,
 }
 
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 impl TlsConnectSink {
     pub(crate) fn new(shared: &Arc<Shared>, state: Arc<TlsConnectState>) -> Self {
         Self {
@@ -1007,6 +1027,40 @@ impl TlsConnectSink {
     }
     pub(crate) fn id(&self) -> RequestId {
         self.state.id()
+    }
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+    }
+    pub(crate) fn read_inactivity_timeout(&self) -> Option<Duration> {
+        self.state.read_inactivity_timeout
+    }
+    pub(crate) fn write_inactivity_timeout(&self) -> Option<Duration> {
+        self.state.write_inactivity_timeout
+    }
+    pub(crate) fn max_resolve_results(&self) -> usize {
+        self.state.max_resolve_results
+    }
+    pub(crate) fn release_dns_borrow(&self) -> bool {
+        let mut inner = lock_unpoisoned(&self.state.inner);
+        if inner.terminal {
+            return false;
+        }
+        drop(inner.dns_borrow.take());
+        true
+    }
+    pub(crate) fn transport_connected(
+        &self,
+        local: std::net::SocketAddr,
+        peer: std::net::SocketAddr,
+    ) -> Option<TcpIoOwner> {
+        self.shared
+            .upgrade()?
+            .complete_tls_transport_connected(&self.state, local, peer)
+    }
+    pub(crate) fn verified(&self) -> bool {
+        self.shared
+            .upgrade()
+            .is_some_and(|shared| shared.complete_tls_connected(&self.state))
     }
     pub(crate) fn fail(&self, error: Error) -> bool {
         self.shared.upgrade().is_some_and(|shared| {
@@ -1053,6 +1107,8 @@ pub(crate) struct Shared {
     callback_activation_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
     #[cfg(test)]
     tcp_terminal_commit_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
+    #[cfg(test)]
+    tls_terminal_commit_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 pub(crate) struct CallbackActivation<'shared> {
@@ -1134,6 +1190,8 @@ impl Shared {
             callback_activation_hook: Mutex::new(None),
             #[cfg(test)]
             tcp_terminal_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            tls_terminal_commit_hook: Mutex::new(None),
         })
     }
 
@@ -1540,9 +1598,15 @@ impl Shared {
             id,
             connector,
             upgrade: false,
+            send_window,
+            receive_window,
+            read_inactivity_timeout: request.read_inactivity_timeout(),
+            write_inactivity_timeout: request.write_inactivity_timeout(),
+            max_resolve_results: self.max_resolve_results,
             inner: Mutex::new(TlsConnectInner {
                 completion: None,
                 terminal: false,
+                delivery_ready: false,
                 callback,
                 callback_active: false,
                 occupancy_permit: Some(occupancy_permit),
@@ -1571,6 +1635,10 @@ impl Shared {
             self.tcp_connections.load(Ordering::Acquire),
             self.tcp_queued_bytes.load(Ordering::Acquire),
         );
+        if hostname {
+            self.metrics
+                .resolution_borrowed(self.resolution_inflight.load(Ordering::Acquire));
+        }
         let activation = if has_callback {
             *lock_unpoisoned(&self.callback_activations) += 1;
             Some(CallbackActivation { shared: self })
@@ -1640,18 +1708,28 @@ impl Shared {
             None
         };
         io.begin_upgrade()?;
+        io.attach_tls_reserve(Box::new(move || {
+            drop(queue_permit);
+            drop(metric_permit);
+        }))?;
         let state = Arc::new(TlsConnectState {
             id,
             connector,
             upgrade: true,
+            send_window: 0,
+            receive_window: 0,
+            read_inactivity_timeout: None,
+            write_inactivity_timeout: None,
+            max_resolve_results: 0,
             inner: Mutex::new(TlsConnectInner {
                 completion: None,
                 terminal: false,
+                delivery_ready: false,
                 callback,
                 callback_active: false,
                 occupancy_permit: None,
-                queue_permit: Some(queue_permit),
-                metric_permit: Some(metric_permit),
+                queue_permit: None,
+                metric_permit: None,
                 dns_borrow: None,
                 callback_permit,
             }),
@@ -1958,6 +2036,9 @@ impl Shared {
             let tcp_won = connect_state.as_ref().is_some_and(|state| {
                 self.complete_tcp_state_locked(&mut core, state, TcpConnectCompletion::Cancelled)
             });
+            let tls_won = tls_state.as_ref().is_some_and(|state| {
+                self.complete_tls_state_locked(&mut core, state, TlsConnectCompletion::Cancelled)
+            });
             let live_tcp = if tcp_won {
                 None
             } else {
@@ -1971,7 +2052,7 @@ impl Shared {
                 core.requests.get(&request_id).cloned(),
                 core.stream_requests.get(&request_id).cloned(),
                 tcp_won.then_some(connect_state).flatten(),
-                tls_state,
+                tls_won.then_some(tls_state).flatten(),
                 live_tcp,
             )
         };
@@ -1981,7 +2062,13 @@ impl Shared {
                 let _queued = self.callback_domain.enqueue_terminal(job);
             }
         } else if let Some(tls_state) = tls_state {
-            self.complete_tls_state(&tls_state, TlsConnectCompletion::Cancelled);
+            if let Some(io) = live_tcp {
+                io.abort(TcpAbort::Cancelled);
+            }
+            self.refresh_tcp_resource_metrics();
+            if let Some(job) = tls_state.publish_terminal() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
         } else if let Some(io) = live_tcp {
             io.abort(TcpAbort::Cancelled);
         } else if let Some(state) = state {
@@ -2003,12 +2090,22 @@ impl Shared {
         let (requests, stream_requests, tcp_terminals, tls_states, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let barrier = core.next_sequence.saturating_sub(1);
-            let tls_states = core
+            let pending_tls = core
                 .tls_connects
                 .iter()
                 .filter(|(id, _)| id.sequence <= barrier)
                 .map(|(_, state)| Arc::clone(state))
                 .collect::<Vec<_>>();
+            let mut tls_states = Vec::new();
+            for state in pending_tls {
+                if self.complete_tls_state_locked(
+                    &mut core,
+                    &state,
+                    TlsConnectCompletion::Cancelled,
+                ) {
+                    tls_states.push(state);
+                }
+            }
             let connects = core
                 .connects
                 .iter()
@@ -2061,9 +2158,6 @@ impl Shared {
         for state in stream_requests {
             self.cancel_stream_state(&state);
         }
-        for state in tls_states {
-            self.complete_tls_state(&state, TlsConnectCompletion::Cancelled);
-        }
         #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
@@ -2081,6 +2175,14 @@ impl Shared {
         for io in live_tcp {
             io.abort(TcpAbort::Cancelled);
         }
+        if !tls_states.is_empty() {
+            self.refresh_tcp_resource_metrics();
+        }
+        for state in tls_states {
+            if let Some(job) = state.publish_terminal() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
+        }
         self.queue.wake();
     }
 
@@ -2093,7 +2195,20 @@ impl Shared {
                 core.lifecycle = LifecycleState::ShuttingDown;
             }
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
-            let tls_states = core.tls_connects.values().cloned().collect::<Vec<_>>();
+            let pending_tls = core.tls_connects.values().cloned().collect::<Vec<_>>();
+            let mut tls_states = Vec::new();
+            for state in pending_tls {
+                if self.complete_tls_state_locked(
+                    &mut core,
+                    &state,
+                    TlsConnectCompletion::Failed(Error::new(
+                        ErrorKind::EngineStopped,
+                        "the owning Engine stopped during TLS establishment",
+                    )),
+                ) {
+                    tls_states.push(state);
+                }
+            }
             let mut tcp_terminals = Vec::new();
             for state in connects {
                 let won = self.complete_tcp_state_locked(
@@ -2126,15 +2241,6 @@ impl Shared {
         for state in stream_requests {
             self.cancel_stream_state(&state);
         }
-        for state in tls_states {
-            self.complete_tls_state(
-                &state,
-                TlsConnectCompletion::Failed(Error::new(
-                    ErrorKind::EngineStopped,
-                    "the owning Engine stopped during TLS establishment",
-                )),
-            );
-        }
         #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Cancelled);
@@ -2151,6 +2257,14 @@ impl Shared {
         }
         for io in live_tcp {
             io.abort(TcpAbort::EngineStopped);
+        }
+        if !tls_states.is_empty() {
+            self.refresh_tcp_resource_metrics();
+        }
+        for state in tls_states {
+            if let Some(job) = state.publish_terminal() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
         }
         // Admission closed above; publish the owner stop only after terminal results
         // are committed. Backend teardown drops stream producers and must not win
@@ -2320,6 +2434,98 @@ impl Shared {
         Some(owner)
     }
 
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) fn complete_tls_transport_connected(
+        self: &Arc<Self>,
+        state: &Arc<TlsConnectState>,
+        local: std::net::SocketAddr,
+        peer: std::net::SocketAddr,
+    ) -> Option<TcpIoOwner> {
+        let mut core = lock_unpoisoned(&self.core);
+        if core.lifecycle != LifecycleState::Running
+            || state.upgrade
+            || !core
+                .tls_connects
+                .get(&state.id)
+                .is_some_and(|current| Arc::ptr_eq(current, state))
+        {
+            return None;
+        }
+        let mut inner = lock_unpoisoned(&state.inner);
+        if inner.terminal {
+            return None;
+        }
+        let occupancy = inner.occupancy_permit.take()?;
+        let queued = inner.queue_permit.take()?;
+        let metric = inner.metric_permit.take()?;
+        debug_assert!(inner.dns_borrow.is_none());
+        let id = state.id;
+        let weak = Arc::downgrade(self);
+        let release = Box::new(move || {
+            drop(occupancy);
+            drop(queued);
+            drop(metric);
+            if let Some(shared) = weak.upgrade() {
+                shared.release_live_tcp(id);
+            }
+        });
+        let wake_weak = Arc::downgrade(self);
+        let engine_waker = Arc::new(move || {
+            if let Some(shared) = wake_weak.upgrade() {
+                shared.queue.wake();
+            }
+        });
+        let (io, owner) = TcpIoShared::pair(TcpIoConfig {
+            engine_id: self.id,
+            request_id: id,
+            shared: Arc::clone(self),
+            run_mode: self.run_mode,
+            send_window: state.send_window,
+            receive_window: state.receive_window,
+            local,
+            peer,
+            engine_waker: Some(engine_waker),
+            on_release: release,
+        });
+        core.live_tcp.insert(id, io);
+        drop(inner);
+        drop(core);
+        Some(owner)
+    }
+
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) fn complete_tls_connected(&self, state: &Arc<TlsConnectState>) -> bool {
+        let mut core = lock_unpoisoned(&self.core);
+        if core.lifecycle != LifecycleState::Running
+            || !core
+                .tls_connects
+                .get(&state.id)
+                .is_some_and(|current| Arc::ptr_eq(current, state))
+        {
+            return false;
+        }
+        let Some(io) = core.live_tcp.get(&state.id).cloned() else {
+            return false;
+        };
+        if io.session_released() {
+            return false;
+        }
+        if state.upgrade {
+            io.complete_upgrade();
+        }
+        let handle = TcpConnectionHandle::new(state.connector.clone(), state.id);
+        let connection = TlsConnection::from_tcp(TcpConnection::from_shared(io, handle));
+        let won = state.commit(TlsConnectCompletion::Completed(connection));
+        debug_assert!(won, "current TLS state must accept one verified completion");
+        core.tls_connects.remove(&state.id);
+        drop(core);
+        self.refresh_tcp_resource_metrics();
+        if let Some(job) = state.publish_terminal() {
+            let _queued = self.callback_domain.enqueue_terminal(job);
+        }
+        true
+    }
+
     pub(crate) fn complete_tcp_state(
         &self,
         state: &Arc<TcpConnectState>,
@@ -2349,6 +2555,8 @@ impl Shared {
             .get(&state.id)
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
+            drop(core);
+            drop(completion);
             return false;
         }
         let abort = match &completion {
@@ -2359,7 +2567,7 @@ impl Shared {
         let io = abort
             .as_ref()
             .and_then(|_| core.live_tcp.get(&state.id).cloned());
-        let (won, job) = state.commit(completion);
+        let won = state.commit(completion);
         if won {
             core.tls_connects.remove(&state.id);
         }
@@ -2367,13 +2575,35 @@ impl Shared {
         if let (Some(io), Some(abort)) = (io, abort) {
             io.abort(abort);
         }
-        if let Some(job) = job {
-            let _queued = self.callback_domain.enqueue_terminal(job);
-        }
         if won {
             self.refresh_tcp_resource_metrics();
+            if let Some(job) = state.publish_terminal() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
         }
         won
+    }
+
+    fn complete_tls_state_locked(
+        &self,
+        core: &mut CoreState,
+        state: &Arc<TlsConnectState>,
+        completion: TlsConnectCompletion,
+    ) -> bool {
+        if !core
+            .tls_connects
+            .get(&state.id)
+            .is_some_and(|current| Arc::ptr_eq(current, state))
+        {
+            return false;
+        }
+        if !state.commit(completion) {
+            return false;
+        }
+        #[cfg(test)]
+        self.run_tls_terminal_commit_hook();
+        core.tls_connects.remove(&state.id);
+        true
     }
 
     fn complete_tcp_state_locked(
@@ -2448,7 +2678,17 @@ impl Shared {
         let (requests, stream_requests, tcp_terminals, tls_states, live_tcp) = {
             let mut core = lock_unpoisoned(&self.core);
             let connects = core.connects.values().cloned().collect::<Vec<_>>();
-            let tls_states = core.tls_connects.values().cloned().collect::<Vec<_>>();
+            let pending_tls = core.tls_connects.values().cloned().collect::<Vec<_>>();
+            let mut tls_states = Vec::new();
+            for state in pending_tls {
+                if self.complete_tls_state_locked(
+                    &mut core,
+                    &state,
+                    TlsConnectCompletion::Failed(error.clone()),
+                ) {
+                    tls_states.push(state);
+                }
+            }
             let mut tcp_terminals = Vec::new();
             for state in connects {
                 let won = self.complete_tcp_state_locked(
@@ -2480,9 +2720,6 @@ impl Shared {
                 self.finish_stream_state(&state);
             }
         }
-        for state in tls_states {
-            self.complete_tls_state(&state, TlsConnectCompletion::Failed(error.clone()));
-        }
         #[cfg(feature = "resolver")]
         for state in resolutions {
             self.complete_resolve_state(&state, ResolveCompletion::Failed(error.clone()));
@@ -2499,6 +2736,14 @@ impl Shared {
         }
         for io in live_tcp {
             io.abort(TcpAbort::Failed(error.clone()));
+        }
+        if !tls_states.is_empty() {
+            self.refresh_tcp_resource_metrics();
+        }
+        for state in tls_states {
+            if let Some(job) = state.publish_terminal() {
+                let _queued = self.callback_domain.enqueue_terminal(job);
+            }
         }
         self.queue.wake();
     }
@@ -2596,6 +2841,18 @@ impl Shared {
     #[cfg(test)]
     fn run_tcp_terminal_commit_hook(&self) {
         if let Some(hook) = lock_unpoisoned(&self.tcp_terminal_commit_hook).take() {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tls_terminal_commit_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *lock_unpoisoned(&self.tls_terminal_commit_hook) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_tls_terminal_commit_hook(&self) {
+        if let Some(hook) = lock_unpoisoned(&self.tls_terminal_commit_hook).take() {
             hook();
         }
     }
@@ -2976,6 +3233,305 @@ mod tests {
         );
         success_thread.join().expect("success thread must join");
         assert!(matches!(pending.wait(), TcpConnectCompletion::Cancelled));
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn tls_cancel_serializes_verified_completion_and_aborts_private_transport() {
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::manual()).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_standalone_tcp_supported(true);
+        let pending = engine
+            .tcp_connector()
+            .submit_tls(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("literal TLS request"),
+                crate::TlsOptions::new("localhost").expect("valid identity"),
+            )
+            .expect("TLS admission");
+        let state = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::TlsConnect { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("TLS submission");
+        let owner = shared
+            .complete_tls_transport_connected(
+                &state,
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 40_000)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            )
+            .expect("private transport before verification");
+
+        let (committed_tx, committed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        shared.set_tls_terminal_commit_hook(move || {
+            committed_tx.send(()).expect("observe TLS cancel commit");
+            release_rx.recv().expect("release TLS registry lock");
+        });
+        let handle = pending.handle();
+        let cancel_thread = thread::spawn(move || handle.cancel());
+        committed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("TLS cancel committed");
+
+        let success_shared = Arc::clone(&shared);
+        let success_state = Arc::clone(&state);
+        let (success_tx, success_rx) = mpsc::channel();
+        let success_thread = thread::spawn(move || {
+            success_tx
+                .send(success_shared.complete_tls_connected(&success_state))
+                .expect("observe verified completion attempt");
+        });
+        assert!(
+            success_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "verification must wait for canonical cancel transition"
+        );
+        release_tx.send(()).expect("release cancel transition");
+        cancel_thread
+            .join()
+            .expect("cancel thread")
+            .expect("cancel result");
+        assert!(
+            !success_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("verification attempt")
+        );
+        success_thread.join().expect("verified completion thread");
+        assert!(matches!(pending.wait(), TlsConnectCompletion::Cancelled));
+        assert!(
+            owner.session_released(),
+            "private transport must be aborted before delivery"
+        );
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn tls_upgrade_cancel_publishes_only_after_transport_and_permit_cleanup() {
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::manual()).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_standalone_tcp_supported(true);
+        let plain = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("plain connect request"),
+            )
+            .expect("plain connect admission");
+        let state = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::Connect { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("plain connect submission");
+        let owner = shared
+            .complete_tcp_connected(
+                &state,
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 40_000)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            )
+            .expect("plain transport");
+        let connection = match plain.wait() {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("unexpected plain outcome: {other:?}"),
+        };
+        let tls = connection
+            .submit_tls(crate::TlsOptions::new("localhost").expect("valid identity"))
+            .expect("upgrade admission");
+        assert_eq!(
+            tls.handle().id(),
+            state.id(),
+            "upgrade retains request identity"
+        );
+        assert!(engine.metrics().current().reserved_tcp_queue_bytes() >= TLS_EXTRA_RESERVE);
+        let _upgrade = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::TlsUpgrade { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("TLS upgrade submission");
+
+        let (committed_tx, committed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        shared.set_tls_terminal_commit_hook(move || {
+            committed_tx
+                .send(())
+                .expect("observe upgrade cancel commit");
+            release_rx.recv().expect("release upgrade transition");
+        });
+        let handle = tls.handle();
+        let cancel = thread::spawn(move || handle.cancel());
+        committed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("upgrade cancellation committed");
+        assert!(tls.is_complete(), "terminal state is canonically committed");
+        assert!(
+            tls.try_completion().is_none(),
+            "waiter must not observe terminal before cleanup"
+        );
+        assert!(
+            !owner.session_released(),
+            "transport has not yet been aborted"
+        );
+        release_tx.send(()).expect("release upgrade cancellation");
+        cancel
+            .join()
+            .expect("cancel thread")
+            .expect("cancel result");
+        assert!(matches!(tls.wait(), TlsConnectCompletion::Cancelled));
+        assert!(
+            owner.session_released(),
+            "transport was aborted before publication"
+        );
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn tls_cancel_all_serializes_against_verified_completion() {
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::manual()).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_standalone_tcp_supported(true);
+        let pending = engine
+            .tcp_connector()
+            .submit_tls(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("literal TLS request"),
+                crate::TlsOptions::new("localhost").expect("valid identity"),
+            )
+            .expect("TLS admission");
+        let state = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::TlsConnect { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("TLS submission");
+        let owner = shared
+            .complete_tls_transport_connected(
+                &state,
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 40_000)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            )
+            .expect("private TLS transport");
+
+        let (committed_tx, committed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        shared.set_tls_terminal_commit_hook(move || {
+            committed_tx.send(()).expect("observe cancel-all commit");
+            release_rx.recv().expect("release cancel-all transition");
+        });
+        let cancel_shared = Arc::clone(&shared);
+        let cancel = thread::spawn(move || cancel_shared.cancel_all());
+        committed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancel-all reached commit");
+        let verify_shared = Arc::clone(&shared);
+        let verify_state = Arc::clone(&state);
+        let (verify_tx, verify_rx) = mpsc::channel();
+        let verify = thread::spawn(move || {
+            verify_tx
+                .send(verify_shared.complete_tls_connected(&verify_state))
+                .expect("verified transition result");
+        });
+        assert!(
+            verify_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "verified completion remains behind cancel-all registry transition"
+        );
+        release_tx.send(()).expect("release cancel-all transition");
+        cancel.join().expect("cancel-all thread");
+        assert!(
+            !verify_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("verify result")
+        );
+        verify.join().expect("verify thread");
+        assert!(matches!(pending.wait(), TlsConnectCompletion::Cancelled));
+        assert!(owner.session_released());
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        engine.shutdown().expect("Engine must stop");
+    }
+
+    #[test]
+    fn failed_tls_upgrade_releases_original_and_extra_permits_before_waiter_delivery() {
+        let (engine, _controller) =
+            crate::testing::engine(EngineConfig::manual()).expect("Engine must construct");
+        let shared = engine.shared_for_testing();
+        shared.set_standalone_tcp_supported(true);
+        let plain = engine
+            .tcp_connector()
+            .submit(
+                TcpConnectRequest::literal(SocketAddr::from((Ipv4Addr::LOCALHOST, 9)))
+                    .build()
+                    .expect("plain request"),
+            )
+            .expect("plain admission");
+        let state = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::Connect { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("plain submission");
+        let owner = shared
+            .complete_tcp_connected(
+                &state,
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 40_000)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            )
+            .expect("plain transport");
+        let connection = match plain.wait() {
+            TcpConnectCompletion::Completed(connection) => connection,
+            other => panic!("unexpected plain outcome: {other:?}"),
+        };
+        let tls = connection
+            .submit_tls(crate::TlsOptions::new("localhost").expect("valid identity"))
+            .expect("upgrade admission");
+        let state = shared
+            .queue
+            .drain()
+            .into_iter()
+            .find_map(|submission| match submission {
+                Submission::TlsUpgrade { state, .. } => Some(state),
+                _ => None,
+            })
+            .expect("upgrade submission");
+        assert!(shared.complete_tls_state(
+            &state,
+            TlsConnectCompletion::Failed(Error::new(
+                ErrorKind::Transport,
+                "directed verification failure"
+            ))
+        ));
+        assert!(
+            owner.session_released(),
+            "failed upgrade must abort consumed transport"
+        );
+        assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+        assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+        assert!(matches!(tls.wait(), TlsConnectCompletion::Failed(_)));
         engine.shutdown().expect("Engine must stop");
     }
 

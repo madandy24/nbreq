@@ -1248,6 +1248,8 @@ pub enum TlsFailure {
     PeerAlert,
     /// TLS framing, negotiation, cryptography, or protocol state failed.
     Protocol,
+    /// The peer ended the byte stream before authenticating TLS shutdown.
+    Truncated,
     /// Local encrypted-record input or output failed.
     Io,
     /// The implementation could not classify the TLS failure more precisely.

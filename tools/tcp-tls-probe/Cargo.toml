@@ -1,0 +1,11 @@
+[package]
+name = "nbreq-tcp-tls-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace]
+
+[dependencies]
+nbreq = { path = "../..", default-features = false, features = ["native", "resolver"] }

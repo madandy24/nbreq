@@ -134,11 +134,14 @@ TCP supports hostname connections, separate reader/writer halves, cancellation, 
 and nonblocking I/O. The [TCP examples](examples/README.md#c--tcp) start their own local echo server,
 so you can run them without setting one up.
 
+For work underway after 0.2.0, see the [TCP TLS development guide](docs/tcp-tls.md) and the new
+C04/C05 examples. Immediate TLS and explicit connection upgrades are not in the published 0.2.0 crate.
+
 ## Learn more
 
 - [Getting started](docs/getting-started.md): request options, streaming, manual driving,
   memory controls, error handling and embedding in GUI/FFI applications.
-- [17 runnable examples](examples/README.md): **A** HTTP, **B** DNS, **C** TCP; simplest first.
+- [Runnable examples](examples/README.md): **A** HTTP, **B** DNS, **C** TCP; simplest first.
 - [Migrating from 0.1.1](docs/migrating-to-0.2.md): changes to response ownership and resource limits.
 
 ## Scope and configuration

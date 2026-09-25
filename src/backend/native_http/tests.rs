@@ -10,6 +10,8 @@ use crate::{
     TransportStage, TryPushErrorKind, UploadBody,
 };
 
+mod standalone_tls;
+
 mod retained_capacity;
 
 const LIMITS: HttpLimits = HttpLimits {

@@ -34,6 +34,13 @@ pub(crate) struct SlotId {
     generation: u32,
 }
 
+#[cfg(test)]
+impl SlotId {
+    pub(crate) fn same_index_for_test(self, other: Self) -> bool {
+        self.index == other.index && self.generation != other.generation
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeFailureKind {
     Connect,
@@ -371,6 +378,28 @@ impl NativeReactor {
             NativeFailure::internal("native outbound state targeted a stale or closed slot")
         })?;
         Ok(connection.outbound_empty())
+    }
+
+    pub(crate) fn set_outbound_limit(
+        &mut self,
+        id: SlotId,
+        limit: usize,
+    ) -> Result<(), NativeFailure> {
+        let connection = self.connection_mut(id).ok_or_else(|| {
+            NativeFailure::internal("native output limit targeted a stale or closed slot")
+        })?;
+        if connection.outbound_len() > limit {
+            return Err(NativeFailure::internal(
+                "native output limit is below already queued bytes",
+            ));
+        }
+        // A STARTTLS upgrade may follow a large cleartext send. Do not retain that
+        // VecDeque allocation under the smaller encrypted-wire window.
+        if connection.outbound_empty() {
+            connection.outbound = VecDeque::new();
+        }
+        connection.outbound_limit = limit;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -781,6 +810,10 @@ impl NativeReactor {
         let bounded = self
             .connection_mut(id)
             .is_some_and(|connection| connection.read_allowance.is_some());
+        let small_bounded_window = self
+            .connection_mut(id)
+            .and_then(|connection| connection.read_allowance)
+            .filter(|allowance| *allowance <= 18 * 1024);
         let budget = self
             .connection_mut(id)
             .and_then(|connection| connection.body_budget.clone());
@@ -838,6 +871,22 @@ impl NativeReactor {
                         return;
                     }
                     if bounded {
+                        if budget.is_none() && bounded_data.capacity() == 0 {
+                            if let Some(window) = small_bounded_window {
+                                if let Err(error) = bounded_data.reserve_capacity(window) {
+                                    self.remove(id);
+                                    output.push(NativeEvent::Failed(
+                                        id,
+                                        NativeFailure {
+                                            kind: NativeFailureKind::BodyBudget,
+                                            message: error.to_string(),
+                                            io_kind: None,
+                                        },
+                                    ));
+                                    return;
+                                }
+                            }
+                        }
                         if let Err(error) = bounded_data.extend(&buffer[..read], usize::MAX) {
                             self.remove(id);
                             output.push(NativeEvent::Failed(
@@ -1484,6 +1533,38 @@ mod tests {
         assert_eq!(connection.deadline, None);
         assert!(reactor.cancel(id));
         assert_eq!(reactor.active_count(), 0);
+    }
+
+    #[test]
+    fn tls_wire_queue_capacity_is_bounded_under_non_power_of_two_growth() {
+        let (mut reactor, id, _peer) = retention_connection();
+        reactor
+            .queue_write(id, &[0; 128 * 1024])
+            .expect("large cleartext queue");
+        reactor
+            .connection_mut(id)
+            .expect("connection")
+            .outbound
+            .clear();
+        reactor
+            .set_outbound_limit(id, 18 * 1024)
+            .expect("TLS output window");
+        assert_eq!(
+            reactor.outbound_storage_capacity(id),
+            0,
+            "upgrade must release the old cleartext queue allocation"
+        );
+        reactor
+            .queue_write(id, &[0; 17 * 1024])
+            .expect("first encrypted fragment");
+        reactor
+            .queue_write(id, &[0; 1024])
+            .expect("second encrypted fragment");
+        assert!(
+            reactor.outbound_storage_capacity(id) <= 36 * 1024,
+            "geometric growth may retain almost twice the 18 KiB length cap"
+        );
+        assert!(reactor.cancel(id));
     }
 
     #[test]

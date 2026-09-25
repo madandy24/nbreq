@@ -1,7 +1,7 @@
 # Runnable examples
 
 Each numbered source file is a complete program. Read each group from the top: A is HTTP,
-B is DNS, and C is cleartext TCP. The default Cargo features enable all three groups.
+B is DNS, and C is TCP. The default Cargo features enable all three groups.
 Run these commands from the NBReq repository with Rust 1.85 or newer:
 
 ```sh
@@ -74,11 +74,13 @@ cargo run --example B02-dns-nonblocking -- example.org
 | [C01-tcp-blocking](C01-tcp-blocking.rs) | Connect, send, half-close, read through EOF |
 | [C02-tcp-nonblocking](C02-tcp-nonblocking.rs) | Submit connect, split the connection, retry refused bytes and drain both directions |
 | [C03-tcp-manual](C03-tcp-manual.rs) | Drive connect and connected I/O with `try_*` calls |
+| [C04-tcp-tls](C04-tcp-tls.rs) | Verify a private CA and connect directly with TLS |
+| [C05-tcp-starttls](C05-tcp-starttls.rs) | Negotiate a clean plaintext boundary, then upgrade the same socket |
 
-With no arguments, each starts a one-client echo server on an ephemeral loopback port. Successful
+With no arguments, C01–C03 start a one-client echo server on an ephemeral loopback port. Successful
 runs print `echoed 17 bytes and received EOF`. The server helpers in [support](support/echo.rs) contain
-only fixture plumbing; the client operations are visible in each example. TCP is cleartext and does
-not expose a TLS mode. The nonblocking example uses small polling intervals, not a busy loop.
+only fixture plumbing; the client operations are visible in each example. These first three
+examples use cleartext TCP. The nonblocking example uses small polling intervals, not a busy loop.
 
 To use your own echo server, C01/C03 accept `IP:PORT`; C02 accepts `HOSTNAME PORT` and resolves that
 name through NBReq. Its default loopback address skips DNS.
@@ -90,6 +92,23 @@ cargo run --example C02-tcp-nonblocking -- echo.example.org 9000
 
 The hostname above is a placeholder for your own server. Sending FIN closes only our write side;
 we keep reading until the peer sends EOF. Dropping an unfinished connection aborts it.
+
+C04/C05 use the **unreleased TCP TLS API**, which is not in the published 0.2.0 crate. They start
+local TLS 1.3 peers, generate a private CA, and give that CA to the Engine while preserving
+certificate and IP identity verification. Successful runs echo 24 protected bytes. Neither example
+requires an external service, credentials, or an insecure verification option:
+
+```sh
+cargo run --example C04-tcp-tls
+cargo run --example C05-tcp-starttls
+```
+
+C05 uses a deliberately small STARTTLS-style text protocol, not a complete SMTP or IMAP client.
+Its one-byte reads avoid application overread; NBReq also checks its own queue before accepting
+the upgrade. Every consuming-upgrade failure closes the original connection. The fixtures use
+TLS 1.3 to demonstrate a local write finish while the reader remains usable; TLS 1.2 has different
+peer-close behavior. See [TLS for TCP connections](../docs/tcp-tls.md) for ownership, shutdown,
+deadlines and memory budgets.
 
 ## Building and checking
 

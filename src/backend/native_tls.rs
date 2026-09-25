@@ -35,6 +35,9 @@ use rustls_platform_verifier::BuilderVerifierExt;
 use crate::{Error, ErrorKind, TlsFailure, TlsVerification, TransportStage};
 
 pub(super) const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
+pub(super) const STANDALONE_TLS_OUTPUT_LIMIT: usize = 64 * 1024;
+pub(super) const STANDALONE_TLS_WIRE_WINDOW: usize = 18 * 1024;
+pub(super) const STANDALONE_TLS_PLAINTEXT_WINDOW: usize = STANDALONE_TLS_WIRE_WINDOW + 16 * 1024;
 const TLS_PLAINTEXT_CHUNK: usize = 16 * 1024;
 // TLS application records carry at most 16 KiB of plaintext. This includes generous wire
 // overhead without teaching the HTTP owner how to parse TLS records itself. A streaming socket
@@ -168,6 +171,33 @@ impl NativeTlsConfigs {
         })
     }
 
+    pub(super) fn standalone_connection(&self, server_name: &str) -> Result<StandaloneTls, Error> {
+        let name = ServerName::try_from(server_name.to_owned()).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS server name cannot be represented as a peer identity",
+            )
+        })?;
+        let mut config = (*self.verified).clone();
+        config.alpn_protocols.clear();
+        let mut connection = ClientConnection::new(Arc::new(config), name).map_err(|error| {
+            Error::tls(
+                TransportStage::Tls,
+                classify_rustls_error(&error),
+                "standalone TLS client setup failed",
+            )
+        })?;
+        connection.set_buffer_limit(Some(STANDALONE_TLS_OUTPUT_LIMIT));
+        Ok(StandaloneTls {
+            session: Some(TlsSession {
+                connection,
+                handshake_received: 0,
+                body_budget: None,
+                outbound_limit: STANDALONE_TLS_OUTPUT_LIMIT,
+            }),
+        })
+    }
+
     pub(super) fn connection(
         &self,
         host: &str,
@@ -198,6 +228,7 @@ impl NativeTlsConfigs {
                 connection,
                 handshake_received: 0,
                 body_budget: None,
+                outbound_limit: TLS_FLIGHT_LIMIT,
             }),
             request: Some(PendingPlaintext {
                 bytes: request,
@@ -217,11 +248,133 @@ pub(super) struct NativeTls {
     retained_response: PendingPlaintext,
 }
 
+/// The standalone TCP owner holds this sans-I/O client until verified establishment and beyond.
+pub(super) struct StandaloneTls {
+    session: Option<TlsSession>,
+}
+
+impl StandaloneTls {
+    pub(super) fn promote_control(&mut self) -> Result<Vec<u8>, Error> {
+        let session = self.session.as_mut().expect("established TLS session");
+        if session.connection.is_handshaking() {
+            return Ok(Vec::new());
+        }
+        session
+            .connection
+            .writer()
+            .write(&[])
+            .map_err(|error| tls_io_error(false, "control output", error))?;
+        session.take_outbound()
+    }
+
+    pub(super) fn start(&mut self) -> Result<Vec<u8>, Error> {
+        self.session
+            .as_mut()
+            .expect("TLS session at start")
+            .take_outbound()
+    }
+
+    pub(super) fn is_handshaking(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_none_or(|session| session.connection.is_handshaking())
+    }
+
+    pub(super) fn handshake_in_worker(&self) -> bool {
+        self.session.is_none()
+    }
+
+    pub(super) fn take_handshake(&mut self) -> Option<TlsSession> {
+        if self.is_handshaking() {
+            self.session.take()
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn take_session_for_test(&mut self) -> TlsSession {
+        self.session.take().expect("test TLS session must exist")
+    }
+
+    pub(super) fn restore_handshake(&mut self, session: TlsSession) {
+        debug_assert!(self.session.is_none());
+        self.session = Some(session);
+    }
+
+    pub(super) fn receive(&mut self, encrypted: &[u8]) -> Result<TlsProgress, Error> {
+        // The owner stages this flight before calling promote_control, so a queued
+        // KeyUpdate response never forces two 64 KiB Vecs into a merged third Vec.
+        self.session
+            .as_mut()
+            .expect("TLS session outside worker")
+            .receive(encrypted)
+    }
+
+    pub(super) fn drain_wire(&mut self, limit: usize) -> Result<Vec<u8>, Error> {
+        let session = self.session.as_mut().expect("established TLS session");
+        let mut output = exact_capacity_buffer(limit);
+        session.drain_outbound_up_to(limit, &mut output)?;
+        Ok(output)
+    }
+
+    pub(super) fn encrypt(
+        &mut self,
+        plaintext: &[u8],
+        limit: usize,
+    ) -> Result<(usize, Vec<u8>), Error> {
+        let session = self.session.as_mut().expect("established TLS session");
+        if session.connection.is_handshaking() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "application data before TLS verification",
+            ));
+        }
+        let mut output = exact_capacity_buffer(limit);
+        session.drain_outbound_up_to(limit, &mut output)?;
+        if !output.is_empty() || session.connection.wants_write() || output.len() >= limit {
+            return Ok((0, output));
+        }
+        let count = session
+            .connection
+            .writer()
+            .write(plaintext)
+            .map_err(|error| tls_io_error(false, "plaintext encryption", error))?;
+        session.drain_outbound_up_to(limit, &mut output)?;
+        if session.connection.wants_write() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "one TLS application record exceeded the bounded wire window",
+            ));
+        }
+        Ok((count, output))
+    }
+
+    pub(super) fn wants_write(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.connection.wants_write())
+    }
+
+    pub(super) fn send_close_notify(&mut self) -> Result<Vec<u8>, Error> {
+        let session = self.session.as_mut().expect("established TLS session");
+        session.connection.send_close_notify();
+        session.take_outbound()
+    }
+
+    pub(super) fn protocol_version(&self) -> Option<rustls::ProtocolVersion> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.connection.protocol_version())
+    }
+}
+
 // Worker ownership excludes HTTP request bytes and response delivery state.
 pub(super) struct TlsSession {
     connection: ClientConnection,
     handshake_received: usize,
     body_budget: Option<Arc<crate::body_budget::BodyBudget>>,
+    outbound_limit: usize,
 }
 
 impl TlsSession {
@@ -283,10 +436,22 @@ impl TlsSession {
         plaintext: &mut crate::body_budget::BodyBuffer,
     ) -> Result<(), Error> {
         let mut buffer = [0_u8; TLS_PLAINTEXT_CHUNK];
+        let standalone_limit = (self.outbound_limit == STANDALONE_TLS_OUTPUT_LIMIT)
+            .then_some(STANDALONE_TLS_PLAINTEXT_WINDOW);
         loop {
             match self.connection.reader().read(&mut buffer) {
                 Ok(0) => break,
-                Ok(read) => plaintext.extend(&buffer[..read], usize::MAX)?,
+                Ok(read) => {
+                    if let Some(limit) = standalone_limit {
+                        // A standalone event can contain one 18 KiB wire window and at most
+                        // one rustls record carry. Keep the owned Vec at its exact bound;
+                        // BodyBuffer's unbudgeted geometric growth would retain 64 KiB.
+                        if plaintext.capacity() == 0 {
+                            plaintext.reserve_capacity(limit)?;
+                        }
+                    }
+                    plaintext.extend(&buffer[..read], standalone_limit.unwrap_or(usize::MAX))?;
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(tls_io_error(false, "plaintext read", error)),
             }
@@ -316,7 +481,7 @@ impl TlsSession {
     }
 
     fn take_outbound(&mut self) -> Result<Vec<u8>, Error> {
-        let mut output = BoundedWriter::new(TLS_FLIGHT_LIMIT);
+        let mut output = BoundedWriter::new(self.outbound_limit);
         while self.connection.wants_write() {
             let stage = if self.connection.is_handshaking() {
                 TransportStage::Tls
@@ -667,7 +832,11 @@ impl Write for CappedWriter<'_> {
 impl BoundedWriter {
     fn new(limit: usize) -> Self {
         Self {
-            bytes: Vec::new(),
+            bytes: if limit == STANDALONE_TLS_OUTPUT_LIMIT {
+                exact_capacity_buffer(limit)
+            } else {
+                Vec::new()
+            },
             limit,
         }
     }
@@ -675,6 +844,12 @@ impl BoundedWriter {
     fn into_inner(self) -> Vec<u8> {
         self.bytes
     }
+}
+
+fn exact_capacity_buffer(capacity: usize) -> Vec<u8> {
+    let mut bytes = vec![0; capacity].into_boxed_slice().into_vec();
+    bytes.clear();
+    bytes
 }
 
 impl Write for BoundedWriter {
@@ -869,6 +1044,29 @@ mod tests {
     use rcgen::{CertificateParams, DnType, KeyPair, date_time_ymd};
 
     use super::*;
+
+    #[test]
+    fn standalone_output_writers_keep_actual_capacity_within_flight_bounds() {
+        let mut writer = BoundedWriter::new(STANDALONE_TLS_OUTPUT_LIMIT);
+        writer
+            .write_all(&vec![0; 40 * 1024])
+            .expect("first TLS flight part");
+        writer
+            .write_all(&vec![0; 20 * 1024])
+            .expect("second TLS flight part");
+        assert_eq!(writer.bytes.len(), 60 * 1024);
+        assert_eq!(writer.bytes.capacity(), STANDALONE_TLS_OUTPUT_LIMIT);
+
+        let mut output = exact_capacity_buffer(STANDALONE_TLS_WIRE_WINDOW);
+        let mut capped = CappedWriter::new(&mut output, STANDALONE_TLS_WIRE_WINDOW);
+        capped
+            .write_all(&vec![0; 10 * 1024])
+            .expect("first record fragment");
+        capped
+            .write_all(&vec![0; 7 * 1024])
+            .expect("second record fragment");
+        assert_eq!(output.capacity(), STANDALONE_TLS_WIRE_WINDOW);
+    }
 
     fn identity() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
         identity_for("resolved.test", false)

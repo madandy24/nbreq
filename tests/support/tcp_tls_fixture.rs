@@ -157,7 +157,9 @@ pub(crate) enum Event {
     },
     Read(Vec<u8>),
     Wrote,
-    PeerCloseNotify,
+    PeerCloseNotify {
+        application: Vec<u8>,
+    },
     /// A valid encrypted post-handshake control flight arrived without application data.
     PostUpdateControlFlight,
 }
@@ -523,7 +525,7 @@ fn observe_client_close(
     stop: &AtomicBool,
     deadline: Instant,
 ) -> io::Result<bool> {
-    let mut seen_application_bytes = 0_usize;
+    let mut application = Vec::new();
     loop {
         if expired(stop, deadline) {
             return Err(io::Error::new(
@@ -540,8 +542,8 @@ fn observe_client_close(
                     match tls.reader().read(&mut buffer) {
                         Ok(0) => break,
                         Ok(count) => {
-                            seen_application_bytes += count;
-                            if seen_application_bytes > 256 * 1024 {
+                            application.extend_from_slice(&buffer[..count]);
+                            if application.len() > 256 * 1024 {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidData,
                                     "too much application data while observing close",
@@ -554,7 +556,7 @@ fn observe_client_close(
                 }
                 flush(tls, socket, stop, deadline)?;
                 if state.peer_has_closed() {
-                    let _ = events.send(Event::PeerCloseNotify);
+                    let _ = events.send(Event::PeerCloseNotify { application });
                     return Ok(true);
                 }
             }
@@ -724,15 +726,30 @@ fn key_update_idle(
                 return Outcome::Failed("unexpected post-handshake TLS record type".into());
             }
             let mut cursor = Cursor::new(record);
-            if let Err(error) = tls.read_tls(&mut cursor) {
-                return Outcome::Failed(format!("key update record input: {error}"));
+            let record_len = cursor.get_ref().len() as u64;
+            while cursor.position() < record_len {
+                let consumed = match tls.read_tls(&mut cursor) {
+                    Ok(consumed) if consumed > 0 => consumed,
+                    Ok(_) => {
+                        return Outcome::Failed(
+                            "rustls stopped before the full key-update record".into(),
+                        );
+                    }
+                    Err(error) => {
+                        return Outcome::Failed(format!("key update record input: {error}"));
+                    }
+                };
+                debug_assert!(consumed <= record_len as usize);
+                let state = match tls.process_new_packets() {
+                    Ok(state) => state,
+                    Err(error) => return Outcome::Failed(format!("key update reply: {error}")),
+                };
+                if state.peer_has_closed() {
+                    return Outcome::PeerClosed;
+                }
             }
-            let state = match tls.process_new_packets() {
-                Ok(state) => state,
-                Err(error) => return Outcome::Failed(format!("key update reply: {error}")),
-            };
-            if state.peer_has_closed() {
-                return Outcome::PeerClosed;
+            if cursor.position() != record_len {
+                return Outcome::Failed("rustls overread the framed key-update record".into());
             }
             if encrypted {
                 let mut byte = [0_u8; 1];

@@ -20,19 +20,20 @@ use super::native_dns::{
 };
 use super::native_tls::worker::{HandshakeWorkers, INPUT_WINDOW};
 use super::native_tls::{
-    NativeTls, NativeTlsConfigs, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
+    NativeTls, NativeTlsConfigs, STANDALONE_TLS_PLAINTEXT_WINDOW, STANDALONE_TLS_WIRE_WINDOW,
+    StandaloneTls, TlsProgress, TlsStreamProgress, encrypted_outbound_limit,
     encrypted_receive_limit,
 };
 use super::{Backend, BackendCompletion, BackendFactory, PollMode};
 use crate::metrics::Metrics;
-use crate::registry::{Shared, TcpConnectSink};
+use crate::registry::{Shared, TcpConnectSink, TlsConnectSink};
 use crate::stream::{ResponseSink, UploadBody, UploadFraming, UploadPoll};
 use crate::tcp::io::TcpIoOwner;
 use crate::types::{RequestRedirect, http_origin, plan_redirect};
 use crate::{
     AddressFamily, AddressOrder, CacheMode, Completion, EngineConfig, Error, ErrorKind, Header,
     LimitKind, Request, RequestId, ResolveStatus, Response, ShutdownError, StreamRequest,
-    TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure, TransportStage,
+    TcpConnectRequest, TcpConnectTarget, TimeoutKind, TlsFailure, TlsOptions, TransportStage,
 };
 #[cfg(feature = "resolver")]
 use crate::{ResolveCompletion, ResolveRequest, ResolveResponse, ResolvedAddress};
@@ -616,6 +617,7 @@ struct NativeHttpBackend {
     standalone_request_to_slot: HashMap<RequestId, SlotId>,
     standalone_pending: HashMap<SlotId, StandalonePending>,
     standalone_live: HashMap<SlotId, StandaloneTcp>,
+    standalone_tls_live: HashMap<SlotId, StandaloneTlsTcp>,
     #[cfg(test)]
     failed_standalone_addresses_remaining: usize,
     #[cfg(test)]
@@ -630,15 +632,73 @@ struct NativeHttpBackend {
 }
 
 struct StandaloneResolve {
-    sink: TcpConnectSink,
+    sink: StandaloneSink,
     port: u16,
     connect_deadline: Option<Instant>,
+    tls_options: Option<TlsOptions>,
 }
 
 struct StandalonePending {
-    sink: TcpConnectSink,
+    sink: StandaloneSink,
     remaining: VecDeque<SocketAddr>,
     connect_deadline: Option<Instant>,
+    tls_options: Option<TlsOptions>,
+}
+
+enum StandaloneSink {
+    Plain(TcpConnectSink),
+    Tls(TlsConnectSink),
+}
+
+impl StandaloneSink {
+    fn id(&self) -> RequestId {
+        match self {
+            Self::Plain(sink) => sink.id(),
+            Self::Tls(sink) => sink.id(),
+        }
+    }
+    fn is_terminal(&self) -> bool {
+        match self {
+            Self::Plain(sink) => sink.is_terminal(),
+            Self::Tls(sink) => sink.is_terminal(),
+        }
+    }
+    fn fail(&self, error: Error) -> bool {
+        match self {
+            Self::Plain(sink) => sink.fail(error),
+            Self::Tls(sink) => sink.fail(error),
+        }
+    }
+    fn release_dns_borrow(&self) -> bool {
+        match self {
+            Self::Plain(sink) => sink.release_dns_borrow(),
+            Self::Tls(sink) => sink.release_dns_borrow(),
+        }
+    }
+    fn send_window(&self) -> usize {
+        match self {
+            Self::Plain(sink) => sink.send_window(),
+            Self::Tls(_) => STANDALONE_TLS_WIRE_WINDOW,
+        }
+    }
+    fn receive_window(&self) -> usize {
+        match self {
+            Self::Plain(sink) => sink.receive_window(),
+            Self::Tls(_) => INPUT_WINDOW,
+        }
+    }
+    fn read_inactivity_timeout(&self) -> Option<Duration> {
+        match self {
+            Self::Plain(sink) => sink.read_inactivity_timeout(),
+            Self::Tls(sink) => sink.read_inactivity_timeout(),
+        }
+    }
+    fn write_inactivity_timeout(&self) -> Option<Duration> {
+        match self {
+            Self::Plain(sink) => sink.write_inactivity_timeout(),
+            Self::Tls(sink) => sink.write_inactivity_timeout(),
+        }
+    }
 }
 
 impl StandalonePending {
@@ -651,7 +711,10 @@ impl StandalonePending {
     }
 
     fn connected(&self, local: SocketAddr, peer: SocketAddr) -> Option<TcpIoOwner> {
-        self.sink.connected(local, peer)
+        match &self.sink {
+            StandaloneSink::Plain(sink) => sink.connected(local, peer),
+            StandaloneSink::Tls(sink) => sink.transport_connected(local, peer),
+        }
     }
 
     fn read_inactivity_timeout(&self) -> Option<Duration> {
@@ -669,9 +732,78 @@ struct StandaloneTcp {
     read_inactivity_timeout: Option<Duration>,
     read_inactivity_deadline: Option<Instant>,
     read_inactivity_paused: bool,
+    peer_closed: bool,
     write_inactivity_timeout: Option<Duration>,
     write_inactivity_deadline: Option<Instant>,
     write_inactivity_active: bool,
+}
+
+struct StandaloneTlsTcp {
+    transport: StandaloneTcp,
+    tls: StandaloneTls,
+    sink: Option<TlsConnectSink>,
+    handshake_deadline: Option<Instant>,
+    wire_pending: Vec<u8>,
+    wire_offset: usize,
+    retained_plaintext: Vec<u8>,
+    retained_offset: usize,
+    plaintext_inflight: usize,
+    peer_close_notify: bool,
+    peer_fin: bool,
+    local_close_notify: bool,
+    write_shutdown: bool,
+}
+
+impl StandaloneTlsTcp {
+    fn handshaking(&self) -> bool {
+        self.sink.is_some()
+    }
+    fn wire_buffer() -> Vec<u8> {
+        // Allocate the one bounded staging buffer only when a TLS transport is created.
+        // Retain its capacity across flights so appending control records never reallocates
+        // while an earlier encrypted flight is still queued.
+        let mut buffer = vec![0; super::native_tls::STANDALONE_TLS_OUTPUT_LIMIT]
+            .into_boxed_slice()
+            .into_vec();
+        buffer.clear();
+        buffer
+    }
+    fn queue_wire(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let remaining = self.wire_pending.len().saturating_sub(self.wire_offset);
+        if remaining.saturating_add(bytes.len()) > super::native_tls::STANDALONE_TLS_OUTPUT_LIMIT {
+            return Err(Error::tls(
+                TransportStage::Tls,
+                TlsFailure::Protocol,
+                "TLS output exceeded its bounded flight",
+            ));
+        }
+        if self.wire_offset != 0 {
+            self.wire_pending.copy_within(self.wire_offset.., 0);
+            self.wire_pending.truncate(remaining);
+        }
+        self.wire_pending.extend_from_slice(&bytes);
+        self.wire_offset = 0;
+        Ok(())
+    }
+    fn retained_len(&self) -> usize {
+        self.retained_plaintext
+            .len()
+            .saturating_sub(self.retained_offset)
+    }
+    fn retain_plaintext(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        if self.retained_len() != 0 || bytes.len() > STANDALONE_TLS_PLAINTEXT_WINDOW {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "TLS plaintext exceeded its bounded receive window",
+            ));
+        }
+        self.retained_plaintext = bytes;
+        self.retained_offset = 0;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -695,6 +827,7 @@ impl StandaloneTcp {
             read_inactivity_deadline: read_inactivity_timeout
                 .and_then(|timeout| now.checked_add(timeout)),
             read_inactivity_paused: false,
+            peer_closed: false,
             write_inactivity_timeout,
             write_inactivity_deadline: None,
             write_inactivity_active: false,
@@ -702,7 +835,10 @@ impl StandaloneTcp {
     }
 
     fn sync_pressure(&mut self, now: Instant) {
-        if self.owner.read_allowance() == 0 {
+        if self.peer_closed {
+            self.read_inactivity_paused = true;
+            self.read_inactivity_deadline = None;
+        } else if self.owner.read_allowance() == 0 {
             self.read_inactivity_paused = true;
             self.read_inactivity_deadline = None;
         } else if self.read_inactivity_paused {
@@ -746,6 +882,7 @@ impl StandaloneTcp {
     }
 
     fn note_peer_closed(&mut self) {
+        self.peer_closed = true;
         self.read_inactivity_paused = true;
         self.read_inactivity_deadline = None;
     }
@@ -981,6 +1118,7 @@ impl NativeHttpBackend {
             standalone_request_to_slot: HashMap::new(),
             standalone_pending: HashMap::new(),
             standalone_live: HashMap::new(),
+            standalone_tls_live: HashMap::new(),
             #[cfg(test)]
             failed_standalone_addresses_remaining: 0,
             #[cfg(test)]
@@ -1831,6 +1969,7 @@ impl NativeHttpBackend {
                     sink: lookup.sink,
                     remaining,
                     connect_deadline: lookup.connect_deadline,
+                    tls_options: lookup.tls_options,
                 });
             }
             PublicLookupOutcome::Completed { status, .. } => {
@@ -3013,6 +3152,31 @@ impl NativeHttpBackend {
     fn service_tls(&mut self, completions: &mut Vec<BackendCompletion>) -> Result<(), Error> {
         while let Some(finished) = self.tls_workers.take_finished() {
             let slot = finished.slot;
+            if !self.transfers.contains_key(&slot) {
+                if let Some(mut live) = self.standalone_tls_live.remove(&slot) {
+                    let outcome = if live
+                        .handshake_deadline
+                        .is_some_and(|at| at <= Instant::now())
+                    {
+                        Err(standalone_tls_timeout())
+                    } else {
+                        live.tls.restore_handshake(finished.session);
+                        match finished.progress {
+                            Ok(progress) => {
+                                self.apply_standalone_tls_progress(slot, &mut live, progress)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    };
+                    match outcome.and_then(|()| self.drive_standalone_tls(slot, &mut live)) {
+                        Ok(()) => {
+                            self.standalone_tls_live.insert(slot, live);
+                        }
+                        Err(error) => self.fail_standalone_tls(slot, live, error),
+                    }
+                }
+                continue;
+            }
             let Some(transfer) = self.transfers.get_mut(&slot) else {
                 continue;
             };
@@ -3063,6 +3227,31 @@ impl NativeHttpBackend {
             let Some((slot, input)) = self.handshake_waiting.pop_front() else {
                 break;
             };
+            if !self.transfers.contains_key(&slot) {
+                if let Some(mut live) = self.standalone_tls_live.remove(&slot) {
+                    let outcome = if live
+                        .handshake_deadline
+                        .is_some_and(|at| at <= Instant::now())
+                    {
+                        Err(standalone_tls_timeout())
+                    } else if let Some(session) = live.tls.take_handshake() {
+                        self.tls_workers
+                            .submit(slot, session, input, live.handshake_deadline)
+                    } else {
+                        Err(Error::new(
+                            ErrorKind::Internal,
+                            "standalone TLS handshake lost its session",
+                        ))
+                    };
+                    match outcome {
+                        Ok(()) => {
+                            self.standalone_tls_live.insert(slot, live);
+                        }
+                        Err(error) => self.fail_standalone_tls(slot, live, error),
+                    }
+                }
+                continue;
+            }
             let Some(transfer) = self.transfers.get_mut(&slot) else {
                 continue;
             };
@@ -3388,6 +3577,296 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn fail_standalone_tls(&mut self, slot: SlotId, mut live: StandaloneTlsTcp, error: Error) {
+        self.cancel_handshake(slot);
+        self.standalone_request_to_slot
+            .remove(&live.transport.request_id);
+        if let Some(sink) = live.sink.take() {
+            sink.fail(error);
+        } else {
+            live.transport.owner.fail(error);
+        }
+        self.reactor.cancel(slot);
+    }
+
+    fn apply_standalone_tls_progress(
+        &mut self,
+        slot: SlotId,
+        live: &mut StandaloneTlsTcp,
+        progress: TlsProgress,
+    ) -> Result<(), Error> {
+        if progress.peer_closed {
+            live.peer_close_notify = true;
+            if live.tls.protocol_version() == Some(rustls::ProtocolVersion::TLSv1_2) {
+                // The reactor has completed this readiness pass before returning its events.
+                // Credit a fully drained batch even when its WriteDrained event follows Data.
+                // Do this before adding a newly generated control response to wire_pending.
+                if live.plaintext_inflight != 0
+                    && live.wire_pending.is_empty()
+                    && !live.tls.wants_write()
+                    && self
+                        .reactor
+                        .outbound_is_empty(slot)
+                        .map_err(native_internal_error)?
+                {
+                    live.transport.owner.write_progress(live.plaintext_inflight);
+                    live.plaintext_inflight = 0;
+                }
+                if !live.transport.owner.close_write_admission_if_idle() {
+                    return Err(Error::tls(
+                        TransportStage::Send,
+                        TlsFailure::Protocol,
+                        "the TLS 1.2 peer closed with application output pending",
+                    ));
+                }
+            }
+        }
+        live.queue_wire(progress.outbound)?;
+        if progress.handshake_complete {
+            let control = live.tls.promote_control()?;
+            live.queue_wire(control)?;
+        }
+        if !progress.plaintext.is_empty() {
+            live.retain_plaintext(progress.plaintext.into_vec())?;
+        }
+        if progress.handshake_complete {
+            if let Some(sink) = live.sink.take() {
+                if live.peer_fin && !live.peer_close_notify {
+                    sink.fail(Error::tls(
+                        TransportStage::Tls,
+                        TlsFailure::Protocol,
+                        "the peer closed during the TLS handshake",
+                    ));
+                    return Err(Error::new(
+                        ErrorKind::EngineStopped,
+                        "TLS handshake socket closed",
+                    ));
+                }
+                if !sink.verified() {
+                    return Err(Error::new(
+                        ErrorKind::EngineStopped,
+                        "TLS establishment lost its terminal race",
+                    ));
+                }
+                let now = Instant::now();
+                live.transport.read_inactivity_deadline = live
+                    .transport
+                    .read_inactivity_timeout
+                    .and_then(|timeout| now.checked_add(timeout));
+                live.transport.write_inactivity_deadline = None;
+                live.handshake_deadline = None;
+            }
+        }
+        if live.peer_fin && live.handshaking() && !progress.handshake_complete {
+            return Err(Error::tls(
+                TransportStage::Tls,
+                TlsFailure::Truncated,
+                "the peer closed before completing TLS handshake",
+            ));
+        }
+        // Keep owner-driven allowance and deadlines synchronized after a worker result.
+        self.reactor
+            .set_deadline(
+                slot,
+                if live.handshaking() {
+                    live.handshake_deadline
+                } else {
+                    live.transport.next_deadline()
+                },
+            )
+            .map_err(native_internal_error)?;
+        Ok(())
+    }
+
+    fn drive_standalone_tls(
+        &mut self,
+        slot: SlotId,
+        live: &mut StandaloneTlsTcp,
+    ) -> Result<(), Error> {
+        if live.transport.owner.session_released() {
+            return Err(Error::new(
+                ErrorKind::EngineStopped,
+                "TLS connection was released",
+            ));
+        }
+        let now = Instant::now();
+        if live.handshaking() {
+            if live
+                .handshake_deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                return Err(standalone_tls_timeout());
+            }
+        } else if let Some(direction) = live.transport.expired(now) {
+            let message = match direction {
+                StandaloneInactivity::Read => "the standalone TLS read inactivity timeout expired",
+                StandaloneInactivity::Write => {
+                    "the standalone TLS write inactivity timeout expired"
+                }
+            };
+            return Err(Error::timeout(TimeoutKind::Inactivity, message));
+        }
+
+        while live.wire_offset < live.wire_pending.len() {
+            let capacity = self
+                .reactor
+                .outbound_capacity(slot)
+                .map_err(native_internal_error)?;
+            if capacity == 0 {
+                break;
+            }
+            let take = capacity.min(live.wire_pending.len() - live.wire_offset);
+            self.reactor
+                .queue_write(
+                    slot,
+                    &live.wire_pending[live.wire_offset..live.wire_offset + take],
+                )
+                .map_err(native_transport_error)?;
+            live.wire_offset += take;
+        }
+        if live.wire_offset == live.wire_pending.len() {
+            live.wire_pending.clear();
+            live.wire_offset = 0;
+        }
+        if live.wire_pending.is_empty() && !live.tls.handshake_in_worker() && live.tls.wants_write()
+        {
+            let capacity = self
+                .reactor
+                .outbound_capacity(slot)
+                .map_err(native_internal_error)?;
+            if capacity > 0 {
+                let wire = live
+                    .tls
+                    .drain_wire(capacity.min(STANDALONE_TLS_WIRE_WINDOW))?;
+                if !wire.is_empty() {
+                    self.reactor
+                        .queue_write(slot, &wire)
+                        .map_err(native_transport_error)?;
+                }
+            }
+        }
+
+        if live.handshaking() {
+            let blocked = live.tls.handshake_in_worker()
+                || self.handshake_waiting.iter().any(|(id, _)| *id == slot);
+            self.reactor
+                .set_read_allowance(slot, Some(if blocked { 0 } else { INPUT_WINDOW }))
+                .map_err(native_internal_error)?;
+            self.reactor
+                .set_deadline(slot, live.handshake_deadline)
+                .map_err(native_internal_error)?;
+            return Ok(());
+        }
+
+        while live.retained_len() != 0 {
+            let allowance = live.transport.owner.read_allowance();
+            if allowance == 0 {
+                break;
+            }
+            let take = allowance.min(live.retained_len());
+            let bytes =
+                live.retained_plaintext[live.retained_offset..live.retained_offset + take].to_vec();
+            live.transport.owner.push_inbound(bytes)?;
+            live.retained_offset += take;
+        }
+        if live.retained_len() == 0 {
+            live.retained_plaintext = Vec::new();
+            live.retained_offset = 0;
+            if live.peer_close_notify {
+                live.transport.owner.peer_closed();
+                live.transport.note_peer_closed();
+            }
+        }
+
+        let wire_drained = live.wire_pending.is_empty()
+            && !live.tls.wants_write()
+            && self
+                .reactor
+                .outbound_is_empty(slot)
+                .map_err(native_internal_error)?;
+        if wire_drained && live.plaintext_inflight != 0 {
+            live.transport.owner.write_progress(live.plaintext_inflight);
+            live.plaintext_inflight = 0;
+            live.transport.note_write_progress(Instant::now());
+        }
+        if wire_drained && live.plaintext_inflight == 0 && !live.local_close_notify {
+            if let Some(bytes) = live.transport.owner.take_tls_outbound_up_to(16 * 1024) {
+                let (consumed, wire) = live.tls.encrypt(&bytes, STANDALONE_TLS_WIRE_WINDOW)?;
+                if consumed != bytes.len() {
+                    return Err(Error::new(
+                        ErrorKind::Internal,
+                        "standalone TLS did not encrypt its complete admitted chunk",
+                    ));
+                }
+                live.plaintext_inflight = consumed;
+                live.queue_wire(wire)?;
+            }
+        }
+        if live.transport.owner.finish_requested()
+            && live.transport.owner.send_occupancy() == 0
+            && live.plaintext_inflight == 0
+            && !live.local_close_notify
+        {
+            let alert = live.tls.send_close_notify()?;
+            live.queue_wire(alert)?;
+            live.local_close_notify = true;
+        }
+        if live.local_close_notify
+            && live.wire_pending.is_empty()
+            && !live.tls.wants_write()
+            && self
+                .reactor
+                .outbound_is_empty(slot)
+                .map_err(native_internal_error)?
+            && !live.write_shutdown
+        {
+            self.reactor
+                .shutdown_write(slot)
+                .map_err(native_transport_error)?;
+            live.write_shutdown = true;
+            live.transport.owner.complete_write_shutdown()?;
+        }
+        live.transport.sync_pressure(Instant::now());
+        let allowance = if live.retained_len() == 0
+            && !live.peer_close_notify
+            && live.transport.owner.read_allowance() != 0
+        {
+            STANDALONE_TLS_WIRE_WINDOW
+        } else {
+            0
+        };
+        self.reactor
+            .set_read_allowance(slot, Some(allowance))
+            .map_err(native_internal_error)?;
+        self.reactor
+            .set_deadline(slot, live.transport.next_deadline())
+            .map_err(native_internal_error)?;
+        Ok(())
+    }
+
+    fn service_standalone_tls(&mut self) -> Result<(), Error> {
+        let slots = self.standalone_tls_live.keys().copied().collect::<Vec<_>>();
+        for slot in slots {
+            let Some(mut live) = self.standalone_tls_live.remove(&slot) else {
+                continue;
+            };
+            if live.transport.owner.session_released() {
+                self.cancel_handshake(slot);
+                self.standalone_request_to_slot
+                    .remove(&live.transport.request_id);
+                self.reactor.cancel(slot);
+                continue;
+            }
+            match self.drive_standalone_tls(slot, &mut live) {
+                Ok(()) => {
+                    self.standalone_tls_live.insert(slot, live);
+                }
+                Err(error) => self.fail_standalone_tls(slot, live, error),
+            }
+        }
+        Ok(())
+    }
+
     fn resume_standalone_tcp(&mut self) -> Result<(), Error> {
         let cancelled = self
             .standalone_pending
@@ -3458,6 +3937,109 @@ impl NativeHttpBackend {
         Ok(())
     }
 
+    fn handle_standalone_tls_event(
+        &mut self,
+        event: &NativeEvent,
+        terminal_failure_in_batch: bool,
+    ) -> Result<bool, Error> {
+        let slot = match event {
+            NativeEvent::Connected(slot)
+            | NativeEvent::WriteProgress(slot, _)
+            | NativeEvent::WriteDrained(slot)
+            | NativeEvent::Data(slot, _)
+            | NativeEvent::PeerClosed(slot)
+            | NativeEvent::Failed(slot, _)
+            | NativeEvent::DeadlineExpired(slot) => *slot,
+        };
+        let Some(mut live) = self.standalone_tls_live.remove(&slot) else {
+            return Ok(false);
+        };
+        let outcome = (|| -> Result<(), Error> {
+            match event {
+                NativeEvent::Connected(_) => {}
+                NativeEvent::WriteProgress(_, _) | NativeEvent::WriteDrained(_) => {
+                    if !live.handshaking() {
+                        live.transport.note_write_progress(Instant::now());
+                    }
+                }
+                NativeEvent::Data(_, bytes) => {
+                    if terminal_failure_in_batch {
+                        return Ok(());
+                    }
+                    if live.handshaking() {
+                        if bytes.len() > INPUT_WINDOW
+                            || live.tls.handshake_in_worker()
+                            || self.handshake_waiting.iter().any(|(id, _)| *id == slot)
+                        {
+                            return Err(Error::new(
+                                ErrorKind::Internal,
+                                "TLS handshake received bytes without input allowance",
+                            ));
+                        }
+                        self.reactor
+                            .set_read_allowance(slot, Some(0))
+                            .map_err(native_internal_error)?;
+                        self.handshake_waiting.push_back((
+                            slot,
+                            crate::body_budget::BodyBuffer::from_vec(bytes.to_vec()),
+                        ));
+                    } else {
+                        live.transport.note_read_progress(Instant::now());
+                        let progress = live.tls.receive(bytes)?;
+                        self.apply_standalone_tls_progress(slot, &mut live, progress)?;
+                    }
+                }
+                NativeEvent::PeerClosed(_) => {
+                    live.peer_fin = true;
+                    if live.handshaking() {
+                        if !live.tls.handshake_in_worker()
+                            && !self.handshake_waiting.iter().any(|(id, _)| *id == slot)
+                        {
+                            return Err(Error::tls(
+                                TransportStage::Tls,
+                                TlsFailure::Protocol,
+                                "the peer closed during TLS handshake",
+                            ));
+                        }
+                    } else if !live.peer_close_notify {
+                        return Err(Error::tls(
+                            TransportStage::Receive,
+                            TlsFailure::Truncated,
+                            "the TLS peer closed without an authenticated close notification",
+                        ));
+                    }
+                }
+                NativeEvent::Failed(_, failure) => {
+                    return Err(if live.handshaking() {
+                        Error::tls(TransportStage::Tls, TlsFailure::Io, failure.message.clone())
+                    } else {
+                        native_transport_error(failure.clone())
+                    });
+                }
+                NativeEvent::DeadlineExpired(_) => {
+                    let now = Instant::now();
+                    if live.handshaking() && live.handshake_deadline.is_some_and(|at| at <= now) {
+                        return Err(standalone_tls_timeout());
+                    }
+                    if !live.handshaking() && live.transport.expired(now).is_some() {
+                        return Err(Error::timeout(
+                            TimeoutKind::Inactivity,
+                            "standalone TLS inactivity timeout expired",
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
+                self.standalone_tls_live.insert(slot, live);
+            }
+            Err(error) => self.fail_standalone_tls(slot, live, error),
+        }
+        Ok(true)
+    }
+
     fn handle_standalone_event(
         &mut self,
         event: &NativeEvent,
@@ -3482,7 +4064,7 @@ impl NativeHttpBackend {
                 if terminal_failure_in_batch {
                     return Ok(true);
                 }
-                let Some(sink) = self.standalone_pending.remove(slot) else {
+                let Some(mut sink) = self.standalone_pending.remove(slot) else {
                     return Ok(true);
                 };
                 if sink.is_terminal() {
@@ -3503,12 +4085,6 @@ impl NativeHttpBackend {
                     self.reactor.cancel(*slot);
                     return Ok(true);
                 };
-                self.reactor
-                    .set_deadline(*slot, None)
-                    .map_err(native_internal_error)?;
-                self.reactor
-                    .set_read_allowance(*slot, Some(owner.read_allowance()))
-                    .map_err(native_internal_error)?;
                 let live = StandaloneTcp::new(
                     sink.id(),
                     owner,
@@ -3516,6 +4092,64 @@ impl NativeHttpBackend {
                     sink.write_inactivity_timeout(),
                     Instant::now(),
                 );
+                if let Some(options) = sink.tls_options.take() {
+                    let StandaloneSink::Tls(tls_sink) = sink.sink else {
+                        unreachable!("TLS options require a TLS sink")
+                    };
+                    let Some(config) = &self.tls else {
+                        tls_sink.fail(Error::new(
+                            ErrorKind::Unsupported,
+                            "native TLS configuration is unavailable",
+                        ));
+                        self.reactor.cancel(*slot);
+                        return Ok(true);
+                    };
+                    let mut tls = match config.standalone_connection(options.server_name()) {
+                        Ok(tls) => tls,
+                        Err(error) => {
+                            tls_sink.fail(error);
+                            self.reactor.cancel(*slot);
+                            return Ok(true);
+                        }
+                    };
+                    let outbound = match tls.start() {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            tls_sink.fail(error);
+                            self.reactor.cancel(*slot);
+                            return Ok(true);
+                        }
+                    };
+                    let mut live = StandaloneTlsTcp {
+                        transport: live,
+                        tls,
+                        sink: Some(tls_sink),
+                        handshake_deadline: sink.connect_deadline,
+                        wire_pending: StandaloneTlsTcp::wire_buffer(),
+                        wire_offset: 0,
+                        retained_plaintext: Vec::new(),
+                        retained_offset: 0,
+                        plaintext_inflight: 0,
+                        peer_close_notify: false,
+                        peer_fin: false,
+                        local_close_notify: false,
+                        write_shutdown: false,
+                    };
+                    live.transport.read_inactivity_deadline = None;
+                    live.transport.write_inactivity_deadline = None;
+                    live.queue_wire(outbound)?;
+                    self.reactor
+                        .set_read_allowance(*slot, Some(INPUT_WINDOW))
+                        .map_err(native_internal_error)?;
+                    self.reactor
+                        .set_deadline(*slot, live.handshake_deadline)
+                        .map_err(native_internal_error)?;
+                    self.standalone_tls_live.insert(*slot, live);
+                    return Ok(true);
+                }
+                self.reactor
+                    .set_read_allowance(*slot, Some(live.owner.read_allowance()))
+                    .map_err(native_internal_error)?;
                 self.reactor
                     .set_deadline(*slot, live.next_deadline())
                     .map_err(native_internal_error)?;
@@ -3648,6 +4282,9 @@ impl NativeHttpBackend {
                 | NativeEvent::Failed(slot, _)
                 | NativeEvent::DeadlineExpired(slot) => *slot,
             };
+            if self.handle_standalone_tls_event(&event, failed_slots.contains(&event_slot))? {
+                continue;
+            }
             if self.handle_standalone_event(&event, failed_slots.contains(&event_slot))? {
                 continue;
             }
@@ -3926,9 +4563,13 @@ impl Backend for NativeHttpBackend {
             return;
         }
         if let Some(slot) = self.standalone_request_to_slot.remove(&id) {
+            self.cancel_handshake(slot);
             self.standalone_pending.remove(&slot);
             if let Some(mut live) = self.standalone_live.remove(&slot) {
                 live.owner.cancel();
+            }
+            if let Some(mut live) = self.standalone_tls_live.remove(&slot) {
+                live.transport.owner.cancel();
             }
             self.reactor.cancel(slot);
             return;
@@ -3971,6 +4612,7 @@ impl Backend for NativeHttpBackend {
     fn poll(&mut self, deadline: Instant) -> Result<Vec<BackendCompletion>, Error> {
         self.apply_idle_http_eviction()?;
         self.resume_standalone_tcp()?;
+        self.service_standalone_tls()?;
         self.expire_idle(Instant::now());
         let mut completions = self.dispatch_waiting();
         self.drain_dns()?;
@@ -3978,6 +4620,7 @@ impl Backend for NativeHttpBackend {
         completions.extend(self.expire_resolves()?);
         completions.extend(self.dispatch_waiting());
         self.service_tls(&mut completions)?;
+        self.service_standalone_tls()?;
         self.resume_streams(&mut completions)?;
         let poll_deadline = if completions.is_empty() {
             deadline
@@ -3991,6 +4634,7 @@ impl Backend for NativeHttpBackend {
         completions.extend(self.process_events(events)?);
         self.service_tls(&mut completions)?;
         self.resume_standalone_tcp()?;
+        self.service_standalone_tls()?;
         self.drain_dns()?;
         completions.extend(std::mem::take(&mut self.pending_http_from_dns));
         completions.extend(self.expire_resolves()?);
@@ -4027,6 +4671,7 @@ impl Backend for NativeHttpBackend {
         self.standalone_request_to_slot.clear();
         self.standalone_pending.clear();
         self.standalone_live.clear();
+        self.standalone_tls_live.clear();
         if let Some(metrics) = &self.metrics {
             for _ in 0..closing {
                 metrics.connection_closed(0);
@@ -4064,6 +4709,7 @@ impl Backend for NativeHttpBackend {
             || !self.standalone_resolves.is_empty()
             || !self.standalone_pending.is_empty()
             || !self.standalone_live.is_empty()
+            || !self.standalone_tls_live.is_empty()
     }
 
     fn supports_streaming(&self) -> bool {
@@ -4090,9 +4736,10 @@ impl Backend for NativeHttpBackend {
         match request.target() {
             TcpConnectTarget::Literal(address) => {
                 self.start_standalone_attempt(StandalonePending {
-                    sink,
+                    sink: StandaloneSink::Plain(sink),
                     remaining: VecDeque::from([*address]),
                     connect_deadline: deadline,
+                    tls_options: None,
                 });
             }
             TcpConnectTarget::Hostname { name, port } => {
@@ -4138,13 +4785,239 @@ impl Backend for NativeHttpBackend {
                 self.standalone_resolves.insert(
                     key,
                     StandaloneResolve {
-                        sink,
+                        sink: StandaloneSink::Plain(sink),
                         port: *port,
                         connect_deadline: deadline,
+                        tls_options: None,
                     },
                 );
             }
         }
+    }
+
+    fn submit_tls_connect(
+        &mut self,
+        request: TcpConnectRequest,
+        options: TlsOptions,
+        sink: TlsConnectSink,
+        accepted_at: Instant,
+    ) {
+        if self.tls.is_none() {
+            sink.fail(Error::new(
+                ErrorKind::Unsupported,
+                "the native Engine has no verified TLS configuration",
+            ));
+            return;
+        }
+        let Some(tls_deadline) = accepted_at.checked_add(options.timeout()) else {
+            sink.fail(Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS handshake timeout cannot be represented by the Engine clock",
+            ));
+            return;
+        };
+        let deadline = [
+            Some(tls_deadline),
+            request
+                .connect_timeout()
+                .and_then(|timeout| accepted_at.checked_add(timeout)),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        match request.target() {
+            TcpConnectTarget::Literal(address) => {
+                self.start_standalone_attempt(StandalonePending {
+                    sink: StandaloneSink::Tls(sink),
+                    remaining: VecDeque::from([*address]),
+                    connect_deadline: deadline,
+                    tls_options: Some(options),
+                });
+            }
+            TcpConnectTarget::Hostname { name, port } => {
+                if self.resolver.is_none() {
+                    sink.fail(Error::new(
+                        ErrorKind::Unsupported,
+                        "hostname TLS connections require the native resolver owner",
+                    ));
+                    return;
+                }
+                if deadline.is_some_and(|at| at <= Instant::now()) {
+                    sink.fail(standalone_tls_timeout());
+                    return;
+                }
+                let key = match self.next_resolve_key() {
+                    Ok(key) => key,
+                    Err(error) => {
+                        sink.fail(error);
+                        return;
+                    }
+                };
+                if let Err(error) = self
+                    .resolver
+                    .as_ref()
+                    .expect("resolver checked")
+                    .public_resolve(
+                        key,
+                        PublicResolveSpec {
+                            host: name.clone(),
+                            family: AddressFamily::Both,
+                            order: AddressOrder::Ipv4ThenIpv6,
+                            cache_mode: CacheMode::Use,
+                            max_results: sink.max_resolve_results(),
+                            expand_search: false,
+                            unavailable_is_unsupported: false,
+                        },
+                    )
+                {
+                    sink.fail(error);
+                    return;
+                }
+                self.standalone_request_to_resolve.insert(sink.id(), key);
+                self.standalone_resolves.insert(
+                    key,
+                    StandaloneResolve {
+                        sink: StandaloneSink::Tls(sink),
+                        port: *port,
+                        connect_deadline: deadline,
+                        tls_options: Some(options),
+                    },
+                );
+            }
+        }
+    }
+
+    fn submit_tls_upgrade(
+        &mut self,
+        options: TlsOptions,
+        sink: TlsConnectSink,
+        accepted_at: Instant,
+    ) {
+        let Some(slot) = self.standalone_request_to_slot.get(&sink.id()).copied() else {
+            sink.fail(Error::new(
+                ErrorKind::InvalidRequest,
+                "the TCP connection is no longer owned by the native reactor",
+            ));
+            return;
+        };
+        let Some(mut transport) = self.standalone_live.remove(&slot) else {
+            sink.fail(Error::new(
+                ErrorKind::InvalidRequest,
+                "the TCP connection cannot be upgraded in its current state",
+            ));
+            return;
+        };
+        if transport.owner.session_released() {
+            sink.fail(Error::new(
+                ErrorKind::EngineStopped,
+                "the TCP connection was released before TLS upgrade",
+            ));
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        }
+        if !transport.owner.upgrade_boundary_clean()
+            || !self.reactor.outbound_is_empty(slot).unwrap_or(false)
+        {
+            sink.fail(Error::new(
+                ErrorKind::InvalidRequest,
+                "the TCP connection changed across the TLS upgrade boundary",
+            ));
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        }
+        if let Err(error) = self
+            .reactor
+            .set_read_allowance(slot, Some(0))
+            .and_then(|()| {
+                self.reactor
+                    .set_outbound_limit(slot, STANDALONE_TLS_WIRE_WINDOW)
+            })
+        {
+            sink.fail(native_internal_error(error));
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        }
+        let Some(deadline) = accepted_at.checked_add(options.timeout()) else {
+            sink.fail(Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS handshake timeout cannot be represented by the Engine clock",
+            ));
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        };
+        if deadline <= Instant::now() {
+            sink.fail(standalone_tls_timeout());
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        }
+        let deadline = Some(deadline);
+        let Some(config) = &self.tls else {
+            sink.fail(Error::new(
+                ErrorKind::Unsupported,
+                "native TLS configuration is unavailable",
+            ));
+            self.standalone_request_to_slot.remove(&sink.id());
+            self.reactor.cancel(slot);
+            return;
+        };
+        let mut tls = match config.standalone_connection(options.server_name()) {
+            Ok(tls) => tls,
+            Err(error) => {
+                sink.fail(error);
+                self.standalone_request_to_slot.remove(&sink.id());
+                self.reactor.cancel(slot);
+                return;
+            }
+        };
+        let outbound = match tls.start() {
+            Ok(outbound) => outbound,
+            Err(error) => {
+                sink.fail(error);
+                self.standalone_request_to_slot.remove(&sink.id());
+                self.reactor.cancel(slot);
+                return;
+            }
+        };
+        transport.read_inactivity_deadline = None;
+        transport.write_inactivity_deadline = None;
+        let mut live = StandaloneTlsTcp {
+            transport,
+            tls,
+            sink: Some(sink),
+            handshake_deadline: deadline,
+            wire_pending: StandaloneTlsTcp::wire_buffer(),
+            wire_offset: 0,
+            retained_plaintext: Vec::new(),
+            retained_offset: 0,
+            plaintext_inflight: 0,
+            peer_close_notify: false,
+            peer_fin: false,
+            local_close_notify: false,
+            write_shutdown: false,
+        };
+        if let Err(error) = live.queue_wire(outbound) {
+            self.fail_standalone_tls(slot, live, error);
+            return;
+        }
+        if let Err(error) = self
+            .reactor
+            .set_read_allowance(slot, Some(INPUT_WINDOW))
+            .map_err(native_internal_error)
+            .and_then(|()| {
+                self.reactor
+                    .set_deadline(slot, deadline)
+                    .map_err(native_internal_error)
+            })
+        {
+            self.fail_standalone_tls(slot, live, error);
+            return;
+        }
+        self.standalone_tls_live.insert(slot, live);
     }
 
     #[cfg(feature = "resolver")]
@@ -4223,6 +5096,13 @@ fn standalone_connect_timeout() -> Error {
     Error::timeout(
         TimeoutKind::Connect,
         "the standalone TCP connection-establishment timeout expired",
+    )
+}
+
+fn standalone_tls_timeout() -> Error {
+    Error::timeout(
+        TimeoutKind::Connect,
+        "the standalone TLS establishment timeout expired",
     )
 }
 

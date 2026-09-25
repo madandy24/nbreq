@@ -32,6 +32,12 @@ impl TlsOptions {
         } else {
             normalize_dns_name(&server_name)?.identity
         };
+        if server_name.parse::<IpAddr>().is_err() && !valid_tls_dns_name(&server_name) {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS server name is not a valid DNS identity or IP address",
+            ));
+        }
         Ok(Self {
             server_name,
             handshake_timeout: Duration::from_secs(10),
@@ -45,11 +51,13 @@ impl TlsOptions {
         self
     }
 
+    /// Returns the certificate identity used for verification.
     #[must_use]
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
 
+    /// Returns the establishment timeout selected for this connection.
     #[must_use]
     pub fn timeout(&self) -> Duration {
         self.handshake_timeout
@@ -62,8 +70,46 @@ impl TlsOptions {
                 "TLS handshake timeout must be greater than zero",
             ));
         }
+        if std::time::Instant::now()
+            .checked_add(self.handshake_timeout)
+            .is_none()
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS handshake timeout cannot be represented by the Engine clock",
+            ));
+        }
         Ok(())
     }
+}
+
+fn valid_tls_dns_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 {
+        return false;
+    }
+    let mut labels = name.split('.').peekable();
+    while let Some(label) = labels.next() {
+        if label.is_empty()
+            || label.len() > 63
+            || !label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return false;
+        }
+        if labels.peek().is_none() && label.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Independent cancellation handle for a pending TLS connect or live TLS connection.
@@ -78,11 +124,13 @@ impl TlsConnectHandle {
         Self { connector, id }
     }
 
+    /// Returns the original TCP request identity, preserved across an upgrade.
     #[must_use]
     pub fn id(&self) -> RequestId {
         self.id
     }
 
+    /// Cancels pending TLS establishment or aborts the live TLS connection.
     pub fn cancel(&self) -> Result<(), Error> {
         self.connector.cancel(self.id)
     }
@@ -92,15 +140,21 @@ impl TlsConnectHandle {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TlsConnectCompletion {
+    /// A verified TLS connection is ready for application I/O.
     Completed(TlsConnection),
+    /// DNS, TCP, or TLS establishment failed.
     Failed(Error),
+    /// Cancellation won the terminal race.
     Cancelled,
 }
 
+/// Result of a timed wait for TLS establishment.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TlsConnectWaitOutcome {
+    /// TLS establishment reached its canonical terminal outcome.
     Completed(TlsConnectCompletion),
+    /// The wait elapsed; this handle can be waited on again or cancelled.
     TimedOut(PendingTlsConnect),
 }
 
@@ -116,11 +170,13 @@ impl PendingTlsConnect {
         Self { handle, state }
     }
 
+    /// Returns a separate handle for cancellation and request identity.
     #[must_use]
     pub fn handle(&self) -> TlsConnectHandle {
         self.handle.clone()
     }
 
+    /// Reports whether a terminal outcome has committed.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.state.is_terminal()
@@ -134,11 +190,13 @@ impl PendingTlsConnect {
         self.handle.id.engine
     }
 
+    /// Waits for the terminal outcome. A manual Engine needs another driver to make progress.
     #[must_use]
     pub fn wait(self) -> TlsConnectCompletion {
         self.state.wait()
     }
 
+    /// Waits up to `duration`, returning the pending handle when the wait expires.
     #[must_use]
     pub fn wait_for(self, duration: Duration) -> TlsConnectWaitOutcome {
         match self.state.wait_for(duration) {
@@ -163,6 +221,7 @@ impl fmt::Debug for TlsConnection {
 }
 
 impl TlsConnection {
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn from_tcp(inner: TcpConnection) -> Self {
         Self {
             inner,
@@ -170,16 +229,20 @@ impl TlsConnection {
         }
     }
 
+    /// Returns the connection's cancellation handle and original request identity.
     #[must_use]
     pub fn handle(&self) -> TcpConnectionHandle {
         self.inner.handle()
     }
+    /// Returns the local socket address.
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         self.inner.local_addr()
     }
+    /// Returns the connected peer address.
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
         self.inner.peer_addr()
     }
+    /// Splits the verified stream into independently owned read and write halves.
     #[must_use]
     pub fn split(self) -> (TlsReader, TlsWriter) {
         let (reader, writer) = self.inner.split();
@@ -194,24 +257,31 @@ impl TlsConnection {
             },
         )
     }
+    /// Reads available authenticated plaintext without blocking.
     pub fn try_read(&mut self, destination: &mut [u8]) -> Result<TcpRead, TcpStreamError> {
         self.inner.try_read(destination)
     }
+    /// Waits for authenticated plaintext or orderly TLS EOF.
     pub fn read(&mut self, destination: &mut [u8]) -> Result<Option<usize>, TcpStreamError> {
         self.inner.read(destination)
     }
+    /// Admits plaintext to the bounded TLS send queue without blocking.
     pub fn try_send(&mut self, bytes: Vec<u8>) -> Result<(), TcpSendError> {
         self.inner.try_send(bytes)
     }
+    /// Waits for enough send credit to admit the complete plaintext buffer.
     pub fn send(&mut self, bytes: Vec<u8>) -> Result<(), TcpSendError> {
         self.inner.send(bytes)
     }
+    /// Requests an orderly TLS `close_notify` after accepted writes drain.
     pub fn try_finish(&mut self) -> Result<TcpFinishStatus, TcpFinishError> {
         self.inner.try_finish()
     }
+    /// Waits until the orderly TLS write close completes.
     pub fn finish(&mut self) -> Result<(), TcpFinishError> {
         self.inner.finish()
     }
+    /// Registers a callback for the orderly TLS write close.
     pub fn finish_with<F>(&mut self, callback: F) -> Result<(), Error>
     where
         F: FnOnce(Result<(), TcpFinishError>) + Send + 'static,
@@ -220,6 +290,7 @@ impl TlsConnection {
     }
 }
 
+/// Read half of a verified standalone TLS stream.
 pub struct TlsReader {
     inner: TcpReader,
     _not_sync: PhantomData<Cell<()>>,
@@ -230,18 +301,22 @@ impl fmt::Debug for TlsReader {
     }
 }
 impl TlsReader {
+    /// Returns the connection's cancellation handle and request identity.
     #[must_use]
     pub fn handle(&self) -> TcpConnectionHandle {
         self.inner.handle()
     }
+    /// Reads available authenticated plaintext without blocking.
     pub fn try_read(&mut self, destination: &mut [u8]) -> Result<TcpRead, TcpStreamError> {
         self.inner.try_read(destination)
     }
+    /// Waits for authenticated plaintext or orderly TLS EOF.
     pub fn read(&mut self, destination: &mut [u8]) -> Result<Option<usize>, TcpStreamError> {
         self.inner.read(destination)
     }
 }
 
+/// Write half of a verified standalone TLS stream.
 pub struct TlsWriter {
     inner: TcpWriter,
     _not_sync: PhantomData<Cell<()>>,
@@ -252,22 +327,28 @@ impl fmt::Debug for TlsWriter {
     }
 }
 impl TlsWriter {
+    /// Returns the connection's cancellation handle and request identity.
     #[must_use]
     pub fn handle(&self) -> TcpConnectionHandle {
         self.inner.handle()
     }
+    /// Admits plaintext to the bounded TLS send queue without blocking.
     pub fn try_send(&mut self, bytes: Vec<u8>) -> Result<(), TcpSendError> {
         self.inner.try_send(bytes)
     }
+    /// Waits for enough send credit to admit the complete plaintext buffer.
     pub fn send(&mut self, bytes: Vec<u8>) -> Result<(), TcpSendError> {
         self.inner.send(bytes)
     }
+    /// Requests an orderly TLS `close_notify` after accepted writes drain.
     pub fn try_finish(&mut self) -> Result<TcpFinishStatus, TcpFinishError> {
         self.inner.try_finish()
     }
+    /// Waits until the orderly TLS write close completes.
     pub fn finish(&mut self) -> Result<(), TcpFinishError> {
         self.inner.finish()
     }
+    /// Registers a callback for the orderly TLS write close.
     pub fn finish_with<F>(&mut self, callback: F) -> Result<(), Error>
     where
         F: FnOnce(Result<(), TcpFinishError>) + Send + 'static,
@@ -277,6 +358,7 @@ impl TlsWriter {
 }
 
 impl TcpConnector {
+    /// Starts a verified TLS connection and delivers one terminal callback.
     pub fn start_tls<F>(
         &self,
         request: TcpConnectRequest,
@@ -293,6 +375,7 @@ impl TcpConnector {
         Ok(TlsConnectHandle::new(self.clone(), accepted.id()))
     }
 
+    /// Submits a verified TLS connection and returns a passive waiter.
     pub fn submit_tls(
         &self,
         request: TcpConnectRequest,
@@ -307,6 +390,7 @@ impl TcpConnector {
         ))
     }
 
+    /// Establishes TLS and waits for verification on a spawned Engine.
     pub fn execute_tls(
         &self,
         request: TcpConnectRequest,
@@ -330,6 +414,7 @@ impl TcpConnector {
 }
 
 impl TcpConnection {
+    /// Consumes an idle unsplit TCP connection and starts verified TLS upgrade.
     pub fn start_tls<F>(
         mut self,
         options: TlsOptions,
@@ -352,6 +437,7 @@ impl TcpConnection {
         ))
     }
 
+    /// Consumes an idle unsplit TCP connection and returns an upgrade waiter.
     pub fn submit_tls(mut self, options: TlsOptions) -> Result<PendingTlsConnect, Error> {
         let state = self.handle.connector.shared.accept_tls_upgrade(
             self.handle.connector.clone(),
@@ -366,6 +452,7 @@ impl TcpConnection {
         ))
     }
 
+    /// Consumes an idle unsplit TCP connection and waits for verified upgrade.
     pub fn into_tls(self, options: TlsOptions) -> Result<TlsConnection, ExecuteError> {
         if self.handle.connector.shared.run_mode == RunMode::Manual {
             return Err(ExecuteError::Submission(Error::new(
@@ -381,5 +468,61 @@ impl TcpConnection {
             },
             Err(error) => Err(ExecuteError::Submission(error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    #[test]
+    fn tls_identity_admission_rejects_invalid_numeric_tlds_and_accepts_ip() {
+        for invalid in ["mail.123", "127.0.0.999", "bad..example"] {
+            assert_eq!(
+                TlsOptions::new(invalid)
+                    .expect_err("invalid TLS identity")
+                    .kind(),
+                ErrorKind::InvalidRequest,
+                "{invalid} must fail before admission",
+            );
+        }
+        assert_eq!(
+            TlsOptions::new("127.0.0.1")
+                .expect("IPv4 identity")
+                .server_name(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            TlsOptions::new("::1").expect("IPv6 identity").server_name(),
+            "::1"
+        );
+        assert_eq!(
+            TlsOptions::new("mail.example")
+                .expect("DNS identity")
+                .server_name(),
+            "mail.example"
+        );
+    }
+
+    #[test]
+    fn tls_establishment_deadline_must_be_finite_and_representable() {
+        let options = TlsOptions::new("mail.example").expect("DNS identity");
+        assert_eq!(
+            options
+                .clone()
+                .handshake_timeout(Duration::ZERO)
+                .validate()
+                .expect_err("zero timeout rejected")
+                .kind(),
+            ErrorKind::InvalidRequest,
+        );
+        assert_eq!(
+            options
+                .handshake_timeout(Duration::MAX)
+                .validate()
+                .expect_err("unrepresentable timeout rejected")
+                .kind(),
+            ErrorKind::InvalidRequest,
+        );
     }
 }
