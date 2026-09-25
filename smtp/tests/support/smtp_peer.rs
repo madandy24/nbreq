@@ -83,7 +83,7 @@ pub(crate) enum Step {
     },
     ExpectClose,
     ExpectQuitOrClose,
-    CloseNotify,
+    ExpectTlsCloseNotify,
     Close,
 }
 
@@ -102,11 +102,6 @@ impl Gate {
                 release: release_rx,
             },
         )
-    }
-    pub(crate) fn entered(&self) {
-        self.entered
-            .recv_timeout(DEADLINE)
-            .expect("SMTP peer reaches gate");
     }
     pub(crate) fn try_entered(&self) -> bool {
         self.entered.try_recv().is_ok()
@@ -156,7 +151,7 @@ impl Drop for Peer {
 
 enum Wire {
     Plain(TcpStream),
-    Tls(StreamOwned<ServerConnection, TcpStream>),
+    Tls(Box<StreamOwned<ServerConnection, TcpStream>>),
 }
 impl Read for Wire {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -209,7 +204,7 @@ fn run(
         Entry::Plain => Wire::Plain(socket),
         Entry::ImplicitTls { expect_handshake } => {
             match upgrade(socket, Arc::clone(&server), stop, deadline) {
-                Ok(tls) if expect_handshake => Wire::Tls(tls),
+                Ok(tls) if expect_handshake => Wire::Tls(Box::new(tls)),
                 Ok(_) => return Err("unexpected TLS handshake success".into()),
                 Err(_) if !expect_handshake => return Ok(()),
                 Err(error) => return Err(format!("implicit TLS handshake: {error}")),
@@ -255,7 +250,7 @@ fn run(
                     return Err("TLS upgrade on protected wire".into());
                 };
                 match upgrade(socket, Arc::clone(&server), stop, deadline) {
-                    Ok(tls) if expect_handshake => wire = Wire::Tls(tls),
+                    Ok(tls) if expect_handshake => wire = Wire::Tls(Box::new(tls)),
                     Ok(_) => return Err("unexpected STARTTLS handshake success".into()),
                     Err(_) if !expect_handshake => return Ok(()),
                     Err(error) => return Err(format!("STARTTLS handshake: {error}")),
@@ -292,20 +287,27 @@ fn run(
             Step::ExpectQuitOrClose => {
                 let mut first = [0];
                 loop {
-                    if expired(stop, deadline) { return Err("SMTP cleanup deadline or stop".into()); }
+                    if expired(stop, deadline) {
+                        return Err("SMTP cleanup deadline or stop".into());
+                    }
                     match wire.read(&mut first) {
                         Ok(0) => return Ok(()),
                         Ok(_) => break,
-                        Err(error) if retry(&error) => {},
+                        Err(error) if retry(&error) => {}
                         Err(error) if closed(&error) => return Ok(()),
                         Err(error) => return Err(format!("SMTP cleanup read: {error}")),
                     }
                 }
                 let mut command = vec![first[0]];
                 while !command.ends_with(b"\r\n") && command.len() < 4096 {
-                    command.extend(read_exact_bytes(&mut wire, 1, stop, deadline).map_err(|e| e.to_string())?);
+                    command.extend(
+                        read_exact_bytes(&mut wire, 1, stop, deadline)
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
-                if command != b"QUIT\r\n" { return Err(format!("unexpected command during cleanup: {command:?}")); }
+                if command != b"QUIT\r\n" {
+                    return Err(format!("unexpected command during cleanup: {command:?}"));
+                }
                 if let Err(error) = write_all(&mut wire, b"221 bye\r\n", stop, deadline) {
                     if !closed(&error) && error.kind() != io::ErrorKind::BrokenPipe {
                         return Err(format!("SMTP cleanup reply: {error}"));
@@ -313,13 +315,40 @@ fn run(
                 }
                 return Ok(());
             }
-            Step::CloseNotify => {
+            Step::ExpectTlsCloseNotify => {
                 let Wire::Tls(tls) = &mut wire else {
-                    return Err("TLS close_notify on plaintext wire".into());
+                    return Err("client close_notify expected on plaintext wire".into());
                 };
-                tls.conn.send_close_notify();
-                tls.flush().map_err(|error| format!("TLS close_notify: {error}"))?;
-                return Ok(());
+                loop {
+                    if expired(stop, deadline) {
+                        return Err("client close_notify deadline or stop".into());
+                    }
+                    match tls.conn.read_tls(&mut tls.sock) {
+                        Ok(0) => return Err("bare TCP EOF before client close_notify".into()),
+                        Ok(_) => {
+                            let state = tls
+                                .conn
+                                .process_new_packets()
+                                .map_err(|e| format!("client TLS input: {e}"))?;
+                            let mut byte = [0];
+                            match tls.conn.reader().read(&mut byte) {
+                                Ok(0) => {}
+                                Ok(_) => {
+                                    return Err(
+                                        "application byte before client close_notify".into()
+                                    );
+                                }
+                                Err(error) if retry(&error) => {}
+                                Err(error) => return Err(format!("client TLS plaintext: {error}")),
+                            }
+                            if state.peer_has_closed() {
+                                return Ok(());
+                            }
+                        }
+                        Err(error) if retry(&error) => {}
+                        Err(error) => return Err(format!("client TLS read: {error}")),
+                    }
+                }
             }
             Step::Close => return Ok(()),
         }
@@ -427,7 +456,12 @@ fn retry(error: &io::Error) -> bool {
     )
 }
 fn closed(error: &io::Error) -> bool {
-    matches!(error.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 fn expired(stop: &AtomicBool, deadline: Instant) -> bool {
     stop.load(Ordering::Acquire) || Instant::now() >= deadline

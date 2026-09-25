@@ -60,7 +60,7 @@ The checked-in component and dependency license report is generated with pinned 
 0.9.1`. After installing that tool, refresh and verify the report with:
 
 ```text
-cargo about generate --frozen --all-features --fail --output-file THIRD_PARTY_LICENSES.html about.hbs
+cargo about generate --frozen --workspace --all-features --fail --output-file THIRD_PARTY_LICENSES.html about.hbs
 ```
 
 CI regenerates the report independently and rejects drift from the exact locked graph or accepted

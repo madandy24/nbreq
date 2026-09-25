@@ -309,6 +309,38 @@ fn verification_steps(stress_repetitions: usize) -> Vec<Step> {
             "all-feature documentation",
             &["doc", "--all-features", "--no-deps"],
         ),
+        Step::cargo_without_offline(
+            "SMTP formatting",
+            &["fmt", "--package", "nbreq-smtp", "--check"],
+        ),
+        Step::cargo(
+            "SMTP warning-denied lint",
+            &[
+                "clippy",
+                "--package",
+                "nbreq-smtp",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ),
+        Step::cargo(
+            "SMTP all-target tests",
+            &["test", "--package", "nbreq-smtp", "--all-targets"],
+        ),
+        Step::cargo(
+            "SMTP doctests",
+            &["test", "--package", "nbreq-smtp", "--doc"],
+        ),
+        Step::cargo(
+            "SMTP documentation",
+            &["doc", "--package", "nbreq-smtp", "--no-deps"],
+        ),
+        Step::cargo(
+            "SMTP examples",
+            &["build", "--package", "nbreq-smtp", "--examples"],
+        ),
     ];
 
     let stress_tests = [
@@ -372,7 +404,17 @@ mod tests {
     #[test]
     fn verification_plan_covers_the_frozen_gate() {
         let steps = verification_steps(2);
-        assert_eq!(steps.len(), 27);
+        assert_eq!(steps.len(), 33);
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.args == ["test", "--package", "nbreq-smtp", "--all-targets"])
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.args == ["test", "--package", "nbreq-smtp", "--doc"])
+        );
         assert!(steps.iter().any(|step| step.args == ["test"]));
         assert!(
             steps

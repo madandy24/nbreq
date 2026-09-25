@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 //! A bounded SMTP sending client built on NBReq's verified TCP TLS transport.
 //!
 //! This development crate supports implicit TLS and required STARTTLS. The initial
@@ -6,11 +8,13 @@
 //! are outside this first slice.
 
 mod client;
+mod data;
+mod reply;
 mod request;
 
 pub use client::{
     Delivery, FailureReason, RecipientReport, RecipientStatus, ReplySummary, SendOperation,
-    SendOutcome, SmtpClient, Stage,
+    SendOutcome, SmtpClient, Stage, TransportDiagnostic,
 };
 pub use request::{
     Envelope, RecipientPolicy, SendRequest, SmtpError, SmtpErrorKind, SmtpServer, TlsPolicy,
