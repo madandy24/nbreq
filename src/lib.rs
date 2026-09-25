@@ -85,10 +85,11 @@ pub use stream::{
     UploadSender,
 };
 pub use tcp::{
-    PendingTcpConnect, TcpConnectCompletion, TcpConnectHandle, TcpConnectRequest,
-    TcpConnectRequestBuilder, TcpConnectTarget, TcpConnectWaitOutcome, TcpConnection,
-    TcpConnectionHandle, TcpConnector, TcpFinishError, TcpFinishStatus, TcpRead, TcpReader,
-    TcpSendError, TcpSendErrorKind, TcpStreamError, TcpWriter,
+    PendingTcpConnect, PendingTlsConnect, TcpConnectCompletion, TcpConnectHandle,
+    TcpConnectRequest, TcpConnectRequestBuilder, TcpConnectTarget, TcpConnectWaitOutcome,
+    TcpConnection, TcpConnectionHandle, TcpConnector, TcpFinishError, TcpFinishStatus, TcpRead,
+    TcpReader, TcpSendError, TcpSendErrorKind, TcpStreamError, TcpWriter, TlsConnectCompletion,
+    TlsConnectHandle, TlsConnectWaitOutcome, TlsConnection, TlsOptions, TlsReader, TlsWriter,
 };
 pub use types::{
     CallbackDispatch, Completion, DnsFailure, DriveStatus, EngineConfig, Error, ErrorKind,

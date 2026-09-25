@@ -332,6 +332,16 @@ impl Metrics {
         }
     }
 
+    pub(crate) fn tcp_connect_completed(&self) {
+        saturating_increment(&self.tcp_connects_completed);
+    }
+    pub(crate) fn tcp_connect_failed(&self) {
+        saturating_increment(&self.tcp_connects_failed);
+    }
+    pub(crate) fn tcp_connect_cancelled(&self) {
+        saturating_increment(&self.tcp_connects_cancelled);
+    }
+
     pub(crate) fn set_tcp_resources(&self, connections: usize, reserved_bytes: usize) {
         self.standalone_tcp_connections
             .store(connections, Ordering::Release);

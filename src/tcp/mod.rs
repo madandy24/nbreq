@@ -6,6 +6,11 @@
 //! [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) before admission.
 
 pub(crate) mod io;
+mod tls;
+pub use tls::{
+    PendingTlsConnect, TlsConnectCompletion, TlsConnectHandle, TlsConnectWaitOutcome,
+    TlsConnection, TlsOptions, TlsReader, TlsWriter,
+};
 
 use std::cell::Cell;
 use std::error::Error as StdError;

@@ -1,6 +1,9 @@
 //! Sealed waiter targets for [`Engine::drive_until`](crate::Engine::drive_until).
 
-use crate::{Completion, PendingRequest, PendingTcpConnect, TcpConnectCompletion};
+use crate::{
+    Completion, PendingRequest, PendingTcpConnect, PendingTlsConnect, TcpConnectCompletion,
+    TlsConnectCompletion,
+};
 #[cfg(feature = "resolver")]
 use crate::{PendingResolve, ResolveCompletion};
 
@@ -79,6 +82,19 @@ impl sealed::Sealed for PendingTcpConnect {
         this.try_completion()
     }
 
+    fn engine_id(this: &Self) -> u64 {
+        this.issued_engine_id()
+    }
+}
+
+impl WaiterTarget for PendingTlsConnect {
+    type Output = TlsConnectCompletion;
+}
+
+impl sealed::Sealed for PendingTlsConnect {
+    fn try_output(this: &Self) -> Option<TlsConnectCompletion> {
+        this.try_completion()
+    }
     fn engine_id(this: &Self) -> u64 {
         this.issued_engine_id()
     }

@@ -9,7 +9,9 @@ use crate::backend::BackendResolveCompletion;
 use crate::backend::{Backend, BackendCompletion, PollMode, interruptible_poll_deadline};
 #[cfg(feature = "resolver")]
 use crate::registry::ResolveState;
-use crate::registry::{RequestState, Shared, StreamRequestState, Submission, TcpConnectSink};
+use crate::registry::{
+    RequestState, Shared, StreamRequestState, Submission, TcpConnectSink, TlsConnectSink,
+};
 use crate::{DriveStatus, Error, ErrorKind, RequestId, ShutdownError};
 
 pub(crate) struct ReactorCore<B: Backend + ?Sized> {
@@ -110,6 +112,30 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                     let sink = TcpConnectSink::new(shared, state);
                     self.backend.submit_tcp_connect(request, sink, accepted_at);
                 }
+                Submission::TlsConnect {
+                    request,
+                    options,
+                    state,
+                    accepted_at,
+                } => {
+                    if state.is_terminal() {
+                        continue;
+                    }
+                    let sink = TlsConnectSink::new(shared, state);
+                    self.backend
+                        .submit_tls_connect(request, options, sink, accepted_at);
+                }
+                Submission::TlsUpgrade {
+                    options,
+                    state,
+                    accepted_at,
+                } => {
+                    if state.is_terminal() {
+                        continue;
+                    }
+                    let sink = TlsConnectSink::new(shared, state);
+                    self.backend.submit_tls_upgrade(options, sink, accepted_at);
+                }
             }
         }
 
@@ -177,6 +203,17 @@ impl<B: Backend + ?Sized> ReactorCore<B> {
                             crate::TcpConnectCompletion::Failed(Error::new(
                                 ErrorKind::EngineStopped,
                                 "the owning Engine stopped during TCP connection establishment",
+                            )),
+                        );
+                    }
+                }
+                Submission::TlsConnect { state, .. } | Submission::TlsUpgrade { state, .. } => {
+                    if !state.is_terminal() {
+                        shared.complete_tls_state(
+                            &state,
+                            crate::TlsConnectCompletion::Failed(Error::new(
+                                ErrorKind::EngineStopped,
+                                "the owning Engine stopped during TLS establishment",
                             )),
                         );
                     }

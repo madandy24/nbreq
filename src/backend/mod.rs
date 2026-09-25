@@ -4,11 +4,11 @@ use std::time::{Duration, Instant};
 
 use crate::metrics::Metrics;
 use crate::registry::Shared;
-use crate::registry::TcpConnectSink;
+use crate::registry::{TcpConnectSink, TlsConnectSink};
 use crate::stream::ResponseSink;
 use crate::{
     Completion, Error, ErrorKind, Request, RequestId, ShutdownError, StreamRequest,
-    TcpConnectRequest,
+    TcpConnectRequest, TlsOptions,
 };
 #[cfg(feature = "resolver")]
 use crate::{ResolveCompletion, ResolveRequest};
@@ -112,6 +112,31 @@ pub(crate) trait Backend {
         sink.fail(Error::new(
             ErrorKind::Unsupported,
             "standalone TCP connections are not available on this Engine",
+        ));
+    }
+
+    fn submit_tls_connect(
+        &mut self,
+        _request: TcpConnectRequest,
+        _options: TlsOptions,
+        sink: TlsConnectSink,
+        _accepted_at: Instant,
+    ) {
+        sink.fail(Error::new(
+            ErrorKind::Unsupported,
+            "standalone TLS is not available on this backend",
+        ));
+    }
+
+    fn submit_tls_upgrade(
+        &mut self,
+        _options: TlsOptions,
+        sink: TlsConnectSink,
+        _accepted_at: Instant,
+    ) {
+        sink.fail(Error::new(
+            ErrorKind::Unsupported,
+            "standalone TLS upgrade is not available on this backend",
         ));
     }
 

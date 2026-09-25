@@ -74,6 +74,7 @@ struct TcpIoState {
     write_finished: bool,
     peer_fin: bool,
     read_eof_observed: bool,
+    upgrading: bool,
     abort: Option<TcpAbort>,
     finish_callback_registered: bool,
     finish_callback: Option<TcpFinishCallback>,
@@ -113,6 +114,7 @@ impl TcpIoShared {
                 write_finished: false,
                 peer_fin: false,
                 read_eof_observed: false,
+                upgrading: false,
                 abort: None,
                 finish_callback_registered: false,
                 finish_callback: None,
@@ -413,6 +415,33 @@ impl TcpIoShared {
         self.dispatch_job(job);
     }
 
+    pub(crate) fn begin_upgrade(&self) -> Result<(), Error> {
+        let mut state = lock_unpoisoned(&self.state);
+        if state.abort.is_some()
+            || state.upgrading
+            || state.write_finish_requested
+            || state.write_finished
+            || state.peer_fin
+            || state.read_eof_observed
+            || state.inbound_bytes != 0
+            || state.outbound_bytes != 0
+            || state.pump_bytes != 0
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "TLS upgrade requires an open, idle, unsplit TCP connection with no unread bytes",
+            ));
+        }
+        state.upgrading = true;
+        drop(state);
+        self.notify();
+        Ok(())
+    }
+
+    pub(crate) fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
     fn take_finish_job_locked(&self, state: &mut TcpIoState) -> Option<CallbackJob> {
         if !state.finish_callback_active {
             return None;
@@ -550,6 +579,9 @@ impl TcpIoOwner {
             return None;
         }
         let mut state = lock_unpoisoned(&self.io.state);
+        if state.upgrading {
+            return None;
+        }
         let front = state.outbound.front_mut()?;
         let take = front.len().min(capacity);
         let chunk = if take == front.len() {
@@ -620,6 +652,12 @@ impl TcpIoOwner {
             return Ok(());
         }
         let mut state = lock_unpoisoned(&self.io.state);
+        if state.upgrading {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "cleartext arrived across the TLS upgrade boundary",
+            ));
+        }
         if let Some(error) = abort_error(state.abort.as_ref()) {
             return Err(error);
         }
@@ -684,6 +722,9 @@ impl TcpIoOwner {
 
     pub(crate) fn read_allowance(&self) -> usize {
         let state = lock_unpoisoned(&self.io.state);
+        if state.upgrading {
+            return 0;
+        }
         self.io.receive_window.saturating_sub(state.inbound_bytes)
     }
 
