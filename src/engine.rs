@@ -265,6 +265,12 @@ impl Engine {
         EngineBuilder::spawned()
     }
 
+    /// Returns whether this Engine is spawned or driven manually.
+    #[must_use]
+    pub fn run_mode(&self) -> RunMode {
+        self.config.run_mode()
+    }
+
     /// Issues a cheap cloneable command handle for this Engine.
     #[must_use]
     pub fn client(&self) -> Client {

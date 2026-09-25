@@ -342,6 +342,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nbreq-smtp"
+version = "0.1.0"
+dependencies = [
+ "nbreq",
+ "rcgen",
+ "rustls",
+ "time",
+]
+
+[[package]]
 name = "nbreq-winpoll"
 version = "0.1.1"
 dependencies = [

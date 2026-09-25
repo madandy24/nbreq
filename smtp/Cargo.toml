@@ -1,0 +1,25 @@
+[package]
+name = "nbreq-smtp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "SMTP sending over NBReq verified TCP TLS"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+nbreq = { path = "..", version = "0.2.0", default-features = true }
+
+[dev-dependencies]
+rcgen = "=0.13.2"
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+time = { version = "=0.3.45", default-features = false, features = ["std"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

@@ -36,7 +36,7 @@ include = [
 ]
 
 [workspace]
-members = ["support/darwin", "support/winpoll"]
+members = ["smtp", "support/darwin", "support/winpoll"]
 resolver = "2"
 
 [features]
