@@ -55,6 +55,10 @@ identities require a matching IP certificate identity and do not send DNS SNI.
 This API has no verification bypass or automatic plaintext fallback. Standalone
 TLS offers no ALPN protocols; HTTPS keeps its existing HTTP policy.
 
+Verified TLS failed in the tested Wine 5.0 environment during platform
+certificate setup or validation. Validate the intended Wine version and trust
+configuration before relying on TLS there.
+
 ## Upgrading an existing connection
 
 Keep the plain `TcpConnection` unsplit while negotiating the upgrade. Read and
