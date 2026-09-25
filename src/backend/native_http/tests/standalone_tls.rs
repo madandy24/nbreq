@@ -317,7 +317,9 @@ fn stalled_standalone_verification_does_not_stall_a_plain_http_request() {
                 Err(error) => panic!("HTTP accept: {error}"),
             }
         };
-        socket.set_nonblocking(false).expect("blocking accepted socket");
+        socket
+            .set_nonblocking(false)
+            .expect("blocking accepted socket");
         socket
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("bounded HTTP read");
