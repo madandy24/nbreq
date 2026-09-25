@@ -95,12 +95,17 @@ pub(crate) enum Close {
     RawMidRecord,
 }
 
+struct ReplyPlan<'a> {
+    bytes: &'a [u8],
+    close: Close,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum Phase {
-    BeforeStartTlsAckTail,
-    BeforeHandshake,
-    BeforeRead,
-    BeforeWrite,
+    StartTlsAckTail,
+    Handshake,
+    Read,
+    Write,
 }
 
 pub(crate) enum Exchange {
@@ -337,7 +342,7 @@ fn run_peer(
             Err(error) => return Outcome::Failed(format!("STARTTLS: {error}")),
         }
     }
-    if !hold(Phase::BeforeHandshake, &mut gates, stop, deadline) {
+    if !hold(Phase::Handshake, &mut gates, stop, deadline) {
         return Outcome::Stopped;
     }
     if matches!(options.exchange, Exchange::SilentHandshake) {
@@ -375,7 +380,7 @@ fn run_peer(
             reply,
             close,
         } => {
-            if !hold(Phase::BeforeRead, &mut gates, stop, deadline) {
+            if !hold(Phase::Read, &mut gates, stop, deadline) {
                 return Outcome::Stopped;
             }
             let request = match read_plaintext(&mut tls, &mut socket, request_len, stop, deadline) {
@@ -387,8 +392,10 @@ fn run_peer(
             send_reply(
                 &mut tls,
                 &mut socket,
-                &reply,
-                close,
+                ReplyPlan {
+                    bytes: &reply,
+                    close,
+                },
                 &mut gates,
                 &events,
                 stop,
@@ -398,8 +405,10 @@ fn run_peer(
         Exchange::Send { reply, close } => send_reply(
             &mut tls,
             &mut socket,
-            &reply,
-            close,
+            ReplyPlan {
+                bytes: &reply,
+                close,
+            },
             &mut gates,
             &events,
             stop,
@@ -407,15 +416,17 @@ fn run_peer(
         ),
         Exchange::KeyUpdateIdle => key_update_idle(&mut tls, &mut socket, &events, stop, deadline),
         Exchange::ObserveClientFinishThenSend { reply } => {
-            if !hold(Phase::BeforeRead, &mut gates, stop, deadline) {
+            if !hold(Phase::Read, &mut gates, stop, deadline) {
                 return Outcome::Stopped;
             }
             match observe_client_close(&mut tls, &mut socket, &events, stop, deadline) {
                 Ok(true) => send_reply(
                     &mut tls,
                     &mut socket,
-                    &reply,
-                    Close::Notify,
+                    ReplyPlan {
+                        bytes: &reply,
+                        close: Close::Notify,
+                    },
                     &mut gates,
                     &events,
                     stop,
@@ -426,7 +437,7 @@ fn run_peer(
             }
         }
         Exchange::PeerCloseThenObserve => {
-            if !hold(Phase::BeforeWrite, &mut gates, stop, deadline) {
+            if !hold(Phase::Write, &mut gates, stop, deadline) {
                 return Outcome::Stopped;
             }
             tls.send_close_notify();
@@ -505,7 +516,7 @@ fn starttls(
         }
         StartTlsResponse::Fragmented => {
             write_raw(socket, b"220 Ready", stop, deadline)?;
-            if !hold(Phase::BeforeStartTlsAckTail, gates, stop, deadline) {
+            if !hold(Phase::StartTlsAckTail, gates, stop, deadline) {
                 return Ok(false);
             }
             write_raw(socket, b" to start TLS\r\n", stop, deadline)?;
@@ -627,21 +638,20 @@ fn read_plaintext(
 fn send_reply(
     tls: &mut ServerConnection,
     socket: &mut TcpStream,
-    reply: &[u8],
-    close: Close,
+    plan: ReplyPlan<'_>,
     gates: &mut BTreeMap<Phase, WorkerGate>,
     events: &Sender<Event>,
     stop: &AtomicBool,
     deadline: Instant,
 ) -> Outcome {
-    if !hold(Phase::BeforeWrite, gates, stop, deadline) {
+    if !hold(Phase::Write, gates, stop, deadline) {
         return Outcome::Stopped;
     }
-    if close == Close::RawMidRecord {
-        if reply.is_empty() || reply.len() > 16 * 1024 {
+    if plan.close == Close::RawMidRecord {
+        if plan.bytes.is_empty() || plan.bytes.len() > 16 * 1024 {
             return Outcome::Failed("mid-record fixture reply must contain 1..=16KiB bytes".into());
         }
-        if let Err(error) = tls.writer().write_all(reply) {
+        if let Err(error) = tls.writer().write_all(plan.bytes) {
             return Outcome::Failed(format!("mid-record plaintext write: {error}"));
         }
         let mut record = Vec::new();
@@ -662,7 +672,7 @@ fn send_reply(
     }
     // Keep rustls's internal output below its 64KiB limit while allowing tests to stream more
     // than 64KiB through a tiny application receive window.
-    for chunk in reply.chunks(16 * 1024) {
+    for chunk in plan.bytes.chunks(16 * 1024) {
         if let Err(error) = tls.writer().write_all(chunk) {
             return Outcome::Failed(format!("plaintext write: {error}"));
         }
@@ -671,7 +681,7 @@ fn send_reply(
         }
     }
     let _ = events.send(Event::Wrote);
-    if close == Close::Notify {
+    if plan.close == Close::Notify {
         tls.send_close_notify();
         if let Err(error) = flush(tls, socket, stop, deadline) {
             return Outcome::Failed(format!("close_notify: {error}"));
@@ -767,8 +777,10 @@ fn key_update_idle(
                 return send_reply(
                     tls,
                     socket,
-                    b"updated",
-                    Close::Notify,
+                    ReplyPlan {
+                        bytes: b"updated",
+                        close: Close::Notify,
+                    },
                     &mut BTreeMap::new(),
                     events,
                     stop,

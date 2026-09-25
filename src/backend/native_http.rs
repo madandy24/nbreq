@@ -835,10 +835,7 @@ impl StandaloneTcp {
     }
 
     fn sync_pressure(&mut self, now: Instant) {
-        if self.peer_closed {
-            self.read_inactivity_paused = true;
-            self.read_inactivity_deadline = None;
-        } else if self.owner.read_allowance() == 0 {
+        if self.peer_closed || self.owner.read_allowance() == 0 {
             self.read_inactivity_paused = true;
             self.read_inactivity_deadline = None;
         } else if self.read_inactivity_paused {

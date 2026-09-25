@@ -104,7 +104,7 @@ fn tls_wait_timeout_returns_the_same_live_pending_operation() {
         reply: b"resumed".to_vec(),
         close: Close::Notify,
     });
-    peer_options.holds.insert(Phase::BeforeHandshake);
+    peer_options.holds.insert(Phase::Handshake);
     let peer = TestPeer::spawn(&identity, peer_options);
     let engine = engine(&identity);
     let pending = engine
@@ -113,14 +113,14 @@ fn tls_wait_timeout_returns_the_same_live_pending_operation() {
         .expect("pending TLS admission");
     let original_id = pending.handle().id();
     assert_eq!(peer.event(), Event::Accepted);
-    peer.wait_held(Phase::BeforeHandshake);
+    peer.wait_held(Phase::Handshake);
     let pending = match pending.wait_for(Duration::from_millis(50)) {
         TlsConnectWaitOutcome::TimedOut(pending) => pending,
         other => panic!("local wait must expire without cancelling TLS: {other:?}"),
     };
     assert_eq!(pending.handle().id(), original_id);
     assert!(!pending.is_complete());
-    peer.release(Phase::BeforeHandshake);
+    peer.release(Phase::Handshake);
     let mut connection = match pending.wait_for(Duration::from_secs(6)) {
         TlsConnectWaitOutcome::Completed(TlsConnectCompletion::Completed(connection)) => connection,
         other => panic!("same pending TLS operation must complete: {other:?}"),

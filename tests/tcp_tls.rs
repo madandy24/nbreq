@@ -285,7 +285,7 @@ fn starttls_waits_for_a_fragmented_ready_line_before_upgrading() {
     });
     peer_options.entry = Entry::StartTls;
     peer_options.starttls_response = StartTlsResponse::Fragmented;
-    peer_options.holds.insert(Phase::BeforeStartTlsAckTail);
+    peer_options.holds.insert(Phase::StartTlsAckTail);
     let peer = TestPeer::spawn(&identity, peer_options);
     let engine = verified_engine(&identity);
     let mut plain = engine
@@ -300,9 +300,9 @@ fn starttls_waits_for_a_fragmented_ready_line_before_upgrading() {
     plain
         .send(b"STARTTLS\r\n".to_vec())
         .expect("STARTTLS command");
-    peer.wait_held(Phase::BeforeStartTlsAckTail);
+    peer.wait_held(Phase::StartTlsAckTail);
     read_plain_exact(&mut plain, b"220 Ready");
-    peer.release(Phase::BeforeStartTlsAckTail);
+    peer.release(Phase::StartTlsAckTail);
     assert_eq!(read_plain_line(&mut plain), b" to start TLS\r\n");
     assert_eq!(peer.event(), Event::StartTlsReady);
     let mut secure = plain
