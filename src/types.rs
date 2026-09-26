@@ -30,6 +30,24 @@ pub enum HttpBackend {
     Native,
 }
 
+/// Selects the certificate trust used for verified TLS throughout an Engine.
+///
+/// Trust selection never disables certificate identity, validity, or signature checks.
+/// Enabling an optional root-bundle feature does not change the default selection.
+/// Portable modes use WebPKI and do not consult platform roots, enterprise distrust,
+/// or platform revocation retrieval. They do not add online revocation checking.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TlsTrust {
+    /// Platform trust, supplemented by configured additional DER roots (the default).
+    Platform,
+    /// Portable WebPKI verification using only configured additional DER roots.
+    SuppliedRootsOnly,
+    /// Portable WebPKI verification using Mozilla roots plus additional DER roots.
+    /// Requires the optional `bundled-roots` feature; otherwise construction is unsupported.
+    BundledMozilla,
+}
+
 /// Determines where owned callback jobs are executed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -44,6 +62,7 @@ pub enum CallbackDispatch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineConfig {
     additional_tls_roots: Vec<Arc<[u8]>>,
+    tls_trust: TlsTrust,
     run_mode: RunMode,
     callback_dispatch: CallbackDispatch,
     max_inflight_requests: NonZeroUsize,
@@ -111,6 +130,7 @@ impl EngineConfig {
     pub fn spawned() -> Self {
         Self {
             additional_tls_roots: Vec::new(),
+            tls_trust: TlsTrust::Platform,
             run_mode: RunMode::Spawned,
             callback_dispatch: CallbackDispatch::Workers(nonzero(1)),
             max_inflight_requests: nonzero(1_024),
@@ -141,6 +161,7 @@ impl EngineConfig {
     pub fn manual() -> Self {
         Self {
             additional_tls_roots: Vec::new(),
+            tls_trust: TlsTrust::Platform,
             run_mode: RunMode::Manual,
             callback_dispatch: CallbackDispatch::Inline,
             max_inflight_requests: nonzero(1_024),
@@ -166,15 +187,32 @@ impl EngineConfig {
         }
     }
 
-    /// Adds one DER-encoded CA certificate to this Engine's TLS trust roots.
+    /// Selects trust for verified HTTPS, direct TLS, and STARTTLS operations.
     ///
-    /// Additional roots supplement platform trust; hostname, validity and signature checks
+    /// The selection and additional roots are immutable for the Engine's lifetime.
+    /// Supplied-root-only mode requires at least one additional certificate.
+    #[must_use]
+    pub fn with_tls_trust(mut self, trust: TlsTrust) -> Self {
+        self.tls_trust = trust;
+        self
+    }
+
+    /// Returns the selected trust policy; new configurations use platform trust.
+    #[must_use]
+    pub fn tls_trust(&self) -> TlsTrust {
+        self.tls_trust
+    }
+
+    /// Adds one DER-encoded CA certificate to this Engine's selected TLS trust roots.
+    ///
+    /// Additional roots supplement the selected trust policy; hostname, validity and signature checks
     /// remain enabled. The certificate is validated when the Engine is constructed. No host
     /// trust store is modified. Trust is immutable for the Engine's lifetime and applies to
     /// all its HTTPS requests, including redirects. Use separate Engines for separate trust
     /// domains. Configuration clones share the immutable certificate bytes.
-    /// The pinned Android verifier does not support this option; nonempty additional roots
-    /// return [`ErrorKind::Unsupported`] there rather than being ignored.
+    /// In [`TlsTrust::Platform`] mode the pinned Android verifier does not support this option;
+    /// nonempty additional roots return [`ErrorKind::Unsupported`] there rather than being ignored.
+    /// Portable trust modes support additional roots independently of the platform verifier.
     #[must_use]
     pub fn with_additional_tls_root_certificate(mut self, der: impl Into<Vec<u8>>) -> Self {
         self.additional_tls_roots.push(Arc::from(der.into()));

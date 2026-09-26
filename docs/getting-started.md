@@ -146,7 +146,15 @@ engine.shutdown()?;
 Call the configuration method once per root. An Engine's trust policy is fixed at construction and
 applies to all its HTTPS requests and redirects; use separate Engines for separate trust domains.
 Windows, Linux and macOS use the existing platform verifier with extra roots. The pinned Android
-verifier does not support this option and rejects a nonempty extra-root configuration explicitly.
+verifier does not support this option in platform mode and rejects a nonempty extra-root
+configuration explicitly.
+
+In the development checkout, `EngineConfig::with_tls_trust` also selects portable WebPKI
+verification using supplied roots only or an optional Mozilla bundle plus supplied roots.
+Platform trust remains the default, even when `bundled-roots` is enabled. Portable policies
+do not import OS enterprise trust/distrust or revocation retrieval. See
+[trust selection and bundle updates](tcp-tls.md#selecting-certificate-trust) for the API and
+the required dependency-update, rebuild and deployment steps. These additions are unreleased.
 
 ## Callbacks and direct waiters
 
@@ -432,6 +440,7 @@ Use a cloned connection handle to cancel from another thread.
 | --- | --- |
 | Default | Native HTTP/1.1, TLS, internal DNS, standalone TCP and public Resolver |
 | `default-features = false, features = ["native"]` | Native HTTP/TLS/TCP and internal exact-name DNS; no public Resolver or Windows search-suffix registry reader |
+| `bundled-roots` (development checkout) | Enables `native` and optional Mozilla roots; explicitly select `TlsTrust::BundledMozilla` to use them; default trust remains platform |
 | No features | Portable configuration/HTTP/TCP types compile; public Resolver is absent and Engine construction returns `Unsupported` |
 | `test-support` | Additional deterministic test controls; does not select a network backend or add production capabilities |
 

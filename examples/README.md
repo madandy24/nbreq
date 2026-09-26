@@ -94,7 +94,7 @@ The hostname above is a placeholder for your own server. Sending FIN closes only
 we keep reading until the peer sends EOF. Dropping an unfinished connection aborts it.
 
 C04/C05 use the **unreleased TCP TLS API**, which is not in the published 0.2.0 crate. They start
-local TLS 1.3 peers, generate a private CA, and give that CA to the Engine while preserving
+local TLS 1.3 peers, generate a private CA, and select `TlsTrust::SuppliedRootsOnly` with that CA while preserving
 certificate and IP identity verification. Successful runs echo 24 protected bytes. Neither example
 requires an external service, credentials, or an insecure verification option:
 

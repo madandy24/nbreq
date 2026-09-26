@@ -1,5 +1,5 @@
 //! Bounded, read-only live smoke for verified IMAPS or SMTP STARTTLS.
-//! Usage: `tcp-tls-probe <imaps|smtp> HOST PORT`. No credentials or mail are sent.
+//! Usage: `tcp-tls-probe <imaps|smtp> HOST PORT [--bundled-roots]`. No credentials or mail are sent.
 //! A separate explicit `hold` mode supports client-only memory observation in the lab.
 
 use std::error::Error;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use nbreq::{
     Engine, EngineConfig, TcpConnectRequest, TcpConnection, TcpStreamError, TlsConnection,
-    TlsOptions,
+    TlsOptions, TlsTrust,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -269,12 +269,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let host = args.next().ok_or("explicit HOST is required")?;
     let port: u16 = args.next().ok_or("explicit PORT is required")?.parse()?;
+    let trust = match args.next().as_deref() {
+        None => TlsTrust::Platform,
+        Some("--bundled-roots") => TlsTrust::BundledMozilla,
+        Some(_) => return Err("expected optional --bundled-roots".into()),
+    };
     if args.next().is_some() || port == 0 || !matches!(mode.as_str(), "imaps" | "smtp") {
-        return Err("usage: tcp-tls-probe <imaps|smtp> HOST PORT".into());
+        return Err("usage: tcp-tls-probe <imaps|smtp> HOST PORT [--bundled-roots]".into());
     }
     // Reject an invalid identity before opening a network connection.
     TlsOptions::new(host.as_str())?;
-    let engine = Engine::new(EngineConfig::spawned())?;
+    let engine = Engine::new(EngineConfig::spawned().with_tls_trust(trust))?;
+    println!("TLS trust: {trust:?}");
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let result = match mode.as_str() {
         "imaps" => imaps(&engine, &host, port, deadline),

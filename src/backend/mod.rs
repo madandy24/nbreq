@@ -56,6 +56,10 @@ pub(crate) enum PollMode {
 
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) trait Backend {
+    fn configured_tls_trust(&self) -> Option<crate::TlsTrust> {
+        None
+    }
+
     fn attach_metrics(&mut self, _metrics: Arc<Metrics>) {}
 
     fn connection_metrics_available(&self) -> bool {
@@ -163,6 +167,10 @@ pub(crate) trait Backend {
 
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) trait BackendFactory: Send {
+    fn configured_tls_trust(&self) -> Option<crate::TlsTrust> {
+        None
+    }
+
     fn create(self: Box<Self>, shared: &Arc<Shared>) -> Result<Box<dyn Backend>, Error>;
 
     fn connection_metrics_available(&self) -> bool {

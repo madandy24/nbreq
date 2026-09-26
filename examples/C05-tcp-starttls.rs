@@ -5,7 +5,7 @@ mod tls_echo;
 
 use std::time::Duration;
 
-use nbreq::{Engine, EngineConfig, TcpConnectRequest, TcpConnection, TlsOptions};
+use nbreq::{Engine, EngineConfig, TcpConnectRequest, TcpConnection, TlsOptions, TlsTrust};
 
 fn read_line(connection: &mut TcpConnection) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut line = Vec::new();
@@ -69,7 +69,9 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = tls_echo::Server::start(tls_echo::Mode::StartTls)?;
     let engine = Engine::new(
-        EngineConfig::spawned().with_additional_tls_root_certificate(server.root_der().to_vec()),
+        EngineConfig::spawned()
+            .with_tls_trust(TlsTrust::SuppliedRootsOnly)
+            .with_additional_tls_root_certificate(server.root_der().to_vec()),
     )?;
     let result = exchange(&engine, &server);
     let shutdown = engine.shutdown();

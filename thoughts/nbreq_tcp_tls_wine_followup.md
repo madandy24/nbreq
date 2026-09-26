@@ -8,7 +8,7 @@ Owner requested investigation before the next NBReq release, including whether G
 | --- | --- | --- |
 | W1 | Reconfirm runtime and trace GDS policy/history | Complete: Linux `gds-srv-test2` reports Wine5.0 Ubuntu5.0-3ubuntu1 with x86/x64 packages; existing private Win32 test prefix present. GDS history traced read-only; original bypass rationale is unrecorded. |
 | W2 | Isolate exact CryptoAPI failure | Complete: confirmed structure-size and revocation-policy failures; compact key-usage fixture removes its separate wrong-usage error. Supplying an empty signed CRL still leaves Wine5's offline-revocation failure. |
-| W3 | Select supported remedy | No production change selected. A shorter structure fixes construction only. Wine5's broad revocation-ignore flag also ignores known revocation and is unsuitable. Assess an explicit verified portable-trust option versus a tested newer Wine runtime. |
+| W3 | Select supported remedy | Owner accepted explicit portable WebPKI trust with optional `webpki-roots` Mozilla bundle and custom roots. Platform remains default. Implementation and new evidence tracked in the [portable TLS plan](nbreq_portable_tls_plan.md); diagnosis alone still does not establish compatibility. |
 | W4 | Regression proof and handoff | Investigation complete; independent reviewer accepted source, native/Wine results, conclusions and permanent archive. Revoked/untrusted controls and failed positive controls remain explicit. Production compatibility awaits WQ-01 and its implementation/validation. |
 
 Worktree `target/worktrees/nbreq-smtp`, starting checkpoint `fcd462e`; main remains untouched. Root owns plan/remote queues/evidence, Sol worker owns standalone diagnostic source, Sol test agent traces GDS policy/history read-only, Astra reviewer reviews design and results. New evidence lab: `C:/User/projects/nbreq/target/wine-tls-trust-20260926/`. No GDS configuration, system trust store or deployed binaries are changed during isolation.
@@ -58,7 +58,9 @@ Final independent Astra review accepted all96 archive members, member/index/sour
 
 Read-only upstream release-source comparison is retained as `upstream-wine-release-comparison.json`, including URLs and file hashes. Wine9.0 and Wine10.0 still reject offline revocation without consulting the relevant unknown-revocation policy flag. Wine11.0's SSL policy recognizes the end-certificate unknown-revocation flag, but its header still lacks the modern chain-engine `dwExclusiveFlags` member. No newer Wine release was installed or executed in this investigation. Select a specific candidate and rerun both construction and strict validation before recommending a runtime upgrade; an unqualified "newer Wine fixes it" would overstate the evidence.
 
-## WQ-01: verified support for older Wine — proposal, not yet accepted
+## WQ-01: verified support for older Wine — accepted 2026-09-26
+
+Owner accepted the portable option below, refined to include an optional Mozilla bundle through `webpki-roots`, additional custom roots, and supplied-root-only mode. Use a compatible dependency requirement so routine root-data updates do not require a matching NBReq release. Applications must refresh their lockfile and rebuild/deploy to adopt updated compiled roots. See the [implementation plan](nbreq_portable_tls_plan.md) for scope, tests and progress. The following investigation evidence remains historical and is not a claim that the new implementation has passed.
 
 | Option | Benefit | Cost / limitation |
 | --- | --- | --- |

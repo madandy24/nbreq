@@ -62,6 +62,22 @@ impl Drop for DrivingGuard<'_> {
     }
 }
 
+fn validate_tls_backend(
+    config: &EngineConfig,
+    configured: Option<crate::TlsTrust>,
+) -> Result<(), Error> {
+    if (config.tls_trust() != crate::TlsTrust::Platform
+        || !config.additional_tls_root_certificates().is_empty())
+        && configured != Some(config.tls_trust())
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "selected backend does not apply the configured TLS trust policy",
+        ));
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Creates one independent Engine from backend-neutral configuration.
     ///
@@ -114,6 +130,7 @@ impl Engine {
         config: EngineConfig,
         mut backend: Box<dyn Backend + Send>,
     ) -> Result<Self, Error> {
+        validate_tls_backend(&config, backend.configured_tls_trust())?;
         let streaming_supported = backend.supports_streaming();
         let native_resolver_supported = backend.supports_native_resolver();
         let standalone_tcp_supported = backend.supports_standalone_tcp();
@@ -188,6 +205,7 @@ impl Engine {
         config: EngineConfig,
         factory: Box<dyn backend::BackendFactory>,
     ) -> Result<Self, Error> {
+        validate_tls_backend(&config, factory.configured_tls_trust())?;
         if config.run_mode() != RunMode::Spawned {
             return Err(Error::new(
                 ErrorKind::WrongMode,

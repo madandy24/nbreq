@@ -233,9 +233,7 @@ impl NativeHttpFactory {
             limits: HttpLimits::from_config(config),
             connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::injected(nameserver)),
-            tls: Some(NativeTlsConfigs::platform_with_extra_roots(
-                config.additional_tls_root_certificates(),
-            )?),
+            tls: Some(NativeTlsConfigs::from_config(config)?),
         })
     }
 
@@ -246,9 +244,7 @@ impl NativeHttpFactory {
             limits: HttpLimits::from_config(config),
             connection_limits: ConnectionLimits::from_config(config),
             resolver: Some(ResolverConfig::system()?),
-            tls: Some(NativeTlsConfigs::platform_with_extra_roots(
-                config.additional_tls_root_certificates(),
-            )?),
+            tls: Some(NativeTlsConfigs::from_config(config)?),
         })
     }
 
@@ -354,6 +350,12 @@ impl NativeHttpFactory {
 }
 
 impl BackendFactory for NativeHttpFactory {
+    fn configured_tls_trust(&self) -> Option<crate::TlsTrust> {
+        self.tls
+            .as_ref()
+            .and_then(NativeTlsConfigs::configured_trust)
+    }
+
     fn connection_metrics_available(&self) -> bool {
         true
     }
@@ -4453,6 +4455,12 @@ impl NativeHttpBackend {
 }
 
 impl Backend for NativeHttpBackend {
+    fn configured_tls_trust(&self) -> Option<crate::TlsTrust> {
+        self.tls
+            .as_ref()
+            .and_then(NativeTlsConfigs::configured_trust)
+    }
+
     fn connection_metrics_available(&self) -> bool {
         true
     }

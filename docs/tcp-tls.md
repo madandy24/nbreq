@@ -49,8 +49,8 @@ engine.shutdown()?;
 a protocol line; production protocol code must accumulate and parse a bounded
 response. TCP and TLS do not supply message boundaries.
 
-Verification uses platform trust and any additional CA roots configured on the
-Engine. Certificate signatures, validity and server identity remain checked. IP
+Verification uses the Engine's selected trust policy, defaulting to platform trust
+and any additional CA roots. Certificate signatures, validity and server identity remain checked. IP
 identities require a matching IP certificate identity and do not send DNS SNI.
 This API has no verification bypass or automatic plaintext fallback. Standalone
 TLS offers no ALPN protocols; HTTPS keeps its existing HTTP policy.
@@ -58,6 +58,45 @@ TLS offers no ALPN protocols; HTTPS keeps its existing HTTP policy.
 Verified TLS failed in the tested Wine 5.0 environment during platform
 certificate setup or validation. Validate the intended Wine version and trust
 configuration before relying on TLS there.
+
+## Selecting certificate trust
+
+This development API applies one immutable trust policy to HTTPS (including redirects),
+direct TLS and STARTTLS. Choose it explicitly when constructing the Engine:
+
+| `TlsTrust` mode | Roots used | Required feature |
+| --- | --- | --- |
+| `Platform` (default) | OS trust plus additional DER roots | `native` |
+| `SuppliedRootsOnly` | Only additional DER roots; at least one required | `native` |
+| `BundledMozilla` | Compiled Mozilla anchors plus additional DER roots | `bundled-roots` |
+
+```rust,no_run
+use nbreq::{Engine, EngineConfig, TlsTrust};
+
+let config = EngineConfig::spawned()
+    .with_tls_trust(TlsTrust::SuppliedRootsOnly)
+    .with_additional_tls_root_certificate(std::fs::read("company-root.der")?);
+let engine = Engine::new(config)?;
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For public Mozilla roots, enable `features = ["bundled-roots"]` on the NBReq dependency
+and select `.with_tls_trust(TlsTrust::BundledMozilla)`. The feature implies `native`
+but does not change the default policy. Custom DER roots may be added before or after
+selecting a mode. Malformed roots, an empty supplied-only set, and unsupported selections
+fail during Engine construction, before network work; no platform fallback occurs.
+
+Both portable modes use WebPKI for certificate signatures, validity and hostname checks.
+They do not inherit OS enterprise roots, distrust rules or revocation retrieval, and do
+not add online revocation checking. Platform mode retains its platform policy. Use separate
+Engines for separate trust domains. The Android restriction on extra platform roots does
+not apply to portable roots.
+
+The Mozilla bundle comes from compact `webpki-roots` trust anchors, not full certificate
+parsing on each connection. Its compatible dependency range lets an application update
+`webpki-roots` without waiting for a matching NBReq release. Update the application's lockfile,
+rebuild and redeploy to use new roots; running binaries do not refresh automatically.
 
 ## Upgrading an existing connection
 

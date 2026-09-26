@@ -94,7 +94,7 @@ pub use tcp::{
 pub use types::{
     CallbackDispatch, Completion, DnsFailure, DriveStatus, EngineConfig, Error, ErrorKind,
     ExecuteError, Header, HttpBackend, LimitKind, Method, Request, RequestBuilder, RequestId,
-    RequestOptions, Response, RunMode, ShutdownError, TimeoutKind, TlsFailure, TlsVerification,
-    TransportStage,
+    RequestOptions, Response, RunMode, ShutdownError, TimeoutKind, TlsFailure, TlsTrust,
+    TlsVerification, TransportStage,
 };
 pub use waiter::WaiterTarget;

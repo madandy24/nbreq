@@ -8,6 +8,9 @@
 
 pub(super) mod worker;
 
+#[cfg(test)]
+mod portable_tests;
+
 use std::fmt;
 use std::io::{self, Cursor, Read, Write};
 use std::sync::Arc;
@@ -32,7 +35,9 @@ use rustls::{
 };
 use rustls_platform_verifier::BuilderVerifierExt;
 
-use crate::{Error, ErrorKind, TlsFailure, TlsVerification, TransportStage};
+use crate::{
+    EngineConfig, Error, ErrorKind, TlsFailure, TlsTrust, TlsVerification, TransportStage,
+};
 
 pub(super) const TLS_FLIGHT_LIMIT: usize = 512 * 1024;
 pub(super) const STANDALONE_TLS_OUTPUT_LIMIT: usize = 64 * 1024;
@@ -52,9 +57,96 @@ const TLS_STREAM_PLAINTEXT_LIMIT: usize = TLS_STREAM_WIRE_ALLOWANCE + TLS_PLAINT
 pub(super) struct NativeTlsConfigs {
     verified: Arc<ClientConfig>,
     unverified: Arc<ClientConfig>,
+    configured_trust: Option<TlsTrust>,
+}
+
+fn supplied_roots(config: &EngineConfig) -> Result<rustls::RootCertStore, Error> {
+    let mut roots = rustls::RootCertStore::empty();
+    for root in config.additional_tls_root_certificates() {
+        roots
+            .add(CertificateDer::from(root.to_vec()))
+            .map_err(|error| tls_config_error("supplied trust root", error))?;
+    }
+    Ok(roots)
+}
+
+fn portable_verifier(
+    config: &EngineConfig,
+    provider: Arc<CryptoProvider>,
+) -> Result<Arc<rustls::client::WebPkiServerVerifier>, Error> {
+    if config.tls_trust() == TlsTrust::BundledMozilla && !cfg!(feature = "bundled-roots") {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "Mozilla TLS roots require the bundled-roots feature",
+        ));
+    }
+    let roots = supplied_roots(config)?;
+    let roots = match config.tls_trust() {
+        TlsTrust::SuppliedRootsOnly => {
+            if roots.is_empty() {
+                return Err(tls_config_error(
+                    "supplied trust roots",
+                    "no roots supplied",
+                ));
+            }
+            roots
+        }
+        TlsTrust::BundledMozilla => {
+            #[cfg(feature = "bundled-roots")]
+            {
+                let mut roots = roots;
+                roots
+                    .roots
+                    .extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                roots
+            }
+            #[cfg(not(feature = "bundled-roots"))]
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "Mozilla TLS roots require the bundled-roots feature",
+            ));
+        }
+        TlsTrust::Platform => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "portable verifier requires portable trust",
+            ));
+        }
+    };
+    rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider)
+        .build()
+        .map_err(|error| tls_config_error("portable verifier", error))
 }
 
 impl NativeTlsConfigs {
+    pub(super) fn from_config(config: &EngineConfig) -> Result<Self, Error> {
+        let mut tls = match config.tls_trust() {
+            TlsTrust::Platform => {
+                // Validate every input with the same DER parser before passing roots to
+                // platform-specific APIs, some of which otherwise skip malformed roots.
+                supplied_roots(config)?;
+                Self::platform_with_extra_roots(config.additional_tls_root_certificates())?
+            }
+            TlsTrust::SuppliedRootsOnly | TlsTrust::BundledMozilla => {
+                let provider = Arc::new(rustls::crypto::ring::default_provider());
+                let verifier = portable_verifier(config, Arc::clone(&provider))?;
+                let verified = ClientConfig::builder_with_provider(Arc::clone(&provider))
+                    .with_safe_default_protocol_versions()
+                    .map_err(|error| tls_config_error("protocol versions", error))?
+                    .dangerous()
+                    .with_custom_certificate_verifier(verifier)
+                    .with_no_client_auth();
+                Self::from_verified(provider, verified)?
+            }
+        };
+        tls.configured_trust = Some(config.tls_trust());
+        Ok(tls)
+    }
+
+    pub(super) fn configured_trust(&self) -> Option<TlsTrust> {
+        self.configured_trust
+    }
+
     pub(super) fn platform() -> Result<Self, Error> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
@@ -168,6 +260,7 @@ impl NativeTlsConfigs {
         Ok(Self {
             verified: Arc::new(verified),
             unverified: Arc::new(unverified),
+            configured_trust: None,
         })
     }
 

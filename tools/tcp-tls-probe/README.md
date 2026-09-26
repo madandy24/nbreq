@@ -1,11 +1,26 @@
 # TCP TLS smoke probe
 
-This standalone crate uses NBReq's system-root verifier. Supply the destination explicitly; it has no built-in remote host, credentials, or mail-sending commands.
+This standalone crate defaults to NBReq's platform verifier. Supply the destination explicitly; it has no built-in remote host, credentials, or mail-sending commands.
 
 ```text
 cargo run --manifest-path tools/tcp-tls-probe/Cargo.toml -- imaps HOST 993
 cargo run --manifest-path tools/tcp-tls-probe/Cargo.toml -- smtp HOST 25
 ```
+
+To select portable Mozilla trust explicitly, enable the optional tool feature and pass
+the trailing flag. Merely compiling the feature leaves platform trust as the default:
+
+```text
+cargo run --manifest-path tools/tcp-tls-probe/Cargo.toml --features bundled-roots -- imaps HOST 993 --bundled-roots
+cargo run --manifest-path tools/tcp-tls-probe/Cargo.toml --features bundled-roots -- smtp HOST 25 --bundled-roots
+```
+
+The flag fails before connecting if the feature is absent. Portable verification checks
+certificate signatures, validity and hostname using the bundle; it does not import OS
+trust/distrust or revocation policy. Update `webpki-roots` in the application dependency
+graph and rebuild/redeploy to update the bundle. There is no automatic fallback.
+The `hold` command retains its original platform-plus-private-root behavior and does
+not accept this flag.
 
 `imaps` verifies the TLS certificate, reads the greeting, then sends only `CAPABILITY` and `LOGOUT`. `smtp` reads the greeting, sends `EHLO` and `STARTTLS`, verifies the upgraded connection, then sends a protected `EHLO` and `QUIT`. Each protocol line and reply count is capped. Connect, handshake, idle-read, and whole-probe deadlines are finite; a process supervisor should still cap the command itself.
 

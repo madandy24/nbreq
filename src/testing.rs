@@ -108,7 +108,7 @@ pub fn native_http_engine_with_system_dns(config: EngineConfig) -> Result<Engine
     Engine::with_spawned_factory(config, factory)
 }
 
-/// Creates a private Rust-native HTTPS proving Engine using platform trust.
+/// Creates a private Rust-native HTTPS proving Engine using the configured TLS trust.
 ///
 /// The nameserver is injected for deterministic DNS ownership tests. This remains a WP8 proving
 /// seam rather than public resolver or backend configuration.
@@ -121,7 +121,7 @@ pub fn native_https_engine_with_nameserver(
     Engine::with_spawned_factory(config, factory)
 }
 
-/// Creates a private Rust-native HTTPS proving Engine using host DNS and platform trust.
+/// Creates a private Rust-native HTTPS proving Engine using host DNS and configured TLS trust.
 ///
 /// Host DNS discovery follows the ordinary Engine's supported platform/configuration boundary.
 /// Unsupported targets or resolver topologies fail

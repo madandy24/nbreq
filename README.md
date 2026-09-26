@@ -136,6 +136,8 @@ so you can run them without setting one up.
 
 For work underway after 0.2.0, see the [TCP TLS development guide](docs/tcp-tls.md) and the new
 C04/C05 examples. Immediate TLS and explicit connection upgrades are not in the published 0.2.0 crate.
+That development guide also covers explicit portable trust using supplied roots or an optional
+Mozilla bundle. Enabling the bundle does not change platform trust as the default.
 
 ## Learn more
 
