@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve authenticated standalone TLS replies and orderly EOF when the final
+  write shutdown reports an already disconnected socket after the peer close alert
+  and complete local output drain. Other transport errors remain failures.
 - Add explicit Engine TLS trust selection for HTTPS, direct TLS, and STARTTLS:
   platform trust (unchanged default), supplied DER roots only, or Mozilla roots
   plus supplied roots. Both portable modes use WebPKI verification.

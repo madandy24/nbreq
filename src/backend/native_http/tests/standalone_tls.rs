@@ -1,6 +1,9 @@
 //! Directed standalone TLS owner races. The verifier gate holds an actual certificate check
 //! while the network owner must close the socket and settle the canonical completion.
 
+#[path = "standalone_tls_shutdown.rs"]
+mod shutdown_regressions;
+
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -4,8 +4,14 @@ Prepared from read-only GDS source on 2026-09-26. No GDS files, configuration,
 deployment or running service were changed. NBReq production implementation is at
 `b5c8eb0`; test-only fixture repair follows at `8d24e27`. Native Windows and both Macs,
 Rust 1.85 and package consumers have passed the qualified checks in the
-[portable TLS plan](nbreq_portable_tls_plan.md). Actual Wine execution remains pending
-Linux upload approval. Attach accepted Wine results before relying on this remedy there.
+[portable TLS plan](nbreq_portable_tls_plan.md). Actual Wine 5.0 (Ubuntu 5.0-3ubuntu1),
+using the existing Win32 prefix and app-local ProcessPrng shim, now passes all 10
+portable integration tests, three policy proofs and verified live IMAPS/SMTP STARTTLS
+with the identical binaries tested on native Windows. Independent review accepted
+that evidence. Native Linux exposed a separate final socket-shutdown failure under
+investigation; await the final source checkpoint and affected rechecks before adoption.
+These results prove the explicit portable mode, not repaired Wine platform trust or
+the GDS application's integration.
 
 ## Integration points
 

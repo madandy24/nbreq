@@ -180,6 +180,8 @@ pub(crate) struct NativeReactor {
     deadlines: BinaryHeap<Reverse<DeadlineEntry>>,
     #[cfg(test)]
     write_limit_per_poll: Option<usize>,
+    #[cfg(test)]
+    write_shutdown_failure: Option<io::ErrorKind>,
 }
 
 impl NativeReactor {
@@ -197,12 +199,24 @@ impl NativeReactor {
             deadlines: BinaryHeap::new(),
             #[cfg(test)]
             write_limit_per_poll: None,
+            #[cfg(test)]
+            write_shutdown_failure: None,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn limit_writes_for_test(&mut self, bytes: usize) {
         self.write_limit_per_poll = Some(bytes);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_shutdown_for_test(&mut self, kind: io::ErrorKind) {
+        self.write_shutdown_failure = Some(kind);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_shutdown_failure_pending_for_test(&self) -> bool {
+        self.write_shutdown_failure.is_some()
     }
 
     pub(crate) fn waker(&self) -> NativeWaker {
@@ -437,6 +451,18 @@ impl NativeReactor {
                 "native write shutdown requires a drained outbound queue",
             ));
         }
+        #[cfg(test)]
+        {
+            if let Some(kind) = self.write_shutdown_failure.take() {
+                return Err(NativeFailure::io(
+                    NativeFailureKind::Write,
+                    "write shutdown",
+                    &kind.into(),
+                ));
+            }
+        }
+        #[cfg(test)]
+        let connection = self.connection_mut(id).expect("validated live slot");
         connection
             .stream
             .shutdown(Shutdown::Write)

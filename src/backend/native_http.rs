@@ -3819,9 +3819,20 @@ impl NativeHttpBackend {
                 .map_err(native_internal_error)?
             && !live.write_shutdown
         {
-            self.reactor
-                .shutdown_write(slot)
-                .map_err(native_transport_error)?;
+            match self.reactor.shutdown_write(slot) {
+                Ok(()) => {}
+                Err(error)
+                    if error.io_kind == Some(std::io::ErrorKind::NotConnected)
+                        && live.peer_close_notify
+                        && live.plaintext_inflight == 0
+                        && live.transport.owner.send_occupancy() == 0 =>
+                {
+                    // An authenticated peer close and locally drained close alert can leave
+                    // the socket disconnected before this final shutdown. No application
+                    // output remains, so preserve the authenticated response and EOF.
+                }
+                Err(error) => return Err(native_transport_error(error)),
+            }
             live.write_shutdown = true;
             live.transport.owner.complete_write_shutdown()?;
         }
