@@ -1,0 +1,175 @@
+{
+  "archive": "nbreq-portable-tls-native-20260926.tar.gz",
+  "sha256": "1c55af61848529b848dacaed9b4ecd4ef6aa78b12cbeb7863880ca61365db321",
+  "bytes": 2434587,
+  "members": 419,
+  "review": "Independent review accepted the qualified native checkpoint; Linux and Wine acceptance remains pending",
+  "linux_upload": "Automatic approval review rejected source transfer because it required payload/destination-specific approval. Explicit user approval question remains pending.",
+  "summary": {
+    "implementation_commit": "b5c8eb0c1a87d25fff945dac52b7ceb87fc6680e",
+    "fixture_commit": "8d24e27d31ec78d3687c03734439b9bcb7a6e0e7",
+    "status": "Code/native checkpoint; Linux/Wine acceptance pending authorized upload",
+    "source_ids": {
+      "b5c8eb0c1a87": "c5b8eaad19d49c5b9801eb18adb2401f5927516661670877e5e7d6322478277b",
+      "8d24e27d31ec": "843c93284d08519ffa0e8abcaeaae688fb496bc31d6c724cd05ea643cd0532ed"
+    },
+    "checks": [
+      {
+        "path": "windows-b5c8eb0/result.json",
+        "expected": {
+          "status": "failed"
+        },
+        "sha256": "1de6b8b0950a6123d747b62e116023272ceb152b4f9645e0c1beb779420aeff0"
+      },
+      {
+        "path": "windows-x86-b5c8eb0/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "7c21d91cbcc0842e08c1b1f2f0591af304dc3d6d92b3313042742e42618e63b7"
+      },
+      {
+        "path": "windows-8d24e27/stable-verify.result.json",
+        "expected": {
+          "exit_code": 0
+        },
+        "sha256": "51509228b7e6a29b806418cb1792073867178240073cf4b53b4c560abbb1a37b"
+      },
+      {
+        "path": "windows-8d24e27/bundle-only-tests.result.json",
+        "expected": {
+          "exit_code": 101
+        },
+        "sha256": "3c57bf26daea5e537bb3fe59548c072c54934f1219a980eb4d860991a3cd4ab4"
+      },
+      {
+        "path": "windows-8d24e27/result.json",
+        "expected": {
+          "status": "failed"
+        },
+        "sha256": "7af935831eea7ee787a071f26ad8f30085e549074784809a8e5bbb6d956b86c9"
+      },
+      {
+        "path": "windows-8d24e27-remaining/result.json",
+        "expected": {
+          "status": "passed",
+          "test_threads": 1
+        },
+        "sha256": "579a975fb3d047370d554f7244d6b99074bf22b309cb1199ae964e63d8e34b3c"
+      },
+      {
+        "path": "intel-b5c8eb0/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "7ad811ef2dd84afcae4fb3431d0349e75f5c6bbd4d0595c050b2616bc53ded5f"
+      },
+      {
+        "path": "arm-b5c8eb0/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "d00badf8071b53bdc68465e2ade260a65c9b59718acd93bf6e31def9a9f57f8b"
+      },
+      {
+        "path": "intel-fixture-8d24e27/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "1fed09bad938c67414b8364dfc37145bfd6b930b97e2b7b52e9131e1649ca251"
+      },
+      {
+        "path": "arm-fixture-8d24e27/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "1fed09bad938c67414b8364dfc37145bfd6b930b97e2b7b52e9131e1649ca251"
+      },
+      {
+        "path": "intel-b5c8eb0/live/result.json",
+        "expected": {
+          "status": "passed",
+          "steps": [
+            "imaps",
+            "smtp"
+          ]
+        },
+        "sha256": "2fcbdb73610b12af062ab2711ac541e5a139a11b554f8c30a6d134eb446dc748"
+      },
+      {
+        "path": "arm-b5c8eb0/live/result.json",
+        "expected": {
+          "status": "failed",
+          "steps": [
+            "imaps"
+          ]
+        },
+        "sha256": "6b57c63de82acd508219f60be6597060f599a60c901f83798e1935e214f2f814"
+      },
+      {
+        "path": "package-b5c8eb0/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "2989355a805e5324f3a737c5950a2783126343ddddf0e71d16a80d22d7d6b6f9"
+      },
+      {
+        "path": "package-8d24e27/result.json",
+        "expected": {
+          "status": "passed"
+        },
+        "sha256": "196420b08cf1c3ca9aca5dd28e55f76851c569d4a9d4aa40c1a3dc51e4d8e4f4"
+      },
+      {
+        "path": "fixture-close-locked-red/permanent-red.result.json",
+        "expected": {
+          "exit_code": 101
+        },
+        "sha256": "4d9b4dc1c3abc3d83076a15ed576c3ebeb6b35fa6a79230b86fc8e38c7c16586"
+      },
+      {
+        "path": "fixture-close-locked-green/result.json",
+        "expected": {
+          "failure": null
+        },
+        "sha256": "f3c4a5adb72fab70bce8b8d474e5438d45530e2c96b8fa7ca9281d20a125114d"
+      },
+      {
+        "path": "audit-frozen-root.json",
+        "expected": {
+          "vulnerabilities": {
+            "found": false,
+            "count": 0,
+            "list": []
+          },
+          "warnings": {}
+        },
+        "sha256": "f5ce1c2f565269f2ee2b759629fb4064afedea5f9729b3a2426751ef704e07ef"
+      },
+      {
+        "path": "audit-packaged-consumer.json",
+        "expected": {
+          "vulnerabilities": {
+            "found": false,
+            "count": 0,
+            "list": []
+          },
+          "warnings": {}
+        },
+        "sha256": "5d093c24b6b7390c22179085d76b21300b0f8311280b61051da36e2f3e25ddb9"
+      }
+    ],
+    "not_run": [
+      "native Linux",
+      "Wine 5 Win32 tests and live probes"
+    ],
+    "qualifications": [
+      "Native Windows full30-step parallel gate passed; extra parallel bundled-roots suite failed a pre-existing plain-HTTP request-arrival assertion after correct150ms timeout classification. Serial bundled-roots and Rust1.85 gates passed; parallel test stability is not fixed.",
+      "Mac full gates ran b5c8 production. Final8d24 changes only the shared TLS fixture/regressions; both affected suites were rechecked native-only/all-features/MSRV plus lint/format with exact manifest-delta proof.",
+      "Windows native Win32 and Intel Mac verified live IMAPS and SMTP STARTTLS. ARM verified IMAPS; SMTP hit read inactivity timeout with unknown stage/cause. No ARM SMTP or Wine live success claim.",
+      "The prior platform-verifier Wine5 failure is not repaired in Platform mode. Portable modes are explicit and have not yet been executed under Wine in this checkpoint.",
+      "Existing RUSTSEC-2026-0009 development-only time parsing exception is unchanged; parsing feature absent, runtime/consumer graph excludes time.",
+      "No GDS code, deployment, publication or push performed."
+    ]
+  }
+}
