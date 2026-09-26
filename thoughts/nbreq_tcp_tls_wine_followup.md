@@ -62,6 +62,8 @@ Read-only upstream release-source comparison is retained as `upstream-wine-relea
 
 Owner accepted the portable option below, refined to include an optional Mozilla bundle through `webpki-roots`, additional custom roots, and supplied-root-only mode. Use a compatible dependency requirement so routine root-data updates do not require a matching NBReq release. Applications must refresh their lockfile and rebuild/deploy to adopt updated compiled roots. See the [implementation plan](nbreq_portable_tls_plan.md) for scope, tests and progress. The following investigation evidence remains historical and is not a claim that the new implementation has passed.
 
+Subsequent implementation proof (2026-09-26): final source `e4edec8d508c36f70f8c52e6026f93dc36e5c601` passed actual Wine 5.0 (Ubuntu 5.0-3ubuntu1) using the recorded Win32 prefix and pinned app-local shim. The identical native-Windows/Wine PE I386 artifacts passed 10 portable-trust tests, three policy proofs, two TLS shutdown regressions and verified live IMAPS/SMTP STARTTLS. Native Linux, affected Windows/Mac/MSRV suites and packaged consumers also passed; independent review accepted these results with the qualifications in the implementation plan. This accepts the explicit portable route for the tested environment. The platform-verifier failures documented below remain unresolved, and GDS still needs the separate [integration changes and application-level checks](nbreq_portable_tls_gds_handoff.md).
+
 | Option | Benefit | Cost / limitation |
 | --- | --- | --- |
 | Test and require a specific newer Wine runtime | Retains the platform verifier and its trust policy; no new NBReq trust API | Requires deployment upgrades and runtime proof. Source inspection alone cannot select a supported minimum. |

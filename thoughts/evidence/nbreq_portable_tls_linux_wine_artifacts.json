@@ -1,0 +1,161 @@
+{
+  "archive": "nbreq-portable-tls-linux-wine-20260926.tar.gz",
+  "sha256": "99317af3ff287a2b67399060751b64db292e491b46a547821c0b71a0079ae55f",
+  "bytes": 2638933,
+  "files": 551,
+  "spec_sha256": "8a4752c488f44633f343e0509edaf5ac7b6c9211a15211a0e4ea50d416620984",
+  "helper_sha256": "7fff586dad72cf79705156273538c266d7da39f2d6f2b52883975e473ede6662",
+  "summary": {
+    "final_commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+    "final_source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+    "previous_archive": {
+      "path": "nbreq-portable-tls-native-20260926.tar.gz",
+      "sha256": "1c55af61848529b848dacaed9b4ecd4ef6aa78b12cbeb7863880ca61365db321"
+    },
+    "gates": {
+      "initial-wine": {
+        "status": "passed",
+        "failure": null,
+        "steps": [
+          "wine-version",
+          "portable-public",
+          "portable-bundle-proof",
+          "live-imaps",
+          "live-smtp"
+        ],
+        "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.29",
+        "machine": "x86_64",
+        "python": "3.8.10",
+        "started_utc": "2026-09-26T06:25:01.161534+00:00",
+        "manifest_sha256": "b0d0578f33a90541640da948d126f0936ef76ef46f28b83a2631de449d6a71f9",
+        "source": "c5b8eaad19d49c5b9801eb18adb2401f5927516661670877e5e7d6322478277b",
+        "commit": "b5c8eb0c1a87d25fff945dac52b7ceb87fc6680e",
+        "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "target": "i686-pc-windows-msvc",
+        "wine": "/usr/bin/wine",
+        "wineprefix": "/tmp/nbreq-wine-dns-lab-20260910/prefix",
+        "prefix_arch": "win32",
+        "shim_sha256": "92d437dc538ef6ddfae7fc0b2140ec407a6dacfb0c899ec67a6812e84387de86"
+      },
+      "initial-linux-failure": {
+        "status": "failed",
+        "failure": "RuntimeError('stable-verify failed: exit 1')",
+        "source": "843c93284d08519ffa0e8abcaeaae688fb496bc31d6c724cd05ea643cd0532ed",
+        "commit": "8d24e27d31ec78d3687c03734439b9bcb7a6e0e7",
+        "binaries": {},
+        "elapsed_seconds": 164.6300903921947
+      },
+      "linux-final": {
+        "status": "passed",
+        "failure": null,
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "binaries": {
+          "probe": {
+            "path": "/tmp/nbreq-portable-native-e4edec8/build/release/nbreq-tcp-tls-probe",
+            "sha256": "c4e4f753310d501d437428757e00d96ac676dc9a5b4995815f3cfc279419d4be"
+          }
+        },
+        "elapsed_seconds": 794.5271091908216
+      },
+      "intel-final": {
+        "status": "passed",
+        "failure": null,
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "steps": [
+          "stable-compiler",
+          "fetch",
+          "format",
+          "native-only",
+          "all-features",
+          "clippy",
+          "msrv-compiler",
+          "msrv"
+        ]
+      },
+      "arm-final": {
+        "status": "passed",
+        "failure": null,
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "steps": [
+          "stable-compiler",
+          "fetch",
+          "format",
+          "native-only",
+          "all-features",
+          "clippy",
+          "msrv-compiler",
+          "msrv"
+        ]
+      },
+      "windows-final": {
+        "status": "passed",
+        "failure": null,
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "steps": [
+          "stable-compiler",
+          "fetch",
+          "format",
+          "native-only",
+          "all-features",
+          "clippy",
+          "msrv-compiler",
+          "msrv"
+        ]
+      },
+      "windows-x86-final": {
+        "status": "passed",
+        "failure": null,
+        "steps": [
+          "portable-public",
+          "portable-bundle-proof",
+          "final-write-shutdown",
+          "live-imaps",
+          "live-smtp"
+        ],
+        "platform": "Windows-11-10.0.26200-SP0",
+        "machine": "AMD64",
+        "python": "3.12.14",
+        "started_utc": "2026-09-26T07:00:31.669609+00:00",
+        "manifest_sha256": "eea9ed55011d211a62f53bf21391a77d5a83bde2b6221bf3923f5b4aa937e6a2",
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "target": "i686-pc-windows-msvc"
+      },
+      "wine-final": {
+        "status": "passed",
+        "failure": null,
+        "steps": [
+          "wine-version",
+          "portable-public",
+          "portable-bundle-proof",
+          "final-write-shutdown",
+          "live-imaps",
+          "live-smtp"
+        ],
+        "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.29",
+        "machine": "x86_64",
+        "python": "3.8.10",
+        "started_utc": "2026-09-26T07:11:03.723595+00:00",
+        "manifest_sha256": "eea9ed55011d211a62f53bf21391a77d5a83bde2b6221bf3923f5b4aa937e6a2",
+        "source": "804625c1ae8fd03d19c8a28ed0db6528d9290639f1aa8ca04e83fe550dbeed74",
+        "commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601",
+        "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "target": "i686-pc-windows-msvc",
+        "wine": "/usr/bin/wine",
+        "wineprefix": "/tmp/nbreq-wine-dns-lab-20260910/prefix",
+        "prefix_arch": "win32",
+        "shim_sha256": "92d437dc538ef6ddfae7fc0b2140ec407a6dacfb0c899ec67a6812e84387de86"
+      }
+    },
+    "qualifications": {
+      "previous_windows_parallel_http": "The earlier full 30-step parallel Windows gate passed. An extra parallel bundle-only run failed an HTTP request-arrival timing assertion; serial bundle-only/MSRV passed without repairing that timing test. Later targeted passes do not replace this qualification.",
+      "previous_arm_live_smtp": "The earlier ARM live SMTP timeout remains qualified in the unchanged native checkpoint; its stage and cause are unknown, and later targeted TLS suites do not erase it.",
+      "diagnostic": "All 24 diagnostic application tests passed; three immediate-drop runs recorded ENOTCONN and only one wait-control run recorded final shutdown. This is syscall causal evidence, not a failing public-read reproduction or proof of an observed reset."
+    }
+  }
+}

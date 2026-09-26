@@ -1,17 +1,19 @@
 # GDS portable verified TLS integration handoff
 
 Prepared from read-only GDS source on 2026-09-26. No GDS files, configuration,
-deployment or running service were changed. NBReq production implementation is at
-`b5c8eb0`; test-only fixture repair follows at `8d24e27`. Native Windows and both Macs,
-Rust 1.85 and package consumers have passed the qualified checks in the
-[portable TLS plan](nbreq_portable_tls_plan.md). Actual Wine 5.0 (Ubuntu 5.0-3ubuntu1),
-using the existing Win32 prefix and app-local ProcessPrng shim, now passes all 10
-portable integration tests, three policy proofs and verified live IMAPS/SMTP STARTTLS
-with the identical binaries tested on native Windows. Independent review accepted
-that evidence. Native Linux exposed a separate final socket-shutdown failure under
-investigation; await the final source checkpoint and affected rechecks before adoption.
-These results prove the explicit portable mode, not repaired Wine platform trust or
-the GDS application's integration.
+deployment or running service were changed. Adopt final NBReq source checkpoint
+`e4edec8d508c36f70f8c52e6026f93dc36e5c601`: it includes the portable-trust API at
+`b5c8eb0`, fixture repair at `8d24e27`, and the subsequent narrow TLS shutdown correction.
+Native Linux full/feature/MSRV checks, affected Windows/Mac checks and package consumers
+pass as qualified in the [portable TLS plan](nbreq_portable_tls_plan.md). Actual Wine
+5.0 (Ubuntu 5.0-3ubuntu1), using the existing Win32 prefix and app-local ProcessPrng shim,
+passes all 10 portable integration tests, three policy proofs, two shutdown regressions
+and verified live IMAPS/SMTP STARTTLS with the identical binaries tested on native
+Windows. Final native Linux live probes also pass. These results prove the explicit
+portable mode, not repaired Wine platform trust or the GDS application's integration.
+Source, binary and host identities are retained in the
+[Linux/Wine artifact index](evidence/nbreq_portable_tls_linux_wine_artifacts.json), with
+the earlier native checkpoint and known Windows/ARM qualifications linked by the plan.
 
 ## Integration points
 

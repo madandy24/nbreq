@@ -3,8 +3,14 @@
   "sha256": "1c55af61848529b848dacaed9b4ecd4ef6aa78b12cbeb7863880ca61365db321",
   "bytes": 2434587,
   "members": 419,
-  "review": "Independent review accepted the qualified native checkpoint; Linux and Wine acceptance remains pending",
-  "linux_upload": "Automatic approval review rejected source transfer because it required payload/destination-specific approval. Explicit user approval question remains pending.",
+  "review": "Historical native checkpoint accepted. The embedded summary below is unchanged; later Linux/Wine and corrected-source acceptance is recorded in the followup index.",
+  "linux_upload": "Pending at this historical checkpoint; the owner subsequently approved uploads, which were completed and verified.",
+  "followup": {
+    "index": "nbreq_portable_tls_linux_wine_artifacts.json",
+    "archive": "nbreq-portable-tls-linux-wine-20260926.tar.gz",
+    "sha256": "99317af3ff287a2b67399060751b64db292e491b46a547821c0b71a0079ae55f",
+    "final_commit": "e4edec8d508c36f70f8c52e6026f93dc36e5c601"
+  },
   "summary": {
     "implementation_commit": "b5c8eb0c1a87d25fff945dac52b7ceb87fc6680e",
     "fixture_commit": "8d24e27d31ec78d3687c03734439b9bcb7a6e0e7",
