@@ -1,0 +1,17 @@
+[package]
+name = "nbreq-wine-tls-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace]
+
+[dependencies]
+rcgen = "=0.13.2"
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = { version = "=0.7.0", default-features = false }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+time = { version = "=0.3.45", default-features = false, features = ["std"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

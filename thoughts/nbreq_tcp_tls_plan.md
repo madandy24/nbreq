@@ -210,6 +210,12 @@ The later [Rust fixture follow-up](nbreq_tls_memory_fixture_plan.md) replaces on
 
 The missing ARM observation is now available:32 held connections showed median whole-client RSS10.66MiB for TLS1.2 and10.95MiB for TLS1.3, from7.39MiB baseline. Logical reservations returned from9MiB to zero after release; RSS remained above baseline during the short released window. These are idle process observations, not a production ceiling or a per-connection allocation estimate. The original Python/LibreSSL failure and failed intermediate harness attempts remain historical evidence; their status has not been rewritten. This closes the optional observation gap without identifying the precise LibreSSL internals or changing production code. Wine5 trust compatibility remains a separate issue.
 
+## Wine trust investigation checkpoint
+
+The [Wine follow-up](nbreq_tcp_tls_wine_followup.md) now records independently reviewed native Win32 and actual Wine5 diagnostic isolation. Extra-root setup rejects the modern structure size; default-trust public-chain validation separately rejects unavailable revocation information despite the dependency's policy flags. A compact generated certificate removes an additional fixture key-usage error, but does not resolve platform trust. A signed in-memory CRL attempt still lacks a valid Wine positive control.
+
+Production code and dependencies are unchanged. Older-Wine verified support remains a release decision: WQ-01 proposes an explicit application-supplied-root WebPKI mode with documented trust/revocation differences, retaining platform verification by default. A specific newer Wine runtime also requires execution evidence before recommendation. The diagnostic archive and source tool are retained; do not interpret successful diagnostic execution as Wine compatibility.
+
 ## References
 
 - Existing TCP contract: `src/tcp/mod.rs`, `src/tcp/io.rs`, `src/registry.rs`, `src/waiter.rs`.

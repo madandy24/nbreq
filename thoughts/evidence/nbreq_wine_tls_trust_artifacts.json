@@ -1,0 +1,407 @@
+{
+  "archive": "nbreq-wine-tls-trust-20260926.tar.gz",
+  "bytes": 102800,
+  "sha256": "3d9ae3c3b01c759d3adb044dcf690318b666c1f828cfe97cb2cf60d54a0e4579",
+  "files": 96,
+  "uncompressed_bytes": 505672,
+  "manifest": {
+    "purpose": "Diagnostic isolation only; no production Wine TLS fix",
+    "base_commit": "fcd462e",
+    "runtime": "Wine5.0 Ubuntu5.0-3ubuntu1, existing private Win32 prefix",
+    "frozen_manifests": [
+      "12534912a8382fbacc4c378a8cb088e5e639855a9c359326c95134e2d67e3035",
+      "4aadb487b9e9080f044491442eed0e20f99beeb36516eee8a7c71c8bb1afc680"
+    ],
+    "excludes": [
+      "executables",
+      "build trees",
+      "private keys",
+      "credentials",
+      "GDS source",
+      "raw OpenSSL session output",
+      "full third-party source files"
+    ],
+    "files": {
+      "bridge-receipts.json": {
+        "bytes": 12700,
+        "sha256": "8686e2595b7519e22d41b66ec0473c8a779164d478b6a9803ee1830245273ee9"
+      },
+      "cavesvr3-chain-0.der": {
+        "bytes": 1288,
+        "sha256": "3f70df7657880a95ceed2089b7a79844c1ca2df239921742965a0fc52a533623"
+      },
+      "cavesvr3-chain-1.der": {
+        "bytes": 1247,
+        "sha256": "13949634d99cd6fd6aa80bc034fefacceb1969feef986586713ecdbb05758d3f"
+      },
+      "cavesvr3-chain-2.der": {
+        "bytes": 1528,
+        "sha256": "072639d0b140d5bffae16ad9c3f6cc6086040621f51ee61a6d46a8915c07cf76"
+      },
+      "cavesvr3-imaps-name-verified-public-only.txt": {
+        "bytes": 6156,
+        "sha256": "ade0aedc19a3f0c30aee8485bc06ecf82275e5443906912405f7a1a1ec1a1cb0"
+      },
+      "cavesvr3-imaps-public-chain-public-only.txt": {
+        "bytes": 6050,
+        "sha256": "5ac10631f75d95d99d1a6df0c27bbb659a695e92dc57eb7a3d73ed38b0f97754"
+      },
+      "collect_receipts.py": {
+        "bytes": 1491,
+        "sha256": "543d03bc1a8f35be27939259da679bf6563ee730a11287aa09a4de87a4653d5f"
+      },
+      "constructor-crypt.log": {
+        "bytes": 1607,
+        "sha256": "688586f6180be9dc359b2d6481f3e8242e84f60134a13ac67ff5def9fd4f7f6d"
+      },
+      "constructor-trace-receipt.json": {
+        "bytes": 1760,
+        "sha256": "0430c0045de1bb790a5dd9d81cfb0bef81803dd212abec59c4b66e50fbe8547d"
+      },
+      "diagnostic-checks.json": {
+        "bytes": 793,
+        "sha256": "6975e8240388ebce382b5f1feddd896184c12fbd32624839347ed0b193442c77"
+      },
+      "frozen-12534912a838/certs/cavesvr3-chain-0.der": {
+        "bytes": 1288,
+        "sha256": "3f70df7657880a95ceed2089b7a79844c1ca2df239921742965a0fc52a533623"
+      },
+      "frozen-12534912a838/certs/cavesvr3-chain-1.der": {
+        "bytes": 1247,
+        "sha256": "13949634d99cd6fd6aa80bc034fefacceb1969feef986586713ecdbb05758d3f"
+      },
+      "frozen-12534912a838/certs/cavesvr3-chain-2.der": {
+        "bytes": 1528,
+        "sha256": "072639d0b140d5bffae16ad9c3f6cc6086040621f51ee61a6d46a8915c07cf76"
+      },
+      "frozen-12534912a838/freeze_probe.py": {
+        "bytes": 3377,
+        "sha256": "241ef4dab3f2a90206feebccc79f4c06a39cbcb6ef9db6d9bbde74519206bb85"
+      },
+      "frozen-12534912a838/owned_command.py": {
+        "bytes": 9197,
+        "sha256": "1f09607735bc3032feb7b7897ba4e8fe3726a27ef3cabba10d7c5b91cd12b036"
+      },
+      "frozen-12534912a838/probe-manifest.json": {
+        "bytes": 1774,
+        "sha256": "12534912a8382fbacc4c378a8cb088e5e639855a9c359326c95134e2d67e3035"
+      },
+      "frozen-12534912a838/public-chain-name-verified.json": {
+        "bytes": 661,
+        "sha256": "332099138b9d6bd3d7caf8db6a8cd6564bc1da5101c8d7e28b21fc974ac234c6"
+      },
+      "frozen-12534912a838/run_probe.py": {
+        "bytes": 5529,
+        "sha256": "26d1e0ebf887a8cef0ff50b0af5f8cc4dd98e15198f14f3135ad5273b958fa41"
+      },
+      "frozen-12534912a838/tools/wine-tls-probe/Cargo.lock": {
+        "bytes": 19465,
+        "sha256": "3187fd70513776386ad60fa4c1987fe0ecd5f8ad448a538e033b413f82771cae"
+      },
+      "frozen-12534912a838/tools/wine-tls-probe/Cargo.toml": {
+        "bytes": 553,
+        "sha256": "205fc6cab70331a1d6dfabf07b929247d24aa30e480d87c04abf2293a910ec02"
+      },
+      "frozen-12534912a838/tools/wine-tls-probe/README.md": {
+        "bytes": 6085,
+        "sha256": "e9c48c27323d3e74ad1d561bc7d0157c8ec8463da546c4da9e76ce8d3d35eb59"
+      },
+      "frozen-12534912a838/tools/wine-tls-probe/src/main.rs": {
+        "bytes": 22820,
+        "sha256": "87025cebe9a945e1884c4cd155ecc013368089657e43e418f65a5655c101900c"
+      },
+      "frozen-4aadb487b9e9/certs/cavesvr3-chain-0.der": {
+        "bytes": 1288,
+        "sha256": "3f70df7657880a95ceed2089b7a79844c1ca2df239921742965a0fc52a533623"
+      },
+      "frozen-4aadb487b9e9/certs/cavesvr3-chain-1.der": {
+        "bytes": 1247,
+        "sha256": "13949634d99cd6fd6aa80bc034fefacceb1969feef986586713ecdbb05758d3f"
+      },
+      "frozen-4aadb487b9e9/certs/cavesvr3-chain-2.der": {
+        "bytes": 1528,
+        "sha256": "072639d0b140d5bffae16ad9c3f6cc6086040621f51ee61a6d46a8915c07cf76"
+      },
+      "frozen-4aadb487b9e9/freeze_probe.py": {
+        "bytes": 3377,
+        "sha256": "241ef4dab3f2a90206feebccc79f4c06a39cbcb6ef9db6d9bbde74519206bb85"
+      },
+      "frozen-4aadb487b9e9/owned_command.py": {
+        "bytes": 9197,
+        "sha256": "1f09607735bc3032feb7b7897ba4e8fe3726a27ef3cabba10d7c5b91cd12b036"
+      },
+      "frozen-4aadb487b9e9/probe-manifest.json": {
+        "bytes": 1774,
+        "sha256": "4aadb487b9e9080f044491442eed0e20f99beeb36516eee8a7c71c8bb1afc680"
+      },
+      "frozen-4aadb487b9e9/public-chain-name-verified.json": {
+        "bytes": 661,
+        "sha256": "332099138b9d6bd3d7caf8db6a8cd6564bc1da5101c8d7e28b21fc974ac234c6"
+      },
+      "frozen-4aadb487b9e9/run_probe.py": {
+        "bytes": 5632,
+        "sha256": "0f507b00357af4bd1e064b2b6c6b98bc931bee94256ac6435588e233abdb841e"
+      },
+      "frozen-4aadb487b9e9/tools/wine-tls-probe/Cargo.lock": {
+        "bytes": 19465,
+        "sha256": "3187fd70513776386ad60fa4c1987fe0ecd5f8ad448a538e033b413f82771cae"
+      },
+      "frozen-4aadb487b9e9/tools/wine-tls-probe/Cargo.toml": {
+        "bytes": 553,
+        "sha256": "205fc6cab70331a1d6dfabf07b929247d24aa30e480d87c04abf2293a910ec02"
+      },
+      "frozen-4aadb487b9e9/tools/wine-tls-probe/README.md": {
+        "bytes": 9122,
+        "sha256": "4cae4f3d94fc5cc44fa49457f9779a521b5fb189f2e4311c8fa5150a427f6b2e"
+      },
+      "frozen-4aadb487b9e9/tools/wine-tls-probe/src/main.rs": {
+        "bytes": 35621,
+        "sha256": "98303c7c604cb55993f8e5ffc47e5609516e93a6e3900a89069768eca9109680"
+      },
+      "frozen-clippy.log": {
+        "bytes": 1401,
+        "sha256": "23a6e65161b448131c472330ef7e1b1812e99cdab510c272fc37f67c71048de6"
+      },
+      "frozen-fmt-check.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "frozen-msrv-targets.log": {
+        "bytes": 24,
+        "sha256": "38e1ddbd12624e696fc2c69b16804a84cc24e8defff14523aa86e1d9f998be96"
+      },
+      "frozen-msrv-x64-check.log": {
+        "bytes": 1401,
+        "sha256": "5c726df8c62251516f8c73529038b3c1b8c6b3cf7d14825768ce368c8e1184ba"
+      },
+      "gds-policy-history.md": {
+        "bytes": 3657,
+        "sha256": "0518d780ee5abdf37593c5e2daf114a810272051b6d96634c5ffdaa0f4aeea5b"
+      },
+      "host-preflight.json": {
+        "bytes": 1062,
+        "sha256": "2e954a1883d5316d5c19975b012bdf03c1ac2a565c5ccb76f3b7727970754828"
+      },
+      "inspect_wine_releases.py": {
+        "bytes": 2485,
+        "sha256": "05817bb21b15b3cf2e0af5de01ffcc85907d452daf242567f4255157d98ed5d7"
+      },
+      "native-12534912a838/command.json": {
+        "bytes": 620,
+        "sha256": "b7950e6a6132653054ab67db62d5987829c58224ffc8e68878ab89a5fd5683fa"
+      },
+      "native-12534912a838/generated.log": {
+        "bytes": 16363,
+        "sha256": "8c1561ce3580150ecafe109acd801f86c95ce29157ca485bb9e3998a58f5c273"
+      },
+      "native-12534912a838/generated.result.json": {
+        "bytes": 312,
+        "sha256": "1fd8f19d0ea11fb359fad8410c51c313a36b59a78ca668b56de4ea9c76635b8f"
+      },
+      "native-12534912a838/host.json": {
+        "bytes": 327,
+        "sha256": "63a478ade67fd1bcadf89490e5258b2478f446e516ae326ad6fa56a5933f6437"
+      },
+      "native-12534912a838/public-chain.log": {
+        "bytes": 4625,
+        "sha256": "077a3c99fd657e4dc7ac71acc7ed29744c205cbd408c18d09bf8d96710462595"
+      },
+      "native-12534912a838/public-chain.result.json": {
+        "bytes": 637,
+        "sha256": "e16adb4452ef608b4aed935eb98dbe84d8fa851daba7e6a655d9bbc0a67dfc2d"
+      },
+      "native-12534912a838/result.json": {
+        "bytes": 450,
+        "sha256": "a27c7a83692ceeb6a2e37e0e90d38841ee5370b1d6ebe007d6cd24a2ad76fa3e"
+      },
+      "native-4aadb487b9e9/command.json": {
+        "bytes": 620,
+        "sha256": "3f5787bf7702d486c9fca5599bacbc2a75263a075e262f92de672b9e758db2e1"
+      },
+      "native-4aadb487b9e9/compact-generated.log": {
+        "bytes": 58178,
+        "sha256": "f100a765c60f9f7d34fdbc80c3f31a0e949a64e636cd09ce4d374fe50db22b77"
+      },
+      "native-4aadb487b9e9/compact-generated.result.json": {
+        "bytes": 356,
+        "sha256": "43374c0ca27a692a9a2e96aa2adce777253aadf8acf7034cf9fb05237bd0c289"
+      },
+      "native-4aadb487b9e9/generated.log": {
+        "bytes": 36198,
+        "sha256": "a4c866f54d12ca19b681d428ba8018aaa290bba0924d3d6f4880996e24cce202"
+      },
+      "native-4aadb487b9e9/generated.result.json": {
+        "bytes": 312,
+        "sha256": "d691b59be4847cd6bb55402a9aae19e2d528f8e15f81eeeb211b182816f593df"
+      },
+      "native-4aadb487b9e9/host.json": {
+        "bytes": 327,
+        "sha256": "6354137c0b59800cdaacea2b421c5b78b0a89a6afbd019ec1767a9973b6e7d00"
+      },
+      "native-4aadb487b9e9/public-chain.log": {
+        "bytes": 21648,
+        "sha256": "b75e3754fe73618b15e3181a395b47a58ef56ac6c4ce8ed7631cb937711e90cd"
+      },
+      "native-4aadb487b9e9/public-chain.result.json": {
+        "bytes": 637,
+        "sha256": "8e72dbd519f621b29e509cef0f327540d36290dd3931e8117d96b0ef9a0541e4"
+      },
+      "native-4aadb487b9e9/result.json": {
+        "bytes": 450,
+        "sha256": "044dc8bb1fac4946cae19965307e3bb83ad303eb1e3088d7fd3174178bafedbe"
+      },
+      "native-build-provenance.json": {
+        "bytes": 1353,
+        "sha256": "dc8898d5777cf9b08c4649c23b1dcbdcd19c50c370bc0d1059fc9c87beef89ad"
+      },
+      "native-build.log": {
+        "bytes": 179,
+        "sha256": "b074674b6f99070f1e509e41cf9f5f3733c4996fdf185cf20804377ff2b0e460"
+      },
+      "native-cargo-V.txt": {
+        "bytes": 37,
+        "sha256": "13cd78318ed48a23ff47cc9dde608fdba0be4774d548503e8db0eff10482f5f0"
+      },
+      "native-isolation-final-build.log": {
+        "bytes": 179,
+        "sha256": "8cf0712899fa3e4817b5b6f39c8ea053a045adebee9ae19e83a229c0cf8201de"
+      },
+      "native-isolation-final-provenance.json": {
+        "bytes": 1991,
+        "sha256": "b29fe781a338950e9ab9aa020a74d8e79cba38ffd092ed215df345b76ecffd48"
+      },
+      "native-rustc-vV.txt": {
+        "bytes": 201,
+        "sha256": "20815ee828e9107afea25520937957032db8ca234a25409cc7acffbdfbd4d392"
+      },
+      "native-unsafe-time-final.jsonl": {
+        "bytes": 82,
+        "sha256": "ee64912a6a209c38ef5bafee8b6cc0eee5d505ab8f2a1509fc906940388ac22a"
+      },
+      "native-unsafe-time-final.stderr.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "pack_evidence.py": {
+        "bytes": 7135,
+        "sha256": "16f34d12c37f5e32a43f0d4aec6a45b67ec23dd9b34ca6905b257054867fa83b"
+      },
+      "prepare_remote.py": {
+        "bytes": 870,
+        "sha256": "91f4d31735be4096c7194b67c3a02b532850871a57fe6e618c5ab56c01e1ab08"
+      },
+      "public-chain-capture-receipt.json": {
+        "bytes": 3119,
+        "sha256": "affec4acc8f8de13d9c19c5615a69574fcd2bb25cb0ee16740b6baff646eef8a"
+      },
+      "public-chain-name-verified.json": {
+        "bytes": 661,
+        "sha256": "332099138b9d6bd3d7caf8db6a8cd6564bc1da5101c8d7e28b21fc974ac234c6"
+      },
+      "public-chain.json": {
+        "bytes": 1114,
+        "sha256": "346a6698a8117fc078153f79831ec2eb9edfd7acc9a67ca532e4ac7d43b2d222"
+      },
+      "snapshot-12534912a838.json": {
+        "bytes": 510,
+        "sha256": "eb994be6015bfe3ed49dae3a6bd8ba426455da9b37de19b3069ceaf2d5d2a36c"
+      },
+      "snapshot-4aadb487b9e9.json": {
+        "bytes": 510,
+        "sha256": "8f79f30b7b20a6043ee4dd8d7f8e852a2c8c4c4697576184df2f2bf53791ed6d"
+      },
+      "upstream-wine-release-comparison.json": {
+        "bytes": 6753,
+        "sha256": "8cdeefa04db0ec87f496d9f2a8a92c52a1e90ca3f45b8137271eef34a80e8574"
+      },
+      "wine-12534912a838/command.json": {
+        "bytes": 542,
+        "sha256": "ecb2950fe21e93164e677be2be15de5c185e6dd2e8d536ef1d840a1968311189"
+      },
+      "wine-12534912a838/evidence-manifest.json": {
+        "bytes": 1514,
+        "sha256": "7d617f78545d625c055a22c12dd48f17a18d9d982ef0a2daf7b968c98e411bff"
+      },
+      "wine-12534912a838/generated.log": {
+        "bytes": 11395,
+        "sha256": "7dfa2aed7f34fe3a6482c18a66d393cd50a58e5859f7a2cec009bf9297a5a96a"
+      },
+      "wine-12534912a838/generated.result.json": {
+        "bytes": 257,
+        "sha256": "31db3969f3ca573087c3fbd2c1042e14dbd781135440173e733bc1c3412cc698"
+      },
+      "wine-12534912a838/host.json": {
+        "bytes": 506,
+        "sha256": "0859ed8de804afcf399a92c5aca7263d26bd572a42abb3e33aab4160d5554db2"
+      },
+      "wine-12534912a838/public-chain.log": {
+        "bytes": 4866,
+        "sha256": "4f3c609c640f3f531cc73d4ba2a959519e0364b4ec83221eab89dc22e1ce85e0"
+      },
+      "wine-12534912a838/public-chain.result.json": {
+        "bytes": 556,
+        "sha256": "c252e92e112707ca19012ed9925f4afc59e0539ea2adfe3abc433e31929697ea"
+      },
+      "wine-12534912a838/result.json": {
+        "bytes": 626,
+        "sha256": "4754c1b5986670010ebc4fda71b2b0b884daee87f013dce515f0887f0b4cdf19"
+      },
+      "wine-12534912a838/wine-version.log": {
+        "bytes": 31,
+        "sha256": "1e5c8d88a1c8321126c2f189610d41d6ee62627eb7dcca0ef513be04ab963b20"
+      },
+      "wine-12534912a838/wine-version.result.json": {
+        "bytes": 199,
+        "sha256": "28383c2a4a6ff84bfa23c0cb179190f503ba8e19295908438e58a52bfc1eed1f"
+      },
+      "wine-4aadb487b9e9/command.json": {
+        "bytes": 542,
+        "sha256": "008202f05695a1ee182f585755d833c54c3fc8fa2eccd22c7d2ee7eab853462e"
+      },
+      "wine-4aadb487b9e9/compact-generated.log": {
+        "bytes": 45383,
+        "sha256": "1f742b290686316a289c9d91f063ca0caf42375b762d5ed9132630b59825a905"
+      },
+      "wine-4aadb487b9e9/compact-generated.result.json": {
+        "bytes": 287,
+        "sha256": "360814b523daf0a13e7ac78f06117b115e3210f6c52c299fd15dbad0f797f73a"
+      },
+      "wine-4aadb487b9e9/evidence-manifest.json": {
+        "bytes": 1716,
+        "sha256": "fa57f6f0e67218e3164a125b789709576b7d76a5ab833edaad4297711980fb68"
+      },
+      "wine-4aadb487b9e9/generated.log": {
+        "bytes": 23611,
+        "sha256": "e8191ae10b2a06ab513e35cceadd672ad866bec121a4eccc5f8fffe9be4b5515"
+      },
+      "wine-4aadb487b9e9/generated.result.json": {
+        "bytes": 255,
+        "sha256": "9838a6a39abb725fc7ada1cb297aa03be4f54c295fbe2817c2efe3dd84410a80"
+      },
+      "wine-4aadb487b9e9/host.json": {
+        "bytes": 506,
+        "sha256": "0c11b645ba48d5f8871d014f34200d66532aa2e485cae1aff2b23f63a97a86f4"
+      },
+      "wine-4aadb487b9e9/public-chain.log": {
+        "bytes": 21809,
+        "sha256": "e851a915aa8cf2e95fd389fd904956c6fae38a931ee4c8442f0fed9ed1b1ab66"
+      },
+      "wine-4aadb487b9e9/public-chain.result.json": {
+        "bytes": 556,
+        "sha256": "e2d4131535bb28e154a4271d72b8e4d29e15658765ddf928d5e912f1a9ac0259"
+      },
+      "wine-4aadb487b9e9/result.json": {
+        "bytes": 626,
+        "sha256": "18f0313b5a8c64fa1c7353586ae3760c2130468e39dae9ba186c33b0cdbc8fa1"
+      },
+      "wine-4aadb487b9e9/wine-version.log": {
+        "bytes": 31,
+        "sha256": "1e5c8d88a1c8321126c2f189610d41d6ee62627eb7dcca0ef513be04ab963b20"
+      },
+      "wine-4aadb487b9e9/wine-version.result.json": {
+        "bytes": 199,
+        "sha256": "ac438daa17626a638ead23eceb4931279d89c9ad34984685de487c121d7a88b0"
+      }
+    }
+  }
+}
