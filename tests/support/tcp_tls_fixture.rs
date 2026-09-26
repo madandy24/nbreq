@@ -3,6 +3,10 @@
 //! STARTTLS reads its command one byte at a time, leaving the first TLS record on the same
 //! socket. Each peer has a deadline and short socket timeouts; Drop releases holds and joins it.
 
+#[cfg(test)]
+#[path = "tcp_tls_fixture_regressions.rs"]
+mod close_observer_regressions;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Cursor, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -544,33 +548,34 @@ fn observe_client_close(
                 "client close_notify not observed",
             ));
         }
-        match tls.read_tls(socket) {
-            Ok(0) => return Ok(false),
-            Ok(_) => {
-                let state = tls.process_new_packets().map_err(io::Error::other)?;
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    match tls.reader().read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => {
-                            application.extend_from_slice(&buffer[..count]);
-                            if application.len() > 256 * 1024 {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "too much application data while observing close",
-                                ));
-                            }
-                        }
-                        Err(error) if retry(&error) => break,
-                        Err(error) => return Err(error),
+        // The final handshake read may already have processed application data and
+        // close_notify. Consume that authenticated state before asking for more TLS bytes.
+        let state = tls.process_new_packets().map_err(io::Error::other)?;
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match tls.reader().read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    application.extend_from_slice(&buffer[..count]);
+                    if application.len() > 256 * 1024 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "too much application data while observing close",
+                        ));
                     }
                 }
-                flush(tls, socket, stop, deadline)?;
-                if state.peer_has_closed() {
-                    let _ = events.send(Event::PeerCloseNotify { application });
-                    return Ok(true);
-                }
+                Err(error) if retry(&error) => break,
+                Err(error) => return Err(error),
             }
+        }
+        flush(tls, socket, stop, deadline)?;
+        if state.peer_has_closed() {
+            let _ = events.send(Event::PeerCloseNotify { application });
+            return Ok(true);
+        }
+        match tls.read_tls(socket) {
+            Ok(0) => return Ok(false),
+            Ok(_) => {}
             Err(error) if retry(&error) => {}
             Err(error) => return Err(error),
         }
