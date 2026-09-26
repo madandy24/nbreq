@@ -83,6 +83,7 @@ sys.exit(1 if report["status"] == "failed" else 0)
 
 FAKE_PROBE = r'''
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -98,6 +99,14 @@ print(f"phase=ready count={count} reserved={reserved}", flush=True)
 time.sleep(0.16)
 print(f"phase=closing count={count} reserved={reserved}", flush=True)
 print("phase=released count=0 reserved=0", flush=True)
+if os.environ.get("FAKE_PROBE_MODE") == "exit_race":
+    time.sleep(0.12)
+    Path(os.environ["FAKE_PROBE_RELEASED_FILE"]).write_text("released")
+    ack = Path(os.environ["FAKE_PROBE_EXIT_ACK"])
+    deadline = time.monotonic() + 3
+    while not ack.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    sys.exit(0 if ack.exists() else 11)
 time.sleep(0.16)
 '''
 
@@ -106,7 +115,8 @@ class ControllerFaultTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="nbreq-memory-test-")
         self.addCleanup(self.temp.cleanup)
-        self.folder = Path(self.temp.name)
+        # macOS /var is a symlink to /private/var; memory.main resolves CLI paths.
+        self.folder = Path(self.temp.name).resolve()
         self.fixture_marker = self.folder / "fake-fixture"
         self.probe_marker = self.folder / "fake-probe"
         self.fixture_marker.write_bytes(b"fixture marker")
@@ -118,17 +128,26 @@ class ControllerFaultTests(unittest.TestCase):
         self.children = []
         self.attempt = 0
         self.out = self.folder / "evidence-0"
+        self.released_file = self.folder / "probe-released"
+        self.exit_ack = self.folder / "probe-exit-ack"
+        self.exit_race_triggered = False
+        self.exit_race_poll_masked = False
 
     def next_attempt(self):
         self.attempt += 1
         self.out = self.folder / "evidence-{}".format(self.attempt)
         self.children = []
+        self.exit_race_triggered = False
+        self.exit_race_poll_masked = False
+        self.released_file.unlink(missing_ok=True)
+        self.exit_ack.unlink(missing_ok=True)
 
     def run_controller(self, fixture_mode="normal", probe_mode="normal", *,
                        fail_probe_launch=False, fail_sampler=False, deadline=2.0,
                        path_write_failure=None, log_open_failure=False,
                        expect_success=False, unrelated_pid=None,
-                       expected_error=None, report_publish_failure=False):
+                       expected_error=None, report_publish_failure=False,
+                       sampler_exit_race=False, sampler_live_failure=False):
         original_popen = subprocess.Popen
         original_write_text = Path.write_text
         original_open = Path.open
@@ -145,6 +164,17 @@ class ControllerFaultTests(unittest.TestCase):
             child = original_popen(command, *args, **kwargs)
             if executable in (str(self.fixture_marker), str(self.probe_marker)):
                 self.children.append(child)
+                self.addCleanup(self.cleanup_child, child)
+            if executable == str(self.probe_marker) and sampler_exit_race:
+                actual_poll = child.poll
+
+                def mask_one_post_error_poll():
+                    if self.exit_race_triggered and not self.exit_race_poll_masked:
+                        self.exit_race_poll_masked = True
+                        return None
+                    return actual_poll()
+
+                child.poll = mask_one_post_error_poll
             return child
 
         def write_text(path, text, *args, **kwargs):
@@ -176,6 +206,33 @@ class ControllerFaultTests(unittest.TestCase):
             def __init__(self, _pid):
                 raise OSError("injected sampler constructor failure")
 
+        class ControlledSampler:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def sample(self):
+                return {"rss": 4096, "private": 4096,
+                        "lifetime_peak_rss": 4096, "cpu_seconds": 0.0}
+
+            def close(self):
+                pass
+
+        class ExitRaceSampler(ControlledSampler):
+            def sample(inner_self):
+                if self.released_file.exists() and not self.exit_race_triggered:
+                    self.exit_race_triggered = True
+                    self.exit_ack.write_text("exit now")
+                    raise ProcessLookupError("injected sample/exit race")
+                return super().sample()
+
+        class LiveFailureSampler(ControlledSampler):
+            def sample(self):
+                raise ProcessLookupError("injected live process sample failure")
+
+        sampler_class = (BrokenSampler if fail_sampler else
+                         ExitRaceSampler if sampler_exit_race else
+                         LiveFailureSampler if sampler_live_failure else ControlledSampler)
+
         argv = ["memory.py", "--binary", str(self.probe_marker),
                 "--fixture-binary", str(self.fixture_marker),
                 "--out", str(self.out), "--tls-version", "1.3"]
@@ -188,8 +245,10 @@ class ControllerFaultTests(unittest.TestCase):
              mock.patch.object(memory.os, "replace", side_effect=replace), \
              mock.patch.dict(os.environ, {"FAKE_FIXTURE_MODE": fixture_mode,
                                        "FAKE_PROBE_MODE": probe_mode,
-                                       "FAKE_READY_PID": str(unrelated_pid or 0)}), \
-             mock.patch.object(memory, "Sampler", BrokenSampler if fail_sampler else memory.Sampler):
+                                       "FAKE_READY_PID": str(unrelated_pid or 0),
+                                       "FAKE_PROBE_RELEASED_FILE": str(self.released_file),
+                                       "FAKE_PROBE_EXIT_ACK": str(self.exit_ack)}), \
+             mock.patch.object(memory, "Sampler", sampler_class):
             if expect_success:
                 memory.main()
             else:
@@ -217,6 +276,12 @@ class ControllerFaultTests(unittest.TestCase):
                 child.wait(timeout=3)
                 self.fail("controller left owned child PID {} running".format(child.pid))
 
+    @staticmethod
+    def cleanup_child(child):
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=3)
+
     def test_ready_metadata_must_match_owned_process_and_requested_fixture(self):
         unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -227,13 +292,15 @@ class ControllerFaultTests(unittest.TestCase):
                    "wrong_count": "readiness count"}
         for mode, reason in reasons.items():
             with self.subTest(mode=mode):
-                self.run_controller(fixture_mode=mode, unrelated_pid=unrelated.pid,
-                                    expected_error=reason)
-                self.assertEqual(len(self.children), 1,
-                                 "invalid readiness must not launch the probe")
-                self.assertIsNone(unrelated.poll(),
-                                  "controller killed a process it did not launch")
-                self.next_attempt()
+                try:
+                    self.run_controller(fixture_mode=mode, unrelated_pid=unrelated.pid,
+                                        expected_error=reason)
+                    self.assertEqual(len(self.children), 1,
+                                     "invalid readiness must not launch the probe")
+                    self.assertIsNone(unrelated.poll(),
+                                      "controller killed a process it did not launch")
+                finally:
+                    self.next_attempt()
 
     def test_fixture_exit_before_and_after_readiness_reaps_owned_children(self):
         self.run_controller(fixture_mode="early_exit", expected_error="before readiness")
@@ -259,9 +326,11 @@ class ControllerFaultTests(unittest.TestCase):
                    "failed_report": "fixture exited 1"}
         for mode, reason in reasons.items():
             with self.subTest(mode=mode):
-                self.run_controller(fixture_mode=mode, expected_error=reason)
-                self.assertEqual(len(self.children), 2)
-                self.next_attempt()
+                try:
+                    self.run_controller(fixture_mode=mode, expected_error=reason)
+                    self.assertEqual(len(self.children), 2)
+                finally:
+                    self.next_attempt()
 
     def test_evidence_write_failure_does_not_publish_success(self):
         self.run_controller(path_write_failure="samples.jsonl",
@@ -279,6 +348,18 @@ class ControllerFaultTests(unittest.TestCase):
 
     def test_valid_fake_children_are_a_positive_control_for_controller_validation(self):
         self.run_controller(expect_success=True)
+        self.assertEqual(len(self.children), 2)
+
+    def test_sample_disappearance_after_confirmed_probe_exit_is_ignored(self):
+        self.run_controller(probe_mode="exit_race", sampler_exit_race=True,
+                            expect_success=True)
+        self.assertTrue(self.exit_race_triggered, "sample/exit race was not exercised")
+        self.assertTrue(self.exit_race_poll_masked,
+                        "post-error poll did not exercise the bounded wait branch")
+
+    def test_sample_disappearance_while_probe_is_live_fails_and_reaps_children(self):
+        self.run_controller(sampler_live_failure=True,
+                            expected_error="injected live process sample failure")
         self.assertEqual(len(self.children), 2)
 
 

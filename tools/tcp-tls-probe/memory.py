@@ -188,9 +188,12 @@ def observe(binary, fixture_binary, count, out, tls_version):
                     sample.update(time_s=time.monotonic() - start, phase=phase)
                     samples.append(sample)
                 except (FileNotFoundError, ProcessLookupError, KeyError, IndexError,
-                        subprocess.CalledProcessError):
+                        subprocess.CalledProcessError) as error:
                     if process.poll() is None:
-                        raise
+                        try:
+                            process.wait(timeout=0.1)
+                        except subprocess.TimeoutExpired:
+                            raise error
             time.sleep(SAMPLE_INTERVAL)
         process.wait(timeout=5)
         reader.join(timeout=5)
