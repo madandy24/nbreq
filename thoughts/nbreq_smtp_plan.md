@@ -18,6 +18,8 @@ Opened 2026-09-26 (NZST). Keep this checkpoint current through contract, runtime
 | Live authority | Owner permits mail through `cavesvr3.caverock.com` from `andrew@gdsresponse.com` to `andrew@caverock.com`. Root sent exactly one 617-byte test after reviewed frozen checks. Final reply: `250 2.0.0 Ok: queued as 2D78920121`. No retry. |
 | Evidence lab | `C:/User/projects/nbreq/target/smtp-20260926/`. Preserve compiler/commit/hash identity, actual runtime reds, raw passing and failed logs, and final SMTP acceptance separately from mailbox delivery. |
 
+Subsequent tooling-only work on this branch is recorded in the [TLS memory fixture follow-up](nbreq_tls_memory_fixture_plan.md). It closes the optional ARM observation gap with unchanged original ARM/Linux client executables and makes no SMTP implementation or live-mail changes.
+
 ## Stages
 
 | ID | Work | Acceptance | Status |
