@@ -17,4 +17,10 @@ cargo run --manifest-path tools/tcp-tls-probe/Cargo.toml -- hold 127.0.0.1:PORT 
 
 The final argument is `16` or `32`. The probe prints `baseline`, `ready`, and `released` phases. It retains verified connections for five seconds with 16 KiB send and receive windows, checks the logical TLS reservation, then drops all connections and checks permit reclamation. It does not assert an RSS threshold; measure that externally while the local server runs in another process.
 
-For a bounded client-only memory observation, build this probe first and run `python tools/tcp-tls-probe/memory.py --binary PATH_TO_PROBE --out NEW_OUTPUT_DIRECTORY`. The observer needs an OpenSSL executable on `PATH`, or an explicit `--openssl PATH`. It defaults to TLS 1.3; use `--tls-version 1.2` on a Python SSL runtime without TLS 1.3. It records each negotiated version, runs both 16 and 32 connection phases, saves raw client output and process samples, and deletes its generated private keys when finished. Keep its output local; never upload generated private keys if a run is interrupted before cleanup.
+For a bounded client-only memory observation, build the probe and the separate `tools/tcp-tls-fixture` crate first, then run:
+
+```text
+python tools/tcp-tls-probe/memory.py --binary PATH_TO_PROBE --fixture-binary PATH_TO_TCP_TLS_FIXTURE --out NEW_OUTPUT_DIRECTORY --tls-version 1.3
+```
+
+The observer uses Python 3.8 or newer and samples only the probe PID. The Rust fixture creates its CA and leaf private keys in memory, writes only the public DER root, binds an ephemeral IPv4 loopback port, and serves exactly 16 or 32 verified TLS connections per run. Select `--tls-version 1.2` for the other explicit protocol. The observer checks the fixture's owned PID, loopback address, counts and negotiated versions, retains raw logs and process samples, and reaps both children before publishing success. It imposes no RSS pass/fail threshold; the samples are whole-client-process observations rather than per-connection allocation accounting.
