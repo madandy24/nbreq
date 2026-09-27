@@ -5,3 +5,5 @@ mod common_http;
 mod fixture;
 #[cfg(all(test, feature = "v020"))]
 mod v020;
+#[cfg(all(test, feature = "native", feature = "v020"))]
+mod v021;

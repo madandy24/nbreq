@@ -12,6 +12,7 @@ autobins = false
 default = ["native", "resolver", "v020"]
 native = ["nbreq/native"]
 resolver = ["native", "nbreq/resolver"]
+bundled-roots = ["native", "nbreq/bundled-roots"]
 test-support = ["nbreq/test-support"]
 v020 = []
 

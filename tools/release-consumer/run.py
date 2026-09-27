@@ -43,6 +43,7 @@ def run(label, command, cwd, expected=0, contains=None, timeout=600):
         if not passed:
             print(result.stdout.decode('utf-8',errors='replace')[-5000:],flush=True)
             raise RuntimeError(label+' failed')
+        return result.stdout
     except subprocess.TimeoutExpired as error:
         (out/(label+'.log')).write_bytes(error.stdout or b'')
         raise
@@ -68,9 +69,18 @@ run('resolve-consumer',['cargo',*patch,'generate-lockfile',*network],consumer)
 shutil.copy2(consumer/'Cargo.lock',out/'consumer-Cargo.lock')
 for toolchain in args.toolchains:
     cargo = ['rustup','run',toolchain,'cargo',*patch]
+    raw = run(toolchain+'-bundled-metadata',[*cargo,'metadata','--locked',*network,
+              '--features','bundled-roots','--format-version','1'],consumer)
+    graph = json.loads(raw[raw.index(b'{'):])
+    root_package = next(p for p in graph['packages'] if p['name'] == 'nbreq')
+    roots_package = next(p for p in graph['packages'] if p['name'] == 'webpki-roots')
+    root_node = next(n for n in graph['resolve']['nodes'] if n['id'] == root_package['id'])
+    assert 'bundled-roots' in root_node['features'] and roots_package['id'] in root_node['dependencies']
+    assert roots_package['source'] == 'registry+https://github.com/rust-lang/crates.io-index'
     for label, features in [('default',[]),('native-only',['--no-default-features','--features','native,v020']),
                             ('minimal',['--no-default-features','--features','v020']),
-                            ('test-support',['--features','test-support'])]:
+                            ('test-support',['--features','test-support']),
+                            ('bundled-roots',['--features','bundled-roots'])]:
         run(toolchain+'-'+label,[*cargo,'test','--locked',*network,'--lib',*features,'--','--test-threads=1'],consumer,contains='test result: ok.')
     for label, probe, features, expected in [
             ('resolver-present','resolver_probe',[],0),
@@ -87,6 +97,7 @@ manifest = (legacy/'Cargo.toml').read_text()
 manifest = manifest.replace('default = ["native", "resolver", "v020"]','default = ["native"]')
 manifest = manifest.replace('resolver = ["native", "nbreq/resolver"]','resolver = []')
 manifest = manifest.replace('test-support = ["nbreq/test-support"]','test-support = []')
+manifest = manifest.replace('bundled-roots = ["native", "nbreq/bundled-roots"]','bundled-roots = []')
 manifest = manifest.replace('version = "=0.2.1"','version = "=0.1.1"')
 (legacy/'Cargo.toml').write_text(manifest,encoding='utf-8')
 run('resolve-011',['cargo','generate-lockfile',*network],legacy)

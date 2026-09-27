@@ -108,9 +108,14 @@ for toolchain in args.toolchains:
         raw = run(label + '-metadata', cargo + ['metadata', '--locked', '--all-features', '--format-version', '1'], consumer)
         metadata = json.loads(raw[raw.index(b'{'):])
         lock = tomllib.loads((consumer / 'Cargo.lock').read_text())
-        packages = {p['name']: p for p in metadata['packages'] if p['name'] in ['nbreq', *helper_hashes]}
-        assert set(packages) == {'nbreq', *helper_hashes}
+        packages = {p['name']: p for p in metadata['packages'] if p['name'] in ['nbreq', 'webpki-roots', *helper_hashes]}
+        assert set(packages) == {'nbreq', 'webpki-roots', *helper_hashes}
         assert packages['nbreq']['source'] == (registry if args.mode == 'published' else None)
+        root_node = next(n for n in metadata['resolve']['nodes'] if n['id'] == packages['nbreq']['id'])
+        assert 'bundled-roots' in root_node['features'] and packages['webpki-roots']['id'] in root_node['dependencies']
+        roots_entry = next(p for p in lock['package'] if p['name'] == 'webpki-roots')
+        assert packages['webpki-roots']['source'] == roots_entry['source'] == registry
+        assert packages['webpki-roots']['version'] == roots_entry['version'] and roots_entry['checksum']
         for name, (version, digest) in helper_hashes.items():
             assert packages[name]['source'] == registry and packages[name]['version'] == version
             matches = [p for p in lock['package'] if p['name'] == name]
@@ -124,7 +129,8 @@ for toolchain in args.toolchains:
             shutil.copy2(consumer / filename, case_out / filename)
         for mode, features in [('default', []), ('native', ['--no-default-features', '--features', 'native,v020']),
                                ('minimal', ['--no-default-features', '--features', 'v020']),
-                               ('test-support', ['--features', 'test-support'])]:
+                               ('test-support', ['--features', 'test-support']),
+                               ('bundled-roots', ['--features', 'bundled-roots'])]:
             run(label + '-' + mode, cargo + ['test', '--locked', '--lib', *features, '--', '--test-threads=1'],
                 consumer, contains='test result: ok.')
         run(label + '-resolver-absent', cargo + ['check', '--locked', '--bin', 'resolver_probe',

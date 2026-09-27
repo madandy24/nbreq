@@ -59,19 +59,25 @@ for toolchain in args.toolchains:
         (consumer/'Cargo.toml').write_text(manifest,encoding='utf-8')
         cargo = ['rustup','run',toolchain,'cargo']
         run(label+'-resolve',cargo+['generate-lockfile'],consumer)
-        run(label+'-metadata',cargo+['metadata','--locked','--format-version','1'],consumer)
+        run(label+'-metadata',cargo+['metadata','--locked','--all-features','--format-version','1'],consumer)
+        metadata_text = (out/(label+'-metadata.log')).read_text(encoding='utf-8')
+        metadata = json.loads(metadata_text[metadata_text.index('{'):])
+        root_package = next(p for p in metadata['packages'] if p['name'] == 'nbreq')
+        roots_package = next(p for p in metadata['packages'] if p['name'] == 'webpki-roots')
+        root_node = next(n for n in metadata['resolve']['nodes'] if n['id'] == root_package['id'])
+        assert 'bundled-roots' in root_node['features'] and roots_package['id'] in root_node['dependencies']
+        assert roots_package['source'] == 'registry+https://github.com/rust-lang/crates.io-index'
         for mode, features in [('default',[]),('native',['--no-default-features','--features','native,v020']),
                                ('minimal',['--no-default-features','--features','v020']),
-                               ('test-support',['--features','test-support'])]:
+                               ('test-support',['--features','test-support']),
+                               ('bundled-roots',['--features','bundled-roots'])]:
             run(label+'-'+mode,cargo+['test','--locked','--lib']+features+['--','--test-threads=1'],consumer,
                 contains='test result: ok.')
         run(label+'-resolver-absent',cargo+['check','--locked','--bin','resolver_probe',
             '--no-default-features','--features','native,v020'],consumer,101,'unresolved import')
         run(label+'-testing-absent',cargo+['check','--locked','--bin','testing_probe'],consumer,101,'unresolved import')
-        metadata_text = (out/(label+'-metadata.log')).read_text(encoding='utf-8')
-        metadata = json.loads(metadata_text[metadata_text.index('{'):])
         versions = {p['name']:p['version'] for p in metadata['packages'] if p['name'] in
-                    ['nbreq','nbreq-winpoll','nbreq-darwin','mio','rustls','url','icu_normalizer','windows-sys']}
+                    ['nbreq','nbreq-winpoll','nbreq-darwin','mio','rustls','url','icu_normalizer','windows-sys','webpki-roots']}
         if case == 'mio-coexist':
             assert versions['mio'] == '1.2.3'
         (consumer/'versions.json').write_text(json.dumps(versions,indent=2),encoding='utf-8')

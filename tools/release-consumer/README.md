@@ -22,6 +22,13 @@ Resolver and testing capabilities disappear without their features. Common HTTP 
 unchanged against actual registry nbreq 0.1.1 and the candidate package. Every fixture bounds
 accept/read/write waits and joins its worker. Cargo commands have a ten-minute outer bound.
 
+The additional `bundled-roots` mode forwards the optional NBReq feature, checks that the default
+trust policy remains `Platform`, and constructs and shuts down an Engine explicitly selecting
+`BundledMozilla`. Bundle-disabled native modes require that selection to return `Unsupported`.
+Metadata verifies the enabled NBReq feature and its active registry `webpki-roots` dependency.
+This is construction and dependency-graph coverage; the local C04/C05 fixtures exercise TLS using
+supplied roots. The unchanged HTTP comparison still consumes actual registry NBReq 0.1.1.
+
 The runner builds all 19 numbered examples from the unpacked root archive and uses
 `check_examples.py` to run all 11 HTTP and five TCP programs against local fixtures, including
 direct TLS and a TCP-to-TLS upgrade. Two additional cases check that HTTP 404 is a response and
@@ -47,7 +54,7 @@ deliberately fail in feature combinations where their imported surface should be
 
 `python pre_r5.py --out NEW_EVIDENCE_DIRECTORY` resolves fresh online consumer graphs on stable
 and Rust 1.85, both alone and alongside an explicit newer compatible Mio requirement. It runs
-default/native-only/minimal/test-support tests and negative feature probes, preserving locks,
+default/native-only/minimal/test-support/bundled-roots tests and negative feature probes, preserving locks,
 compiler versions and logs. It uses local root, Darwin and winpoll overrides, so these checks
 do not establish registry-only installation.
 Pass `--toolchains stable` or `--toolchains 1.85.0` to select the installed toolchain in a CI
@@ -69,7 +76,9 @@ normalized root candidate with Darwin/winpoll resolved only from crates.io. Its 
 override is the unpublished root package. `--mode published --out NEW_DIRECTORY` downloads
 nbreq 0.2.1 and tests it with no local overrides. Both modes check Cargo metadata and lock
 checksums, fresh stable/MSRV consumers with and without Mio coexistence, feature boundaries,
-and all 18 local example cases. `--toolchains` selects installed toolchains for a matrix job.
+the optional Mozilla-root graph and all 18 local example cases. The bundled-roots mode runs on
+each selected toolchain in both candidate and published checks. `--toolchains` selects installed
+toolchains for a matrix job.
 
 The manual `Registry release checks` workflow runs these modes on Windows, Linux and both
 Mac architectures, stable and Rust 1.85. It has read-only repository permission and never
