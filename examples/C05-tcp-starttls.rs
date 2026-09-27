@@ -32,6 +32,7 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
         .send_queue_bytes(1024)
         .receive_queue_bytes(1024)
         .build()?;
+    // Start with plain TCP so the application can negotiate the protocol's TLS upgrade.
     let mut plain = engine.tcp_connector().execute(request)?;
     if read_line(&mut plain)? != b"220 local.example ready\r\n" {
         return Err("unexpected local greeting".into());
@@ -44,6 +45,7 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
     // `into_tls` consumes the unsplit plain connection. There is no simultaneous cleartext
     // handle or fallback after the handshake starts.
     let tls = TlsOptions::new("127.0.0.1")?.handshake_timeout(Duration::from_secs(5));
+    // The same socket is ready for protected application bytes after verification succeeds.
     let mut secure = plain.into_tls(tls)?;
     secure.send(tls_echo::MESSAGE.to_vec())?;
     // The local fixture negotiates TLS 1.3, which permits a reply after our close_notify.
@@ -68,6 +70,8 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = tls_echo::Server::start(tls_echo::Mode::StartTls)?;
+    // Trust only this local fixture's private CA. For a server trusted by the OS, use
+    // EngineConfig::spawned() with its default platform trust and the server's TLS identity.
     let engine = Engine::new(
         EngineConfig::spawned()
             .with_tls_trust(TlsTrust::SuppliedRootsOnly)

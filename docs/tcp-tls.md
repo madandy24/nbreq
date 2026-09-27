@@ -1,8 +1,9 @@
 # TLS for TCP connections
 
-This guide describes the TCP TLS API under development after NBReq 0.2.0. It is not
-available in the published 0.2.0 crate. Use this development checkout to build the
-[immediate TLS and STARTTLS examples](../examples/README.md#c--tcp).
+This guide describes the TCP TLS API in NBReq 0.2.1. Start with
+[C04: direct TCP+TLS](../examples/C04-tcp-tls.rs) or
+[C05: upgrade TCP to TLS](../examples/C05-tcp-starttls.rs). Both use local verified
+TLS peers; see the [example commands and expected output](../examples/README.md#c--tcp).
 
 Use immediate TLS when the server expects a TLS handshake as soon as TCP connects,
 such as an IMAP server on port 993. Use an explicit upgrade when the application

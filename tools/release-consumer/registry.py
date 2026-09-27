@@ -136,7 +136,7 @@ for toolchain in args.toolchains:
 run('build-examples', ['rustup', 'run', args.toolchains[0], 'cargo', 'build', '--locked', '--examples',
                       '--manifest-path', str(root / 'Cargo.toml')], work)
 run('examples', [sys.executable, str(source / 'check_examples.py'), '--bin-dir', str(out / 'build/debug/examples'),
-                 '--out', str(out / 'examples')], work, contains='Example checks passed: 16')
+                 '--out', str(out / 'examples')], work, contains='Example checks passed: 18')
 (out / 'result.json').write_text(json.dumps(dict(status='passed', steps=len(steps), cases=cases,
     registry_only=args.mode == 'published', support_from_registry=True, archive_sha256=package_hash), indent=2), encoding='utf-8')
 print('Registry consumer checks passed (' + args.mode + ')', flush=True)

@@ -162,7 +162,8 @@ hashes, commands, source identity and package results. Logs, manifests, locks,
 metadata source snapshots and independent consumer sources are included; build
 outputs and crate archives are excluded.
 
-README, guides, examples, changelog and tool README updates remain for that next
-pass, including the behavior disclosures above. Then perform the exact versioned
+The [documentation plan](nbreq_021_documentation_plan.md) records the completed TCP
+example pass and its runner checks. Main README, remaining guides and changelog
+updates are next, including the behavior disclosures above. Then perform the exact versioned
 candidate, hosted CI and published-registry checks already identified in release
 preparation. This pass does not replace those gates or authorize publication.

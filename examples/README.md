@@ -93,15 +93,24 @@ cargo run --example C02-tcp-nonblocking -- echo.example.org 9000
 The hostname above is a placeholder for your own server. Sending FIN closes only our write side;
 we keep reading until the peer sends EOF. Dropping an unfinished connection aborts it.
 
-C04/C05 use the **unreleased TCP TLS API**, which is not in the published 0.2.0 crate. They start
-local TLS 1.3 peers, generate a private CA, and select `TlsTrust::SuppliedRootsOnly` with that CA while preserving
-certificate and IP identity verification. Successful runs echo 24 protected bytes. Neither example
-requires an external service, credentials, or an insecure verification option:
+C04/C05 demonstrate the TCP TLS API in NBReq 0.2.1. C04 calls
+`engine.tcp_connector().execute_tls(request, tls)` to connect TCP and complete a verified TLS
+handshake. C05 first calls `execute(request)` for plain TCP, negotiates the upgrade, then calls
+`plain.into_tls(tls)` to consume that connection and secure the same socket.
+
+Both examples start local TLS 1.3 peers and generate a private CA. They select
+`TlsTrust::SuppliedRootsOnly` with that CA while preserving certificate and IP identity
+verification. For a server trusted by the operating system, use `EngineConfig::spawned()` with
+its default platform trust and set `TlsOptions` to the server's certificate DNS name or IP identity.
+The local examples need no external service or credentials:
 
 ```sh
 cargo run --example C04-tcp-tls
 cargo run --example C05-tcp-starttls
 ```
+
+Expected output from C04 is `verified TLS to 127.0.0.1; echoed 24 protected bytes`.
+C05 prints `upgraded the same socket; echoed 24 protected bytes`.
 
 C05 uses a deliberately small STARTTLS-style text protocol, not a complete SMTP or IMAP client.
 Its one-byte reads avoid application overread; NBReq also checks its own queue before accepting

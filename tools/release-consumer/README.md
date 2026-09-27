@@ -4,7 +4,7 @@ Unpublished verification tooling. `run.py` copies these tests into an independen
 Cargo workspace and unpacks the supplied normalized `.crate` files there. It never uses GDS,
 imports private nbreq modules, changes host networking or publishes anything.
 
-Pass `--package PATH/nbreq-0.2.0.crate --darwin-package PATH/nbreq-darwin-0.1.0.crate
+Pass `--package PATH/nbreq-0.2.1.crate --darwin-package PATH/nbreq-darwin-0.1.0.crate
 --winpoll-package PATH/nbreq-winpoll-0.1.1.crate
 --out NEW_EVIDENCE_DIRECTORY`, optionally `--offline` and `--toolchains stable 1.85.0`.
 The output directory must be new. It preserves source, dependency locks, commands and logs;
@@ -22,9 +22,10 @@ Resolver and testing capabilities disappear without their features. Common HTTP 
 unchanged against actual registry nbreq 0.1.1 and the candidate package. Every fixture bounds
 accept/read/write waits and joins its worker. Cargo commands have a ten-minute outer bound.
 
-The runner builds all 17 numbered examples from the unpacked root archive and uses
-`check_examples.py` to run all 11 HTTP and three TCP programs against local fixtures. It also
-checks that HTTP 404 is a response and an oversized declared body fails the configured limit.
+The runner builds all 19 numbered examples from the unpacked root archive and uses
+`check_examples.py` to run all 11 HTTP and five TCP programs against local fixtures, including
+direct TLS and a TCP-to-TLS upgrade. Two additional cases check that HTTP 404 is a response and
+an oversized declared body fails the configured limit, for 18 local executions in total.
 Cancellation must produce a verified terminal `Cancelled`; echo checks require exact bytes and EOF.
 Pass `--live-dns example.com --live-https https://example.com/` to additionally exercise the
 three packaged DNS programs and the simple HTTPS GET using the host's ordinary configuration.
@@ -66,9 +67,9 @@ macOS validation. Both scripts require Python 3.11 or later and bound each Cargo
 `registry.py --mode candidate --package EXACT_ROOT_ARCHIVE --out NEW_DIRECTORY` tests a
 normalized root candidate with Darwin/winpoll resolved only from crates.io. Its sole local
 override is the unpublished root package. `--mode published --out NEW_DIRECTORY` downloads
-nbreq 0.2.0 and tests it with no local overrides. Both modes check Cargo metadata and lock
+nbreq 0.2.1 and tests it with no local overrides. Both modes check Cargo metadata and lock
 checksums, fresh stable/MSRV consumers with and without Mio coexistence, feature boundaries,
-and all 16 local example cases. `--toolchains` selects installed toolchains for a matrix job.
+and all 18 local example cases. `--toolchains` selects installed toolchains for a matrix job.
 
 The manual `Registry release checks` workflow runs these modes on Windows, Linux and both
 Mac architectures, stable and Rust 1.85. It has read-only repository permission and never

@@ -18,6 +18,7 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
     // The socket endpoint is a literal address. The TLS identity is selected explicitly and
     // checked against the generated certificate using this Engine's private CA root.
     let tls = TlsOptions::new("127.0.0.1")?.handshake_timeout(Duration::from_secs(5));
+    // Connect TCP and complete the verified TLS handshake before sending application bytes.
     let mut connection = engine.tcp_connector().execute_tls(request, tls)?;
     connection.send(tls_echo::MESSAGE.to_vec())?;
     connection.finish()?; // This local TLS 1.3 peer permits reading after our close_notify.
@@ -42,6 +43,8 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = tls_echo::Server::start(tls_echo::Mode::Immediate)?;
+    // Trust only this local fixture's private CA. For a server trusted by the OS, use
+    // EngineConfig::spawned() with its default platform trust and the server's TLS identity.
     let engine = Engine::new(
         EngineConfig::spawned()
             .with_tls_trust(TlsTrust::SuppliedRootsOnly)

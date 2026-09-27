@@ -138,6 +138,8 @@ def main():
     run('A07-http-cancel', 'A07-http-cancel', expected='completion: Cancelled (verified)')
     for name in TCP:
         run(name, name, expected='echoed 17 bytes and received EOF')
+    run('C04-tcp-tls', 'C04-tcp-tls', expected='verified TLS to 127.0.0.1; echoed 24 protected bytes')
+    run('C05-tcp-starttls', 'C05-tcp-starttls', expected='upgraded the same socket; echoed 24 protected bytes')
     if args.live_dns:
         for name in DNS:
             run('live-' + name, name, [args.live_dns], 'DNS Answer:')
