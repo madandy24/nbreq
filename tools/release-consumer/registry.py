@@ -13,6 +13,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+from consumer_policy import select_consumer_lock
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mode', choices=['candidate', 'published'], required=True)
@@ -105,6 +106,8 @@ for toolchain in args.toolchains:
             text += '\n[patch.crates-io]\nnbreq = { path = ' + json.dumps(root.as_posix()) + ' }\n'
         (consumer / 'Cargo.toml').write_text(text, encoding='utf-8')
         run(label + '-resolve', cargo + ['generate-lockfile'], consumer)
+        case_out = out / label
+        policy = select_consumer_lock(run, label, cargo, toolchain, consumer, case_out)
         raw = run(label + '-metadata', cargo + ['metadata', '--locked', '--all-features', '--format-version', '1'], consumer)
         metadata = json.loads(raw[raw.index(b'{'):])
         lock = tomllib.loads((consumer / 'Cargo.lock').read_text())
@@ -123,8 +126,6 @@ for toolchain in args.toolchains:
         if args.mode == 'published':
             entry = next(p for p in lock['package'] if p['name'] == 'nbreq')
             assert entry['source'] == registry and entry['checksum'] == package_hash
-        case_out = out / label
-        case_out.mkdir()
         for filename in ['Cargo.lock', 'Cargo.toml']:
             shutil.copy2(consumer / filename, case_out / filename)
         for mode, features in [('default', []), ('native', ['--no-default-features', '--features', 'native,v020']),
@@ -137,8 +138,13 @@ for toolchain in args.toolchains:
             '--no-default-features', '--features', 'native,v020'], consumer, 101, 'unresolved import')
         run(label + '-testing-absent', cargo + ['check', '--locked', '--bin', 'testing_probe'], consumer, 101, 'unresolved import')
         cases.append(dict(label=label, registry_only=args.mode == 'published', support_from_registry=True,
+                          dependency_route=policy['route'], initial_lock_sha256=policy['initial']['sha256'],
                           packages={name: dict(version=p['version'], source=p['source']) for name, p in packages.items()},
                           lock_sha256=hashlib.sha256((consumer / 'Cargo.lock').read_bytes()).hexdigest()))
+shutil.copy2(root / 'Cargo.lock', out / 'package-examples-Cargo.lock')
+inputs['example_dependency_route'] = 'unchanged packaged Cargo.lock with --locked; not a fresh consumer graph'
+inputs['example_lock_sha256'] = hashlib.sha256((root / 'Cargo.lock').read_bytes()).hexdigest()
+(out / 'inputs.json').write_text(json.dumps(inputs, indent=2), encoding='utf-8')
 run('build-examples', ['rustup', 'run', args.toolchains[0], 'cargo', 'build', '--locked', '--examples',
                       '--manifest-path', str(root / 'Cargo.toml')], work)
 run('examples', [sys.executable, str(source / 'check_examples.py'), '--bin-dir', str(out / 'build/debug/examples'),

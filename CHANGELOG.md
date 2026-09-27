@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — release date pending
+## 0.2.1 — 2026-09-27
 
 - Add verified standalone TLS 1.2/1.3 connections and consuming STARTTLS-style upgrades.
   `TlsOptions`, `TlsConnection`, split reader/writer types, cancellation handles, callbacks
@@ -28,6 +28,8 @@
   original allocation. Use bounded storage for small native receive windows, and keep peer
   FIN terminal so queue-pressure changes cannot restart read inactivity after EOF.
 - Add local direct-TLS and TCP-to-TLS upgrade examples to the release example checks.
+- Document the Rust 1.85 application-lock workaround for upstream `yoke-derive 0.8.3`;
+  published dependency ranges remain unchanged. Newer compilers can use normal resolution.
 
 The existing HTTP/DNS/plain TCP API and default features remain available, with Rust 1.85
 as the minimum supported version. The separate `nbreq-smtp` 0.1.0 workspace crate remains

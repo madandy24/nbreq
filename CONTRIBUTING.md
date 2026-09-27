@@ -67,8 +67,12 @@ therefore also prevents undocumented public API from entering the release surfac
 
 The public-repository CI runs that complete verifier on stable Rust and Rust 1.85 for Windows,
 Ubuntu, macOS 15 Intel and macOS 15 Apple Silicon. Each job fetches the exact lock graph first and
-then executes the verifier offline, builds and runs local examples, and checks fresh consumer
-dependency graphs. The separate manual registry workflow covers those same platform/toolchain
+then executes the verifier offline, builds and runs local examples, and checks independent
+consumer dependency graphs. Current stable uses fresh resolution; Rust 1.85 explicitly selects
+`yoke-derive 0.8.2` in the consumer lockfile for the documented upstream compiler issue,
+preserving the initial lock and selection record. No library-wide dependency pin is added.
+See [Rust version and dependency selection](docs/getting-started.md#rust-version-and-dependency-selection).
+The separate manual registry workflow covers those same platform/toolchain
 combinations for a candidate archive or published package. A separate stable-Ubuntu job runs
 `cargo-audit 0.22.2`; the reviewed
 exception in `.cargo/audit.toml` is justified in `SECURITY.md` and must not be expanded without a

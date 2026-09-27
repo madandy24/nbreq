@@ -1,6 +1,7 @@
 """Exercise frozen .crate files from independent temporary Cargo workspaces; never publish."""
 from pathlib import Path, PurePosixPath
 import argparse, hashlib, json, os, shutil, subprocess, sys, tarfile, tempfile
+from consumer_policy import select_consumer_lock
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
@@ -54,21 +55,22 @@ winpoll_package = args.winpoll_package.resolve()
 package = unpack(main_package)
 darwin = unpack(darwin_package)
 winpoll = unpack(winpoll_package)
-consumer = work/'consumer'
-shutil.copytree(out/'consumer-source',consumer)
 patch = ['--config', 'patch.crates-io.nbreq.path='+json.dumps(package.as_posix()),
          '--config', 'patch.crates-io.nbreq-darwin.path='+json.dumps(darwin.as_posix()),
          '--config', 'patch.crates-io.nbreq-winpoll.path='+json.dumps(winpoll.as_posix())]
 network = ['--offline'] if args.offline else []
 metadata = dict(temporary_workspace=str(work),registry_gate_closed=False,
                support_override='Explicit unpacked Darwin/winpoll archives; not registry-only proof',
-               dependency_resolution='fresh cached index' if args.offline else 'fresh online index',
+               dependency_resolution=('cached' if args.offline else 'online')+' initial resolution; Rust <1.87 uses explicit compatibility selection',
                packages={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (main_package,darwin_package,winpoll_package)})
 (out/'inputs.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
-run('resolve-consumer',['cargo',*patch,'generate-lockfile',*network],consumer)
-shutil.copy2(consumer/'Cargo.lock',out/'consumer-Cargo.lock')
 for toolchain in args.toolchains:
+    consumer = work/(toolchain+'-consumer')
+    shutil.copytree(out/'consumer-source',consumer)
     cargo = ['rustup','run',toolchain,'cargo',*patch]
+    run(toolchain+'-resolve-consumer',[*cargo,'generate-lockfile',*network],consumer)
+    select_consumer_lock(run, toolchain+'-consumer', cargo, toolchain, consumer,
+                         out/(toolchain+'-consumer'), network)
     raw = run(toolchain+'-bundled-metadata',[*cargo,'metadata','--locked',*network,
               '--features','bundled-roots','--format-version','1'],consumer)
     graph = json.loads(raw[raw.index(b'{'):])
@@ -91,20 +93,26 @@ for toolchain in args.toolchains:
             'unresolved import' if expected else None)
 
 # Freeze the same ordinary HTTP test source against the actual registry 0.1.1 dependency.
-legacy = work/'consumer-011'
-shutil.copytree(out/'consumer-source',legacy)
-manifest = (legacy/'Cargo.toml').read_text()
+manifest = (out/'consumer-source/Cargo.toml').read_text()
 manifest = manifest.replace('default = ["native", "resolver", "v020"]','default = ["native"]')
 manifest = manifest.replace('resolver = ["native", "nbreq/resolver"]','resolver = []')
 manifest = manifest.replace('test-support = ["nbreq/test-support"]','test-support = []')
 manifest = manifest.replace('bundled-roots = ["native", "nbreq/bundled-roots"]','bundled-roots = []')
 manifest = manifest.replace('version = "=0.2.1"','version = "=0.1.1"')
-(legacy/'Cargo.toml').write_text(manifest,encoding='utf-8')
-run('resolve-011',['cargo','generate-lockfile',*network],legacy)
-shutil.copy2(legacy/'Cargo.lock',out/'legacy-Cargo.lock')
 for toolchain in args.toolchains:
-    run(toolchain+'-011-compat',['rustup','run',toolchain,'cargo','test','--locked',*network,'--lib','--','--test-threads=1'],legacy,contains='test result: ok. 3 passed')
+    legacy = work/(toolchain+'-consumer-011')
+    shutil.copytree(out/'consumer-source',legacy)
+    (legacy/'Cargo.toml').write_text(manifest,encoding='utf-8')
+    cargo = ['rustup','run',toolchain,'cargo']
+    run(toolchain+'-resolve-011',[*cargo,'generate-lockfile',*network],legacy)
+    select_consumer_lock(run, toolchain+'-011', cargo, toolchain, legacy,
+                         out/(toolchain+'-consumer-011'), network)
+    run(toolchain+'-011-compat',[*cargo,'test','--locked',*network,'--lib','--','--test-threads=1'],legacy,contains='test result: ok. 3 passed')
 
+shutil.copy2(package/'Cargo.lock',out/'package-examples-Cargo.lock')
+metadata['example_dependency_route']='unchanged packaged Cargo.lock with --locked; not a fresh consumer graph'
+metadata['example_lock_sha256']=hashlib.sha256((package/'Cargo.lock').read_bytes()).hexdigest()
+(out/'inputs.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
 run('build-package-examples',['rustup','run',args.toolchains[0],'cargo',*patch,'build','--manifest-path',str(package/'Cargo.toml'),'--locked',*network,'--examples'],consumer)
 example_command = [sys.executable, str(consumer/'check_examples.py'),
                    '--bin-dir', str(out/'build/debug/examples'), '--out', str(out/'examples')]

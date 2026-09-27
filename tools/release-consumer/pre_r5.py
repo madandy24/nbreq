@@ -1,4 +1,4 @@
-"""Fresh external consumer checks for the pre-R5 dependency policy; local overrides, never publish."""
+"""Fresh/current and compatibility-selected/MSRV consumers; local overrides, never publish."""
 import argparse
 import hashlib
 import json
@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import time
+from consumer_policy import select_consumer_lock
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out', type=Path, required=True)
@@ -33,6 +34,7 @@ def run(label, command, cwd, expected=0, contains=None):
     if not passed:
         print(result.stdout.decode('utf-8',errors='replace')[-5000:],flush=True)
         raise RuntimeError(label+' failed; preserve this run before investigation')
+    return result.stdout
 
 inputs = {p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
           for p in [root/'Cargo.toml',root/'Cargo.lock',root/'src/body_budget.rs',
@@ -40,7 +42,7 @@ inputs = {p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdiges
 (out/'inputs.json').write_text(json.dumps(dict(files=inputs,
     commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
     platform=platform.platform(),machine=platform.machine(),toolchains=args.toolchains,
-    graph='fresh online, independent consumer lock per toolchain/case',
+    graph='fresh online for Rust >=1.87; explicit compatibility selection for older compilers',
     support='local root/Darwin/winpoll overrides; not registry-only acceptance'),indent=2),encoding='utf-8')
 for toolchain in args.toolchains:
     run(toolchain+'-rustc',['rustup','run',toolchain,'rustc','-vV'],root)
@@ -59,6 +61,7 @@ for toolchain in args.toolchains:
         (consumer/'Cargo.toml').write_text(manifest,encoding='utf-8')
         cargo = ['rustup','run',toolchain,'cargo']
         run(label+'-resolve',cargo+['generate-lockfile'],consumer)
+        policy = select_consumer_lock(run, label, cargo, toolchain, consumer, consumer)
         run(label+'-metadata',cargo+['metadata','--locked','--all-features','--format-version','1'],consumer)
         metadata_text = (out/(label+'-metadata.log')).read_text(encoding='utf-8')
         metadata = json.loads(metadata_text[metadata_text.index('{'):])
@@ -81,6 +84,6 @@ for toolchain in args.toolchains:
         if case == 'mio-coexist':
             assert versions['mio'] == '1.2.3'
         (consumer/'versions.json').write_text(json.dumps(versions,indent=2),encoding='utf-8')
-        print(label+' passed '+json.dumps(versions),flush=True)
+        print(label+' passed ('+policy['route']+') '+json.dumps(versions),flush=True)
 (out/'result.json').write_text(json.dumps(dict(status='passed',steps=len(records),cases=2*len(args.toolchains),
     registry_only=False,source_files=inputs),indent=2),encoding='utf-8')

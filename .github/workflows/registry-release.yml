@@ -41,13 +41,15 @@ jobs:
           rustup default ${{ matrix.toolchain }}
           rustc -vV
           cargo --version
+      - name: Check consumer lock policy
+        run: python tools/release-consumer/test_consumer_policy.py
       - name: Package candidate with registry helpers
         if: inputs.mode == 'candidate'
         run: cargo package --locked -p nbreq --target-dir "${{ runner.temp }}/registry-package"
-      - name: Check candidate consumers
+      - name: Check candidate consumers with compiler-specific lock policy
         if: inputs.mode == 'candidate'
         run: python tools/release-consumer/registry.py --mode candidate --package "${{ runner.temp }}/registry-package/package/nbreq-0.2.1.crate" --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
-      - name: Check published consumers
+      - name: Check published consumers with compiler-specific lock policy
         if: inputs.mode == 'published'
         run: python tools/release-consumer/registry.py --mode published --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
       - name: Preserve registry evidence
@@ -58,8 +60,10 @@ jobs:
           path: |
             ${{ runner.temp }}/nbreq-registry/*.json
             ${{ runner.temp }}/nbreq-registry/*.log
-            ${{ runner.temp }}/nbreq-registry/*/Cargo.lock
+            ${{ runner.temp }}/nbreq-registry/*.lock
+            ${{ runner.temp }}/nbreq-registry/*/Cargo*.lock
             ${{ runner.temp }}/nbreq-registry/*/Cargo.toml
+            ${{ runner.temp }}/nbreq-registry/*/*.json
             ${{ runner.temp }}/nbreq-registry/examples/*.json
             ${{ runner.temp }}/nbreq-registry/examples/*.log
           if-no-files-found: warn

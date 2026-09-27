@@ -33,6 +33,11 @@ fallback. Update the application lockfile, rebuild and redeploy to refresh bundl
 See [trust configuration and TLS lifecycle](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md)
 and [runnable TLS examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp).
 
+Rust 1.85 remains supported with compatible dependency selection. Fresh graphs
+can select upstream `yoke-derive 0.8.3`, which needs a Rust 1.87 API; older-compiler
+applications can select 0.8.2 in their own lockfile without restricting all NBReq
+consumers. See the [commands and dependency policy](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/getting-started.md#rust-version-and-dependency-selection).
+
 The following sections describe the earlier changes from 0.1.1 to the 0.2 line.
 
 ## Existing HTTP consumers

@@ -9,10 +9,10 @@ publication/GDS integration stay separate.
 
 | Item | State |
 | --- | --- |
-| Baseline | Local and remote main match published 0.2.0 completion commit `6ada116`; main is clean |
-| Reviewed work | `codex/nbreq-smtp` through `e025c1d`; only two future-timeout note edits remain |
+| Baseline | Remote main remains published 0.2.0 completion commit `6ada116`; local main integrated through `55cb6d9` |
+| Reviewed work | Documentation and bundled consumer tooling committed; owner approved consumer-lock compatibility policy below |
 | Existing evidence | Documentation/defaults pass: full 30-step Windows verifier, stable/MSRV snippets, strict rustdoc and independent review; runtime/platform/Wine evidence remains in the linked plans |
-| Current stage | Main fast-forwarded to `b2427a0`; bundled consumer coverage added/reviewed, fresh Rust 1.85 graph blocked by upstream yoke-derive 0.8.3 |
+| Current stage | Consumer-lock policy implemented and reviewed; local gates passed, preparing clean candidate and hosted checks |
 | Publication | Not started; v0.2.1 tag absent at initial remote check |
 | Local evidence | `target/release-021-20260927/` (commands, package hashes, consumer results and hosted receipts) |
 
@@ -21,7 +21,7 @@ publication/GDS integration stay separate.
 | Gate | Required result | State |
 | --- | --- | --- |
 | R1 Integration | Clean main containing the reviewed branch and accepted notes; no unrelated edits | Initial integration complete at `b2427a0`; final tooling/date commit follows |
-| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | Pending resolution of fresh Rust 1.85 dependency failure |
+| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | Local policy and full verifier passed; exact clean package follows final commit |
 | R3 Hosted acceptance | Eight platform/stable/MSRV verifier jobs plus advisory/license checks; candidate registry-helper consumer matrix | Pending |
 | R4 Publication | Final dated changelog, exact dry-run/archive identity, publish core 0.2.1, matching tag | Pending |
 | R5 Published acceptance | Registry API/index/download checksums, registry-only matrix, live README/docs.rs/versioned-link checks | Pending |
@@ -33,6 +33,16 @@ published-registry results. If the final date or another packaged file changes,
 refresh the candidate identity and verify the exact delta before publication.
 
 ## Decisions and scope
+
+Owner accepted on 2026-09-27: retain ordinary published dependency ranges and
+Rust 1.85 support with an explicit application-lock workaround. Current stable
+consumers use fresh unmodified resolution; Rust 1.85 consumers and release jobs
+select `yoke-derive 0.8.2`, preserving both initial and selected locks. Test Rust
+1.87 separately before recommending that exact upgrade route. This deliberately
+replaces the earlier requirement for unaided fresh resolution on the minimum
+compiler; it does not relabel the original failed graph as a pass. Do not add a
+library-wide pin or change core dependencies. Retire the workaround after an
+upstream-compatible correction and fresh validation.
 
 - Existing timeout defaults remain unchanged; the
   [future-defaults item](nbreq_021_documentation_plan.md#future-revision-sensible-timeout-defaults-throughout)
@@ -71,10 +81,11 @@ case. No registry-cache patch, hidden consumer pin, MSRV increase or publication
 is authorized by this diagnostic. Changelog date remains pending until the
 release path is clear. No new version or tag has been published.
 
-The owner requested more explanation, rather than selecting the guard. Explained
+At that checkpoint the owner requested more explanation, rather than selecting the guard. Explained
 the URL/IDNA/ICU dependency chain, build-time-only role, missing MSRV metadata and
 the possibility of version conflicts from a temporary guard. Keep that decision
-pending; no core manifest/lock change has been made.
+pending at that point; the later accepted consumer-lock policy is recorded above.
+No core manifest/lock change has been made.
 
 Tooling checks: fresh stable + Mio graphs pass 84 tests; the reviewed lock passes
 40 default/bundle tests across stable and Rust 1.85; unchanged legacy 0.1.1 tests
@@ -92,6 +103,33 @@ raw failures, successful diagnostics, exact source/lock hashes, registry metadat
 and the passing workspace audit. No build binaries are included.
 
 ### Review and supporting checks
+
+The accepted two-route policy is now implemented in the consumer runners and
+workflow artifact capture. Exact Rust 1.87 was installed alongside the existing
+toolchains without changing the default. Local `pre_r5.py` completes 65 steps /
+six graphs on Rust 1.85, stable and Rust 1.87, each alone and with Mio coexistence.
+Old-compiler records show explicit compatibility selection; both newer routes
+retain byte-identical fresh initial/selected locks. No library dependency pin
+was added. These six graphs pass 252 tests. The archive runner passes 90 current
+and legacy consumer tests plus 18 examples against the historical `9e81021`
+rehearsal packages; this validates tooling, not the final release candidate.
+Independent review accepted the source, raw lock receipts and test counts.
+
+The initial full main verifier failed seven SMTP fixture tests while other
+agent-managed Rust builds were active. Three report connect timeouts; four report
+completion before their intended protocol gate. The same unchanged SMTP tests
+then passed twice with ordinary parallel execution after those builds completed.
+One complete quiet verifier subsequently passed all 30 steps in 154.765 seconds,
+with source/documentation hashes unchanged. Contention remains a hypothesis,
+not a confirmed cause. Retain the initial failure; investigate any recurrence in
+hosted acceptance before release. No fixture or runtime behavior was changed.
+
+Retained [policy and verifier evidence](evidence/nbreq-consumer-policy-021-20260927.tar.gz):
+268 regular members, 641,213 bytes, SHA256
+`4259e346b372dc32597dfc885e1f50845ff2bd78c0db174e74ab79506ea9e188`.
+The [artifact index](evidence/nbreq_consumer_policy_021_artifacts.json) binds the
+original/selected locks, compiler identities, source hashes and all three test
+observations. Raw policy evidence remains in `target/consumer-policy-20260927/`.
 
 Release review found that the fresh independent-consumer modes did not select
 `bundled-roots`. Add that feature/mode and metadata proof across local and registry

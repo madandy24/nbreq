@@ -22,7 +22,9 @@ drive networking from your own event loop. No async runtime required.
 
 ## Start with a GET
 
-Requires Rust 1.85 or newer. This guide covers NBReq 0.2.1.
+Requires Rust 1.85 or newer; Rust 1.85/1.86 may need the documented
+[dependency selection](docs/getting-started.md#rust-version-and-dependency-selection).
+This guide covers NBReq 0.2.1.
 
 ```toml
 [dependencies]
@@ -175,8 +177,10 @@ use `default-features = false, features = ["native"]` to omit the public Resolve
 internal DNS. See [feature selection](docs/getting-started.md#backend-and-feature-selection).
 
 Runtime dependencies use Cargo-compatible version ranges. Your application's lockfile controls
-updates; release checks cover locked and fresh consumer graphs on stable Rust and the minimum
-supported version. See [dependency policy and security reporting](SECURITY.md).
+updates. Release checks cover the locked graph, fresh consumers on current stable Rust, and
+the documented compatibility selection on Rust 1.85. See
+[Rust version and dependency selection](docs/getting-started.md#rust-version-and-dependency-selection)
+and [dependency policy and security reporting](SECURITY.md).
 
 ## Project and license
 

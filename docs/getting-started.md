@@ -537,9 +537,43 @@ The historical curl Multi pilot is not part of the public crate feature matrix. 
 locally patched binding and remains project-history/reference evidence rather than a supported
 transport choice.
 
+## Rust version and dependency selection
+
+NBReq supports Rust 1.85 or later and keeps compatible dependency ranges in its
+published manifest. Applications choose their dependency versions through
+`Cargo.lock`; the library's own lockfile is not imposed on downstream consumers.
+
+At the 0.2.1 release, a fresh Rust 1.85 build can select `yoke-derive 0.8.3` through
+the URL/IDNA/ICU dependency chain and fail with `str::from_utf8` not found. That
+upstream build-time macro uses an API introduced in Rust 1.87 without declaring
+the compiler requirement in its package metadata. There are two routes:
+
+- Use Rust 1.87 or a newer supported toolchain to supply the missing API.
+- Stay on Rust 1.85 and select the compatible dependency in your application:
+
+  ```sh
+  cargo +1.85.0 update -p yoke-derive --precise 0.8.2
+  cargo +1.85.0 build --locked
+  ```
+
+Run these commands from the application workspace, after it has an NBReq
+dependency and a lockfile (`cargo +1.85.0 generate-lockfile` creates one if needed).
+Keep the resulting `Cargo.lock` under version control. An unrestricted future
+`cargo update` can select 0.8.3 again, so reapply the selection if that happens.
+Rust 1.86 has the same missing API; use the same selection with `+1.86.0` if that
+is your installed toolchain.
+The compiler upgrade addresses this known upstream error; future dependency
+releases may have their own Rust requirements.
+
+NBReq does not pin `yoke-derive` for all consumers or change runtime behavior.
+Release checks distinguish fresh current-stable graphs from Rust 1.85 graphs
+with this explicit compatibility selection, retaining the initial and selected
+locks. Revisit the workaround after upstream publishes a compatible correction.
+
 ## Platform scope
 
-NBReq 0.2.1 targets Rust 1.85 or later with Rust 2024 edition. The verified target set is:
+NBReq 0.2.1 targets Rust 1.85 or later with Rust 2024 edition; see the dependency
+selection above when using an older compiler. The verified target set is:
 
 | Target | Tested scope |
 | --- | --- |

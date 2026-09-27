@@ -81,7 +81,10 @@ jobs:
           cargo build --locked --offline --examples
           python tools/release-consumer/check_examples.py --bin-dir target/debug/examples --out "${{ runner.temp }}/nbreq-examples"
 
-      - name: Verify fresh consumer dependency graphs
+      - name: Check consumer lock policy
+        run: python tools/release-consumer/test_consumer_policy.py
+
+      - name: Verify fresh or MSRV compatibility-selected consumer graphs
         run: python tools/release-consumer/pre_r5.py --out "${{ runner.temp }}/nbreq-consumers" --toolchains ${{ matrix.toolchain }}
 
       - name: Preserve consumer locks and results
@@ -92,9 +95,9 @@ jobs:
           path: |
             ${{ runner.temp }}/nbreq-consumers/*.json
             ${{ runner.temp }}/nbreq-consumers/*.log
-            ${{ runner.temp }}/nbreq-consumers/*/Cargo.lock
+            ${{ runner.temp }}/nbreq-consumers/*/Cargo*.lock
             ${{ runner.temp }}/nbreq-consumers/*/Cargo.toml
-            ${{ runner.temp }}/nbreq-consumers/*/versions.json
+            ${{ runner.temp }}/nbreq-consumers/*/*.json
             ${{ runner.temp }}/nbreq-examples/*.json
             ${{ runner.temp }}/nbreq-examples/*.log
           if-no-files-found: warn
