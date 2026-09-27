@@ -10,7 +10,8 @@ Opened 2026-09-27. Decision review requested by the owner after the
 | Published baseline | `v0.2.0`, source `d866179719f1cd4e2efcda7e4a533fe590ae3dd6` |
 | Reviewed candidate | `f636a3c00728379758f7e922d9968c478fec81a5`, `codex/nbreq-smtp` |
 | Recommendation | Release core NBReq as **0.2.1**, retaining the 0.2 compatibility line |
-| Decision | Owner accepted **0.2.1** on 2026-09-27. Apply package/dependency/release-tool metadata now; user documentation is the next pass. |
+| Decision | Owner accepted **0.2.1** on 2026-09-27. Package/dependency/release-tool metadata applied; user documentation is the next pass. |
+| Implementation | Complete at `9e810211d700ff747a01ed727d8fe3d83f46fef6`: focused compilation/metadata checks and a clean 0.2.1 package identity rehearsal pass. Independent review accepted. |
 | Review | Complete: root source comparison and independent Astra xhigh API/behavior/evidence review found no demonstrated source-breaking change. Unchanged old-consumer tests and representative new API compilation pass. |
 | Scope | API/version decision and metadata implementation. Final release-candidate packaging after documentation, hosted CI, publication and GDS integration remain separate release stages. |
 
@@ -142,8 +143,25 @@ changed locks differ only in the local NBReq version; third-party entries remain
 unchanged. Python syntax checks pass. Cargo-about 0.9.1 regenerates the license
 report with only the root version changed. Independent review found no blocker.
 
-A clean package identity check remains before closing this metadata pass. It is
-a metadata rehearsal; the final candidate must be rebuilt after documentation.
+The existing clean-package gate passes at metadata commit
+`9e810211d700ff747a01ed727d8fe3d83f46fef6`. It compiles the three packages and checks
+normalized manifests, exact archive versions, clean VCS identity and registry-form
+helper requirements. The root `nbreq-0.2.1.crate` has 114 regular files and 41 valid
+relative documentation links; SHA256
+`da9d797ebeefcaf689570a1331ff3c33ca4f8b46cd50f699881f4bbc25368f50`.
+Packaging uses explicit local helper overrides, so this is not registry-only
+acceptance. It is a metadata rehearsal; rebuild the final candidate after
+documentation. Independent review accepted the diff, focused checks and package
+identity evidence.
+
+Retained [version evidence](evidence/nbreq-version-021-20260927.tar.gz): 80 regular
+members, 653,175 bytes, SHA256
+`b6b253d528cdabab112fd55543a36dc833844d66bc1b2602f3230885be4d4c40`.
+The [artifact index](evidence/nbreq_version_021_artifacts.json) records per-member
+hashes, commands, source identity and package results. Logs, manifests, locks,
+metadata source snapshots and independent consumer sources are included; build
+outputs and crate archives are excluded.
+
 README, guides, examples, changelog and tool README updates remain for that next
 pass, including the behavior disclosures above. Then perform the exact versioned
 candidate, hosted CI and published-registry checks already identified in release
