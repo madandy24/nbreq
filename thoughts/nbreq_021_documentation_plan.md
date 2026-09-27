@@ -180,3 +180,31 @@ logs, hashes and snapshots are indexed in
 [nbreq_docs_defaults_021_artifacts.json](evidence/nbreq_docs_defaults_021_artifacts.json),
 with build outputs excluded from the companion archive. No runtime changes,
 remote-host testing, push or publication were needed for this follow-up.
+
+## Future revision: sensible timeout defaults throughout
+
+Owner requested on 2026-09-27. Deferred from 0.2.1: establish sensible finite
+timeout defaults across HTTP, public DNS, plain TCP and TLS, so ordinary usage
+does not require boilerplate to avoid indefinite waits. Values and the release
+number remain undecided; this note does not change the current defaults.
+
+Changing an unset timeout to a finite default is a behavioral compatibility
+change even when source code still compiles: slow requests, streaming responses,
+long polling and intentionally idle connections may start failing. Introduce the
+new defaults at a deliberate compatibility boundary, with migration notes and
+an explicit way to retain unbounded waits. An opt-in defaults profile could be
+introduced earlier without changing existing callers' behavior.
+
+Before implementation:
+
+- Choose defaults appropriate to each operation; distinguish establishment,
+  total-operation and inactivity deadlines. Avoid treating a long-lived TCP/TLS
+  connection's lifetime as an ordinary request deadline.
+- Provide clear per-operation overrides and an explicit no-timeout choice;
+  distinguish inheriting a default from intentionally disabling it.
+- Keep sugar calls, builders and direct options consistent. Specify when clocks
+  start and how queueing, DNS retries, redirects and TLS upgrades consume budgets.
+- Cover expiry, useful-progress resets, overrides and opt-outs with focused
+  regression tests, including slow transfers, long polling and idle connections.
+- Update the defaults table, migration guidance and examples together. Revisit
+  the explicit settings retained in the README and TLS guide at that point.

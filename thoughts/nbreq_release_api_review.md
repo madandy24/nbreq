@@ -167,3 +167,8 @@ example pass, README/guides/changelog update and validation, including the behav
 disclosures above. After owner review, perform the exact versioned
 candidate, hosted CI and published-registry checks already identified in release
 preparation. This pass does not replace those gates or authorize publication.
+
+Future compatibility work: the owner requested
+[sensible timeout defaults throughout](nbreq_021_documentation_plan.md#future-revision-sensible-timeout-defaults-throughout).
+Replacing currently unbounded waits with finite defaults is deferred from 0.2.1
+and needs an explicit migration/opt-out policy at a deliberate compatibility boundary.
