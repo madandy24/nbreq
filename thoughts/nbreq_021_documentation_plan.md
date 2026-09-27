@@ -7,17 +7,17 @@ Opened 2026-09-27 after the accepted [0.2.1 version change](nbreq_release_api_re
 | Field | State |
 | --- | --- |
 | Working branch | `codex/nbreq-smtp`; version metadata/evidence complete at `4f7f202`, example pass at `cdc40d1` |
-| Current request | Update documentation for 0.2.1, then hand it to the owner for review |
+| Current request | Owner accepted the documentation; simplify example configuration where defaults suffice |
 | Approach | Preserve the README's approved layout and GET-first introduction; explain standalone TLS, trust choices and compatibility changes in the appropriate guides |
-| Current scope | Documentation draft complete and independently accepted; ready for owner review. Main README, guides, changelog, security/contributor guidance, SMTP wording and API comments updated; no production behavior changes |
-| Deferred | Owner review, final package/hosted CI/publication gates |
+| Current scope | Documentation accepted; redundant TLS example configuration removed and defaults/overrides documented. No production behavior changes |
+| Deferred | Final package/hosted CI/publication gates |
 
 ## Work sequence
 
 | Item | Deliverable | State |
 | --- | --- | --- |
 | D1 | C04 immediate TLS and C05 STARTTLS; runnable, explained and included in local example checks | Complete: existing programs clarified for 0.2.1, both included in the runner; focused Windows checks pass |
-| D2 | Main README and remaining guides describe 0.2.1, trust choices and new APIs | Complete; ready for owner review |
+| D2 | Main README and remaining guides describe 0.2.1, trust choices and new APIs | Complete; owner accepted, defaults follow-up complete |
 | D3 | Changelog/release notes include additions and reviewed behavior changes | Complete; release date deliberately pending |
 | D4 | Final documentation/package link check and release candidate verification | Local documentation/link checks complete. Final clean candidate, hosted CI and published-link checks follow owner review |
 
@@ -144,6 +144,39 @@ The [artifact index](evidence/nbreq_docs_021_artifacts.json) binds raw logs, sou
 snapshots, exact snippet scaffolds and local link inventories. Build outputs and
 binaries are excluded.
 
-Next is the owner's prose review. Apply any requested changes, then rebuild the
-clean release candidate and complete hosted/registry gates. No push, merge,
-publication or GDS change is part of this documentation pass.
+The owner accepted the prose and requested the defaults follow-up below. Next,
+rebuild the clean release candidate and complete hosted/registry gates. No push,
+merge, publication or GDS change is part of this documentation pass.
+
+## Owner follow-up: simplify examples where defaults suffice
+
+The owner accepted the draft and requested less timeout/queue configuration in the
+README and TLS guide when the existing defaults are suitable. Source inspection
+found 256 KiB default TCP windows per direction and a ten-second TLS establishment
+deadline. HTTP request timeouts, DNS total timeout, plain TCP connect timeout and
+connected read/write inactivity timeouts are unset unless explicitly selected.
+
+Removed redundant TLS establishment and queue choices from the immediate-TLS
+snippet, plus its unused write-inactivity setting. Kept the greeting-read deadline
+and the README's finite HTTP/DNS/plain TCP deadlines: those do not have equivalent
+finite defaults. Added a defaults/override table to getting-started and links from
+the README and TLS guide; retained detailed configuration in the other examples.
+Runtime defaults remain unchanged. Independent review confirmed the values and
+retained timeout choices; its only correction clarified that the shared queue
+budget covers both HTTP upload and response streaming windows.
+
+Validation on Windows x64: all 30 verifier stages passed (259.687 seconds), exact
+README snippets compiled on stable and Rust 1.85, TLS snippets compiled on both
+toolchains and native-only features, 34 core and two SMTP MSRV doctests passed,
+and 61 local Markdown/package link checks passed. The input hashes stayed fixed
+through the full verifier. Afterwards the sole change was removing `response`
+from the shared-budget sentence; byte comparison confirmed that exact prose delta,
+unchanged code blocks and other captured inputs. Final strict rustdoc passed.
+Network snippets were compiled, not executed against remote hosts, and future
+v0.2.1 links were checked against local targets rather than an unpublished tag.
+
+Evidence lab: `C:/User/projects/nbreq/target/docs-defaults-021-20260927/`. Retained
+logs, hashes and snapshots are indexed in
+[nbreq_docs_defaults_021_artifacts.json](evidence/nbreq_docs_defaults_021_artifacts.json),
+with build outputs excluded from the companion archive. No runtime changes,
+remote-host testing, push or publication were needed for this follow-up.

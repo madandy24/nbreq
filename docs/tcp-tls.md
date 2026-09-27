@@ -28,14 +28,9 @@ use nbreq::{Engine, TcpConnectRequest, TlsOptions};
 
 let engine = Engine::builder().build()?;
 let request = TcpConnectRequest::hostname("mail.example.org", 993)
-    .connect_timeout(Duration::from_secs(10))
     .read_inactivity_timeout(Duration::from_secs(15))
-    .write_inactivity_timeout(Duration::from_secs(15))
-    .send_queue_bytes(16 * 1024)
-    .receive_queue_bytes(16 * 1024)
     .build()?;
-let tls = TlsOptions::new("mail.example.org")?
-    .handshake_timeout(Duration::from_secs(10));
+let tls = TlsOptions::new("mail.example.org")?;
 let mut connection = engine.tcp_connector().execute_tls(request, tls)?;
 
 // Certificate verification and the handshake have completed before this returns.
@@ -50,6 +45,12 @@ engine.shutdown()?;
 `mail.example.org` is a placeholder for your server. A read may return only part of
 a protocol line; production protocol code must accumulate and parse a bounded
 response. TCP and TLS do not supply message boundaries.
+
+This example uses the default ten-second TLS establishment deadline and Engine queue windows.
+It keeps a read inactivity timeout because waiting for the application greeting has no default
+deadline. See [timeout and queue defaults](getting-started.md#timeout-and-queue-defaults) for
+the defaults and override methods; [C04](../examples/C04-tcp-tls.rs) and
+[C05](../examples/C05-tcp-starttls.rs) show explicit timeout and queue settings.
 
 Verification uses the Engine's selected trust policy, defaulting to platform trust
 and any additional CA roots. Certificate signatures, validity and server identity remain checked. IP

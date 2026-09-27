@@ -379,6 +379,32 @@ metrics are portable. Check `connection_metrics_available` before interpreting p
 connection/pool counters; the native owner supplies them, while internal non-networking test
 backends report honest unavailable zeroes.
 
+## Timeout and queue defaults
+
+HTTP, DNS and plain TCP do not impose an application deadline unless one is configured.
+TLS establishment has its own finite default; it does not bound later application I/O.
+
+| Setting | Default | Override |
+| --- | --- | --- |
+| HTTP connect, inactivity and total timeouts | `None` | Request/builder `connect_timeout`, `inactivity_timeout`, `total_timeout`, or `RequestOptions` |
+| Public DNS total timeout | `None`; internal per-server retries are separate | `ResolveRequestBuilder::total_timeout` |
+| Plain TCP connect and connected read/write inactivity | `None` | `TcpConnectRequestBuilder::connect_timeout`, `read_inactivity_timeout`, `write_inactivity_timeout` |
+| TLS establishment | 10 seconds from admission, including immediate-TLS DNS/TCP and certificate verification | `TlsOptions::handshake_timeout`; an earlier configured connect deadline also applies to direct TLS |
+| TCP/TLS send and receive queue windows | Each inherits the Engine's 256 KiB per-connection queue ceiling | `TcpConnectRequestBuilder::send_queue_bytes` and `receive_queue_bytes` |
+
+Set `EngineBuilder::max_tcp_queue_bytes_per_connection` or
+`EngineConfig::with_max_tcp_queue_bytes_per_connection` to change the queue ceiling; requested
+windows must fit it. The shared `max_queued_bytes` budget defaults to 16 MiB and governs admission
+across reserved TCP/TLS windows, TLS staging and HTTP streaming windows. Override it with
+`EngineBuilder::max_queued_bytes` or `EngineConfig::with_max_queued_bytes`. Queue reservations
+are not all eagerly allocated, and these limits are not a cap on total process memory.
+
+Choose connected read/write timeouts for the application protocol even when using the default
+TLS handshake deadline. The cleartext TCP example below and
+[C04/C05](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp) show explicit
+overrides; the [TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#immediate-tls)
+uses the default establishment deadline and queue windows.
+
 ## DNS resolution
 
 With the default-on `resolver` feature, `Engine::resolver()` issues a cheap cloneable ticket

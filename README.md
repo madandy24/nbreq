@@ -48,6 +48,10 @@ The snippets use `?` inside a function returning `Result`. For a complete progra
 [A01: blocking GET](examples/A01-http-blocking-get.rs), then try
 [A02: blocking POST](examples/A02-http-blocking-post.rs).
 
+The HTTP, DNS and plain TCP snippets set timeouts explicitly because those operation timeouts
+have no finite default. See [timeout and queue defaults](docs/getting-started.md#timeout-and-queue-defaults)
+for the settings you can omit or override.
+
 ## More control when you need it
 
 - **Choose how to run.** Blocking calls, nonblocking submission and callbacks share the same
