@@ -1,0 +1,517 @@
+{
+  "archive": "nbreq-release-api-review-20260927.tar.gz",
+  "bytes": 192194,
+  "sha256": "60d85231e331196b9fb15331d8823cfd9fec931a95f984b2ce12cbf4855eefb0",
+  "members": 60,
+  "summary": {
+    "status": "passed",
+    "baseline": "d866179719f1cd4e2efcda7e4a533fe590ae3dd6",
+    "current": "f636a3c00728379758f7e922d9968c478fec81a5",
+    "checkout": "C:/User/projects/nbreq/target/worktrees/nbreq-smtp",
+    "rustc": [
+      "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "binary: rustc",
+      "commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+      "commit-date: 2026-07-14",
+      "host: x86_64-pc-windows-msvc",
+      "release: 1.97.1",
+      "LLVM version: 22.1.6"
+    ],
+    "cargo": [
+      "cargo 1.97.1 (c980f4866 2026-06-30)"
+    ],
+    "consumer_source": [
+      {
+        "path": "tools/release-consumer/Cargo.toml",
+        "old_blob": "7c9ebe6ec284b9a100997bc5c1a4d2f43bbc0121",
+        "current_blob": "7c9ebe6ec284b9a100997bc5c1a4d2f43bbc0121",
+        "sha256": "0B40B2D0472330F103D9C33EE88C41A10BC067EA0A683733D297DBF506DB8F69"
+      },
+      {
+        "path": "tools/release-consumer/probes/resolver.rs",
+        "old_blob": "113e210232070b0ae8fc8285d0c9fe0cb38c586a",
+        "current_blob": "113e210232070b0ae8fc8285d0c9fe0cb38c586a",
+        "sha256": "10FFB318D1E84BAEBAACD3F2AE4DFB0599627D5F926DAE08DF52FC8A2EF3A5CB"
+      },
+      {
+        "path": "tools/release-consumer/probes/testing.rs",
+        "old_blob": "a89cb10285ddd206a4e6385fb67e9fd17bad00a0",
+        "current_blob": "a89cb10285ddd206a4e6385fb67e9fd17bad00a0",
+        "sha256": "A748342FD939EE8269E70D486F84C3C89E5FD839CE6D7EEEB2DF73E9917F61FA"
+      },
+      {
+        "path": "tools/release-consumer/src/common_http.rs",
+        "old_blob": "345e3dac5c227808595f6a3ff1a05e5a6d1886ba",
+        "current_blob": "345e3dac5c227808595f6a3ff1a05e5a6d1886ba",
+        "sha256": "C862C5095706BFCCBAA61F7CD4390384F44A982692BB3B66B1F53C3CA9E5584E"
+      },
+      {
+        "path": "tools/release-consumer/src/fixture.rs",
+        "old_blob": "27fcdc51a71cf0464aaa3ca3b34c025fab4ae37d",
+        "current_blob": "27fcdc51a71cf0464aaa3ca3b34c025fab4ae37d",
+        "sha256": "53F7EDE41F3A9F8CB29C68991A9A0C9E44AA09C30DC49DAE8F940E1F8EB9FA32"
+      },
+      {
+        "path": "tools/release-consumer/src/lib.rs",
+        "old_blob": "16d3b8783beaf1c1f92492d40e44f93d60afa17a",
+        "current_blob": "16d3b8783beaf1c1f92492d40e44f93d60afa17a",
+        "sha256": "A669852EEF9F080CE9A04C8372E7EC90D6E49A48A0890AEB90E24D1E6C0CEA56"
+      },
+      {
+        "path": "tools/release-consumer/src/v020.rs",
+        "old_blob": "94bc4321167abe7c30468e4775f4cfc43d15933e",
+        "current_blob": "94bc4321167abe7c30468e4775f4cfc43d15933e",
+        "sha256": "9BDB2B81B975B8280D26F09FD91FDFEEDF06B94C70766EAD3CC3A6E56DDAA066"
+      }
+    ],
+    "source_identity": "All six old Rust consumer/probe files match published-tag blobs and copied-file SHA256; original manifest matches tag and only lab manifest gains path patch.",
+    "dependency_resolution": "Offline cached registry; root nbreq explicitly patched to current checkout; support dependencies use checkout paths",
+    "lock_sha256": "7B43743143EDA38B5133AB59DF23876A1B54CDF401D8C0F9935DED105DE4A1A8",
+    "modes": [
+      {
+        "mode": "default",
+        "tests_passed": 9,
+        "nbreq_id": "path+file:///C:/User/projects/nbreq/target/worktrees/nbreq-smtp#nbreq@0.2.0",
+        "source": null,
+        "manifest_path": "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-smtp\\Cargo.toml",
+        "nbreq_features": [
+          "native",
+          "resolver"
+        ],
+        "metadata_sha256": "399CB8A23A1C0AA4E4CC05FE3B744007E445A79601FDCF794EEB7C393339BE0F"
+      },
+      {
+        "mode": "native-only",
+        "tests_passed": 8,
+        "nbreq_id": "path+file:///C:/User/projects/nbreq/target/worktrees/nbreq-smtp#nbreq@0.2.0",
+        "source": null,
+        "manifest_path": "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-smtp\\Cargo.toml",
+        "nbreq_features": [
+          "native"
+        ],
+        "metadata_sha256": "C069E47EBE158627823D31A29F11544F779E0D51EAB4731AF077A85D0FBCCE3E"
+      },
+      {
+        "mode": "minimal",
+        "tests_passed": 2,
+        "nbreq_id": "path+file:///C:/User/projects/nbreq/target/worktrees/nbreq-smtp#nbreq@0.2.0",
+        "source": null,
+        "manifest_path": "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-smtp\\Cargo.toml",
+        "nbreq_features": [],
+        "metadata_sha256": "5037DB0455BF52C333D2BAD4F5D8D8F7659743F9BFE12AC7C290049DFFD76F1F"
+      },
+      {
+        "mode": "test-support",
+        "tests_passed": 10,
+        "nbreq_id": "path+file:///C:/User/projects/nbreq/target/worktrees/nbreq-smtp#nbreq@0.2.0",
+        "source": null,
+        "manifest_path": "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-smtp\\Cargo.toml",
+        "nbreq_features": [
+          "native",
+          "resolver",
+          "test-support"
+        ],
+        "metadata_sha256": "A547DEB8EAB2C5FC366BCCC9E820CB60286A99F539082B06FD688F0E73DB34AF"
+      }
+    ],
+    "total_old_consumer_tests": 29,
+    "import_probes": [
+      {
+        "label": "resolver-present",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--bin",
+          "resolver_probe"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\consumer",
+        "exit": 0,
+        "expected": 0,
+        "passed": true,
+        "seconds": 5.9645238
+      },
+      {
+        "label": "resolver-absent",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--bin",
+          "resolver_probe",
+          "--no-default-features",
+          "--features",
+          "native,v020"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\consumer",
+        "exit": 101,
+        "expected": 101,
+        "passed": true,
+        "seconds": 1.6829834
+      },
+      {
+        "label": "testing-present",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--bin",
+          "testing_probe",
+          "--features",
+          "test-support"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\consumer",
+        "exit": 0,
+        "expected": 0,
+        "passed": true,
+        "seconds": 1.6783818
+      },
+      {
+        "label": "testing-absent",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--bin",
+          "testing_probe"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\consumer",
+        "exit": 101,
+        "expected": 101,
+        "passed": true,
+        "seconds": 0.2448948
+      }
+    ],
+    "tls_api_checks": [
+      {
+        "label": "tls-resolve",
+        "command": [
+          "cargo",
+          "generate-lockfile",
+          "--offline"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\tls-consumer",
+        "exit": 0,
+        "passed": true
+      },
+      {
+        "label": "tls-default",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--lib"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\tls-consumer",
+        "exit": 0,
+        "passed": true
+      },
+      {
+        "label": "tls-native-only",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--lib",
+          "--no-default-features",
+          "--features",
+          "native"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\tls-consumer",
+        "exit": 0,
+        "passed": true
+      },
+      {
+        "label": "tls-minimal",
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--lib",
+          "--no-default-features"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\tls-consumer",
+        "exit": 0,
+        "passed": true
+      },
+      {
+        "label": "tls-metadata",
+        "command": [
+          "cargo",
+          "metadata",
+          "--locked",
+          "--offline",
+          "--format-version",
+          "1"
+        ],
+        "cwd": "C:\\User\\projects\\nbreq\\target\\api-release-review-20260927\\tls-consumer",
+        "exit": 0,
+        "passed": true
+      }
+    ],
+    "tls_nbreq_identity": {
+      "id": "path+file:///C:/User/projects/nbreq/target/worktrees/nbreq-smtp#nbreq@0.2.0",
+      "source": null,
+      "manifest_path": "C:\\User\\projects\\nbreq\\target\\worktrees\\nbreq-smtp\\Cargo.toml"
+    },
+    "checkout_source_hash_manifest_sha256": "DDC63EA85055F17C40B595F053BEB17BC50FCCB2B3B1D62500E4F3C1F4BAF210",
+    "checkout_unchanged": true,
+    "limitations": [
+      "Windows x86_64 stable only; no fresh MSRV or other-platform execution",
+      "Representative unchanged downstream consumers, not exhaustive mechanical SemVer analysis",
+      "Offline cached registry graph with explicit current root and helper paths; not published-package or registry-only proof",
+      "TLS API checks compile typed calls and do not execute TLS handshakes",
+      "No cargo-semver-checks installation, production edits, version edits, release/publish actions"
+    ],
+    "previous_evidence": "thoughts/nbreq_020_consumer_readiness.md records older package/platform tests; historical results not attributed to this HEAD."
+  },
+  "files": {
+    "bundle_review.py": {
+      "bytes": 1975,
+      "sha256": "6207b514cb93c5ac5a4ee54e4372fb9d2cd09b76630ffd7e7b3a2bbfb991a768"
+    },
+    "checkout-hashes-after.json": {
+      "bytes": 8451,
+      "sha256": "ddc63ea85055f17c40b595f053beb17bc50fccb2b3b1d62500e4f3c1f4baf210"
+    },
+    "checkout-hashes-before.json": {
+      "bytes": 8451,
+      "sha256": "ddc63ea85055f17c40b595f053beb17bc50fccb2b3b1d62500e4f3c1f4baf210"
+    },
+    "consumer/Cargo.lock": {
+      "bytes": 25047,
+      "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+    },
+    "consumer/Cargo.toml": {
+      "bytes": 634,
+      "sha256": "0f4293fe6e806b571053d46fa8e2f6c40abb9960cefe4cb84b001acdf71fb936"
+    },
+    "consumer/probes/resolver.rs": {
+      "bytes": 39,
+      "sha256": "10ffb318d1e84baebaacd3f2ae4dfb0599627d5f926dae08df52fc8a2ef3a5cb"
+    },
+    "consumer/probes/testing.rs": {
+      "bytes": 38,
+      "sha256": "a748342fd939ee8269e70d486f84c3c89e5fd839ce6d7eeeb2df73e9917f61fa"
+    },
+    "consumer/src/common_http.rs": {
+      "bytes": 2787,
+      "sha256": "c862c5095706bfccbaa61f7cd4390384f44a982692bb3b66b1f53c3ca9e5584e"
+    },
+    "consumer/src/fixture.rs": {
+      "bytes": 2985,
+      "sha256": "53f7ede41f3a9f8cb29c68991a9a0c9e44aa09c30dc49dae8f940e1f8eb9fa32"
+    },
+    "consumer/src/lib.rs": {
+      "bytes": 227,
+      "sha256": "a669852eef9f080ce9a04c8372e7ec90d6e49a48a0890aeb90e24d1e6c0cea56"
+    },
+    "consumer/src/v020.rs": {
+      "bytes": 9180,
+      "sha256": "9bdb2b81b975b8280d26f09fd91fdfeedf06b94c70766ead3cc3a6e56ddaa066"
+    },
+    "consumer-Cargo.lock": {
+      "bytes": 25047,
+      "sha256": "7b43743143eda38b5133ab59df23876a1b54cdf401d8c0f9935ded105de4a1a8"
+    },
+    "evidence-hashes.json": {
+      "bytes": 11446,
+      "sha256": "719e9c1848f6f541f39aed8bc0a7e34dafe4d65afc73a274cfad4edfa7ba3f99"
+    },
+    "final-status.log": {
+      "bytes": 41,
+      "sha256": "d2124657a43984e69b8f3716434578b89366f5428abd46c8b8c07004faabfc4a"
+    },
+    "inputs.json": {
+      "bytes": 2756,
+      "sha256": "5d256e9ac9086fe987d90833e398ccb7390471ef7b7907214cae0d96231748e0"
+    },
+    "metadata-default.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "metadata-default.stdout.log": {
+      "bytes": 429220,
+      "sha256": "399cb8a23a1c0aa4e4cc05fe3b744007e445a79601fdcf794eeb7c393339be0f"
+    },
+    "metadata-minimal.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "metadata-minimal.stdout.log": {
+      "bytes": 14315,
+      "sha256": "5037db0455bf52c333d2bad4f5d8d8f7659743f9bfe12ac7c290049dffd76f1f"
+    },
+    "metadata-native-only.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "metadata-native-only.stdout.log": {
+      "bytes": 423083,
+      "sha256": "c069e47ebe158627823d31a29f11544f779e0d51eab4731af077a85d0fbcce3e"
+    },
+    "metadata-test-support.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "metadata-test-support.stdout.log": {
+      "bytes": 429250,
+      "sha256": "a547deb8eab2c5fc366bccc9e820cb60286a99f539082b06fd688f0e73db34af"
+    },
+    "resolve.stderr.log": {
+      "bytes": 776,
+      "sha256": "90ecb852073f150178cf899f22bc540066208b04e92b65733b5a89226b40da5a"
+    },
+    "resolve.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "resolver-absent.stderr.log": {
+      "bytes": 864,
+      "sha256": "fe3102da82cd8d1e6393bc6598ac9856949e0b413468316bfe5ca79accd8a588"
+    },
+    "resolver-absent.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "resolver-present.stderr.log": {
+      "bytes": 2183,
+      "sha256": "31b771a24223d5aa704f907609ffbc2820798270a03de08ad98c067b7aa06671"
+    },
+    "resolver-present.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "results.json": {
+      "bytes": 5094,
+      "sha256": "c7a24f2e9503a933f853efacc1569367f7106bdbc100cfce209d6c00cb105126"
+    },
+    "run.ps1": {
+      "bytes": 4613,
+      "sha256": "c5db17ccfc8aa3dfe828fe8c68d1253bb9024d0a7d20a2362c281da74d528a6a"
+    },
+    "summarize.ps1": {
+      "bytes": 3839,
+      "sha256": "3885cb807f2726be625f6cfb250680c82efc820b614c82d58422abf16af168ef"
+    },
+    "summary.json": {
+      "bytes": 9231,
+      "sha256": "ee91017104b6994f88f2895c3d8e278456ccc9efac32412707dfb7c3ceedeace"
+    },
+    "test-default.stderr.log": {
+      "bytes": 2359,
+      "sha256": "f6bdb9bf637bcf760110dd1730dece9c4b66c2769ad70bad830cdcd98f6d6b5c"
+    },
+    "test-default.stdout.log": {
+      "bytes": 783,
+      "sha256": "d407797ca30d94835998fe64460f227f02c34bb8472bca687f4b81dd0bb1e319"
+    },
+    "test-minimal.stderr.log": {
+      "bytes": 423,
+      "sha256": "612ec1a352ff40ef13e6eae57375bb536c3c829b6d93c4979edd6bf926d29169"
+    },
+    "test-minimal.stdout.log": {
+      "bytes": 244,
+      "sha256": "52e7204432a047e9b29b16713f6297372f2acfc8b07b9579f77d6340f0b84959"
+    },
+    "test-native-only.stderr.log": {
+      "bytes": 423,
+      "sha256": "c22a65f0520ad45d5be3c068df864f122055c705f72195733c2082e3201b23af"
+    },
+    "test-native-only.stdout.log": {
+      "bytes": 722,
+      "sha256": "bf14a35a48047d405bfe385126d4e164039a4ef6f44fd854cf91f9c8932ac353"
+    },
+    "test-test-support.stderr.log": {
+      "bytes": 423,
+      "sha256": "9bb6d3404fbc0b1552daf8660a9b682a56ce6ee11f4b2ab4655d619e176ff83f"
+    },
+    "test-test-support.stdout.log": {
+      "bytes": 855,
+      "sha256": "4210b2b30871e301d1d0a0061cb3f1244e6c51efa43b095465f96c4f14e85f12"
+    },
+    "testing-absent.stderr.log": {
+      "bytes": 749,
+      "sha256": "f8663a2d2314192e4dfe3d80bb089d51058056ec74edad846238000fc84d724b"
+    },
+    "testing-absent.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "testing-present.stderr.log": {
+      "bytes": 656,
+      "sha256": "ad0b6e029b7b96332cc1a5c40d0b207f64cd1c7965c32daf294957659c117594"
+    },
+    "testing-present.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-check.ps1": {
+      "bytes": 3107,
+      "sha256": "08509a359df7a9ff1be6b85a2f72be7ba2a417dc08ff7456698f718ae864cece"
+    },
+    "tls-consumer/Cargo.lock": {
+      "bytes": 25075,
+      "sha256": "dcfacdd475240f83916e89d462e0a3a8a69d7ddfc871cad361a6c75f453d516d"
+    },
+    "tls-consumer/Cargo.toml": {
+      "bytes": 282,
+      "sha256": "73df5b3233a7dcc5a8607ecf8caa07167d4cf56601a467b43eee854e7623f00f"
+    },
+    "tls-consumer/src/lib.rs": {
+      "bytes": 1596,
+      "sha256": "89c8a5a7a6a2ebb3aa815c719d1c91b950cd0aa4f81dbda82700bd6332c0d9db"
+    },
+    "tls-default.stderr.log": {
+      "bytes": 615,
+      "sha256": "ddd74efdc4de11a02f03649bd116350c90fde8e9eada581cbe9354355bb9e9c3"
+    },
+    "tls-default.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-metadata.stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-metadata.stdout.log": {
+      "bytes": 432030,
+      "sha256": "90fab8968a5aa9d49faad4dc5cdc7e54657aab6e8f16d4464d76febb5f45d8c2"
+    },
+    "tls-minimal.stderr.log": {
+      "bytes": 268,
+      "sha256": "98d12c807e13968b3420b4f47238142e20b87d58cc170b504345835624dcc41b"
+    },
+    "tls-minimal.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-native-only.stderr.log": {
+      "bytes": 268,
+      "sha256": "3d10cb0bcf85869b08a104d419d99fe7e9d162f18963c780e0a915dff2ec3409"
+    },
+    "tls-native-only.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-resolve.stderr.log": {
+      "bytes": 69,
+      "sha256": "e2afc3a4f0448a82330252c5b25969e0541cc6eb3c6946f48afb6b6c773977bc"
+    },
+    "tls-resolve.stdout.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tls-results.json": {
+      "bytes": 1515,
+      "sha256": "aa58b60203a4fcafd703e1759b7ca1ee364032b8574babde94cb73c846c2a7b7"
+    }
+  }
+}
