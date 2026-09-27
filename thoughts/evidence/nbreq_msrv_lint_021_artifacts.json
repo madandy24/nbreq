@@ -1,0 +1,205 @@
+{
+  "archive": "nbreq-msrv-lint-021-20260927.tar.gz",
+  "sha256": "78a832254bc862e79437c82fccb0c870d21f5cc565be565a28c997e889e76286",
+  "bytes": 141406,
+  "regular_members": 32,
+  "summary": {
+    "head": "465319bc44489045f353c52b6a019adb67e91ca4",
+    "commands": [
+      {
+        "name": "msrv-versions",
+        "command": [
+          "rustup",
+          "run",
+          "1.85.0",
+          "rustc",
+          "-vV"
+        ],
+        "toolchain": "1.85.0",
+        "exit": 0,
+        "elapsed_seconds": 0.05859208106994629
+      },
+      {
+        "name": "msrv-clippy-version",
+        "command": [
+          "rustup",
+          "run",
+          "1.85.0",
+          "cargo",
+          "clippy",
+          "--version"
+        ],
+        "toolchain": "1.85.0",
+        "exit": 0,
+        "elapsed_seconds": 0.11363434791564941
+      },
+      {
+        "name": "msrv-verifier",
+        "command": [
+          "rustup",
+          "run",
+          "1.85.0",
+          "cargo",
+          "run",
+          "--locked",
+          "--offline",
+          "--manifest-path",
+          "tools/xtask/Cargo.toml",
+          "--",
+          "verify",
+          "--offline"
+        ],
+        "toolchain": "1.85.0",
+        "exit": 0,
+        "elapsed_seconds": 108.59435963630676
+      },
+      {
+        "name": "stable-versions",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "rustc",
+          "-vV"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 0.23601102828979492
+      },
+      {
+        "name": "stable-clippy-version",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "cargo",
+          "clippy",
+          "--version"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 0.1839122772216797
+      },
+      {
+        "name": "stable-clippy",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "cargo",
+          "clippy",
+          "--locked",
+          "--offline",
+          "--all-features",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 8.593391418457031
+      },
+      {
+        "name": "stable-tls-tests",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--all-features",
+          "--test",
+          "tcp_tls",
+          "--test",
+          "tcp_tls_api"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 10.379115581512451
+      },
+      {
+        "name": "stable-smtp-clippy",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "cargo",
+          "clippy",
+          "--locked",
+          "--offline",
+          "--package",
+          "nbreq-smtp",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 1.771315574645996
+      },
+      {
+        "name": "stable-smtp-tests",
+        "command": [
+          "rustup",
+          "run",
+          "stable",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--package",
+          "nbreq-smtp",
+          "--all-targets"
+        ],
+        "toolchain": "stable",
+        "exit": 0,
+        "elapsed_seconds": 7.897261142730713
+      }
+    ],
+    "environment": {
+      "CARGO_TARGET_DIR": "C:\\User\\projects\\nbreq\\target\\docs-021-20260927\\build"
+    },
+    "source_hashes_unchanged": true,
+    "changed_source_paths": [],
+    "fixture_before_sha256": "538dbb55f632aceef3516af64b48f1526dc0155a267f8667ae7b54c0bdfb12a8",
+    "fixture_after_sha256": "afabc75a09604a19d5d8825882064516af6b4ab2ef1a3c38c26223e8231b7c94"
+  },
+  "members": {
+    "before-hash.txt": "b8a3af3d39ceefa66dac732d1e99cf0151d778b1ac8ab185d683531c43098f31",
+    "component-install.log": "a471b91fee0d6edb8d00bd8f8efb9060cd961ad184c865340763a66770cda88f",
+    "fixture.diff": "c3232cf4b5c43d96218158d7ffe06d7791c67167a2348bcce7af88e5f17d7d33",
+    "head.txt": "f634597b9007c5b561e746318fa98de244102fb5b5e94570f2146dde892cac9b",
+    "msrv-clippy-version.log": "c2a44da4923702348a822a24ca7327329950b60145185d7ac70c644efa605353",
+    "msrv-verifier.log": "967f9cd6f1415dd676de4fe0bac5b7e9e38f5030a61bd87de7fe793254207d21",
+    "msrv-versions.log": "32773cf1f17324f81b3423be1da95ce0a5c4e9f253e71481a8aa68e604748997",
+    "preflight-missing-clippy.log": "521ab7385fbc477906ebe392a8a4cee0bd3952d268a781ffe9ebc5e397a5c912",
+    "preflight-summary.json": "74b310acee2d126fcb213486d8b2bf96856a794293b57e29a798a756ce5fe104",
+    "results.json": "04de0903986f6b7c814a9f8dd1cab88b1228af3857d52a7bacdad75440cda093",
+    "source-after.json": "9f59bf2bfbda8c6e1dba297d4cc82ea6bf8fecf7263bb000bf4bc7a207d1258b",
+    "source-before.json": "9f59bf2bfbda8c6e1dba297d4cc82ea6bf8fecf7263bb000bf4bc7a207d1258b",
+    "summary.json": "f74b773ba6c2b1b452a2f41e832ff0ff272e67335825ade2b295d9c3b9ff1b54",
+    "tcp_tls_fixture.before.rs": "538dbb55f632aceef3516af64b48f1526dc0155a267f8667ae7b54c0bdfb12a8",
+    "verify.py": "0b4a57507be06a2f6c14e1a0cf54c986590b8a02047458be36d93a378f4ca867",
+    "attempt-02/fixture.diff": "bade1111dafacc3d5ce11deae7b00bc1bf5edff87e6e69e530ac1a8ef6d179bc",
+    "attempt-02/msrv-clippy-version.log": "c2a44da4923702348a822a24ca7327329950b60145185d7ac70c644efa605353",
+    "attempt-02/msrv-verifier.log": "83cc2b82713e0872685b7b17afc591242cfbd42b5759ba58acd8172feb76e2fc",
+    "attempt-02/msrv-versions.log": "32773cf1f17324f81b3423be1da95ce0a5c4e9f253e71481a8aa68e604748997",
+    "attempt-02/results.json": "a8101a4f6060814aa9e588d02ebe7e9488da891e569148fd176d0cbeb0a8f762",
+    "attempt-02/smtp_data.before.rs": "59babe1def33d68acfe9fcf30201f63b9ebc40f74096c230417c1785d0574f7b",
+    "attempt-02/source-after.json": "9a62f893c57cc9dd2efa88d5df63afe0a27df3bf190323e409e39f8d39fafb67",
+    "attempt-02/source-before.json": "9a62f893c57cc9dd2efa88d5df63afe0a27df3bf190323e409e39f8d39fafb67",
+    "attempt-02/stable-clippy-version.log": "2177fec2a490ec6a4209350f975997920bceb7ad2e675217abf0c0a6fb904cad",
+    "attempt-02/stable-clippy.log": "8e00f5117a1375cc56d60669371462fc2042a216b423e45413dc2b98440cd5ba",
+    "attempt-02/stable-smtp-clippy.log": "720d07920bf8fd344942a4083a653791cdd07e69e9af213867c89f4e1dd07745",
+    "attempt-02/stable-smtp-tests.log": "1b725120cda89fb62123e35fa89962705d736101bf72087e9ce8c6c01d5c715b",
+    "attempt-02/stable-tls-tests.log": "1495f52bb3b3646cae3c223eda807aec81cbc552330a95a9c049572eea872c35",
+    "attempt-02/stable-versions.log": "7fad09dd8c16d49de37932475436003b5b1763c1015c5ce081ad7692db368ca3",
+    "attempt-02/summary.json": "dfdc5fb2a42dc43e8d790ceaa245eeab1f2e60778540d1ee5bcb2994e4d03585",
+    "attempt-02/tcp_tls_fixture.before.rs": "538dbb55f632aceef3516af64b48f1526dc0155a267f8667ae7b54c0bdfb12a8",
+    "attempt-02/verify.py": "e87517c1164de89b3a52ad61ae9b3f60e1793d06343786926bbb27353a1bfa2f"
+  }
+}

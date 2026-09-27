@@ -737,7 +737,7 @@ fn key_update_idle(
             }
             let record: Vec<u8> = pending.drain(..total).collect();
             let encrypted = record[0] == 0x17;
-            if !encrypted && !(record[0] == 0x14 && length == 1) {
+            if !(encrypted || record[0] == 0x14 && length == 1) {
                 return Outcome::Failed("unexpected post-handshake TLS record type".into());
             }
             let mut cursor = Cursor::new(record);

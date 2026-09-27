@@ -23,12 +23,10 @@ impl DataEncoder {
     pub(crate) fn next_chunk(&mut self, message: &[u8], limit: usize) -> Vec<u8> {
         let mut chunk = Vec::with_capacity(limit);
         while chunk.len() < limit && !self.finished(message) {
-            let byte = if self.cursor < message.len() {
-                message[self.cursor]
-            } else if self.cursor == message.len() {
-                b'\r'
-            } else {
-                b'\n'
+            let byte = match self.cursor.cmp(&message.len()) {
+                std::cmp::Ordering::Less => message[self.cursor],
+                std::cmp::Ordering::Equal => b'\r',
+                std::cmp::Ordering::Greater => b'\n',
             };
             if self.at_line_start && byte == b'.' && !self.extra_dot_pending {
                 chunk.push(b'.');

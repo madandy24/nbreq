@@ -9,10 +9,10 @@ publication/GDS integration stay separate.
 
 | Item | State |
 | --- | --- |
-| Baseline | Remote main remains published 0.2.0 completion commit `6ada116`; local main integrated through `55cb6d9` |
+| Baseline | Reviewed work pushed to main at `465319b`; validated Rust 1.85 lint corrections ready for follow-up commit |
 | Reviewed work | Documentation and bundled consumer tooling committed; owner approved consumer-lock compatibility policy below |
 | Existing evidence | Documentation/defaults pass: full 30-step Windows verifier, stable/MSRV snippets, strict rustdoc and independent review; runtime/platform/Wine evidence remains in the linked plans |
-| Current stage | Consumer-lock policy implemented and reviewed; local gates passed, preparing clean candidate and hosted checks |
+| Current stage | Both lint corrections passed full Rust 1.85 and focused stable gates; preparing refreshed candidate |
 | Publication | Not started; v0.2.1 tag absent at initial remote check |
 | Local evidence | `target/release-021-20260927/` (commands, package hashes, consumer results and hosted receipts) |
 
@@ -20,9 +20,9 @@ publication/GDS integration stay separate.
 
 | Gate | Required result | State |
 | --- | --- | --- |
-| R1 Integration | Clean main containing the reviewed branch and accepted notes; no unrelated edits | Initial integration complete at `b2427a0`; final tooling/date commit follows |
-| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | Local policy and full verifier passed; exact clean package follows final commit |
-| R3 Hosted acceptance | Eight platform/stable/MSRV verifier jobs plus advisory/license checks; candidate registry-helper consumer matrix | Pending |
+| R1 Integration | Clean main containing the reviewed branch and accepted notes; no unrelated edits | Integrated and pushed at `465319b`; fixture lint follow-up follows |
+| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | First archive passed; refresh after fixture correction |
+| R3 Hosted acceptance | Eight platform/stable/MSRV verifier jobs plus advisory/license checks; candidate registry-helper consumer matrix | First candidate matrix 8/8 passed; stable CI/advisory/licenses passed; MSRV lint corrections require a new CI run |
 | R4 Publication | Final dated changelog, exact dry-run/archive identity, publish core 0.2.1, matching tag | Pending |
 | R5 Published acceptance | Registry API/index/download checksums, registry-only matrix, live README/docs.rs/versioned-link checks | Pending |
 | R6 Closeout | Retained evidence, updated checkpoint and clean pushed main | Pending |
@@ -57,6 +57,46 @@ upstream-compatible correction and fresh validation.
   is included in this release operation.
 
 ## Prior evidence
+
+### First hosted candidate (2026-09-27)
+
+Pushed `465319bc44489045f353c52b6a019adb67e91ca4` and started
+[CI](https://github.com/madandy24/nbreq/actions/runs/36300738053) and the
+[candidate matrix](https://github.com/madandy24/nbreq/actions/runs/36300766614).
+The clean local archive passed all packaged TLS checks and independent
+bundle-off/on consumers. Its SHA256 is
+`6f3adc15a21ab82f75cf48b19ebcdea29f7e02295e8428ae33d72c4d221c2034`;
+it is superseded for publication by the following fixture correction.
+
+Hosted Rust 1.85 Clippy rejects the test-fixture condition
+`!encrypted && !(record[0] == 0x14 && length == 1)` as `nonminimal_bool`.
+Current stable accepts it. Simplify the condition using De Morgan's law without
+changing its evaluation or suppressing the lint. No production behavior changes.
+Run the complete Rust 1.85 verifier and relevant current-stable checks, obtain
+independent review, then build and gate a new clean candidate. Retain the original
+hosted failures and package receipts as superseded evidence.
+
+That candidate matrix completed all eight jobs: 672 consumer tests, 32 expected
+negative feature probes and 144 examples. Raw receipts, sixteen graph identities
+and five unique selected/example locks passed independent verification and
+advisory audit. All four stable full-CI jobs, the advisory scan and license check
+passed; the four MSRV jobs stopped at the fixture lint. Evidence is retained under
+`target/release-021-20260927/attempt-1/`.
+
+The local complete Rust 1.85 verifier passed the corrected fixture and all core
+steps, then revealed `comparison_chain` in `smtp/src/data.rs`. Replace the
+cursor/length if-chain with its equivalent `Ordering` match and verify the
+existing encoding tests plus full verifier. Preserve that failed local run too.
+SMTP remains unpublished; this change satisfies the existing workspace gate.
+
+Both corrections passed code review. The second full Rust 1.85 verifier passed
+all 30 steps in 108.437 seconds. Stable all-feature Clippy, TLS integration/API
+tests, SMTP Clippy and all-target tests also passed with source hashes unchanged.
+Retained [lint evidence](evidence/nbreq-msrv-lint-021-20260927.tar.gz): 32 regular
+members, 141,406 bytes, SHA256
+`78a832254bc862e79437c82fccb0c870d21f5cc565be565a28c997e889e76286`.
+The [artifact index](evidence/nbreq_msrv_lint_021_artifacts.json) preserves the
+original failure, exact changes, compiler identities and passing raw logs.
 
 ### Fresh dependency blocker (2026-09-27)
 
