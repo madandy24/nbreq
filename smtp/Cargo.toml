@@ -10,7 +10,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-nbreq = { path = "..", version = "0.2.0", default-features = true }
+nbreq = { path = "..", version = "0.2.1", default-features = true }
 
 [dev-dependencies]
 rcgen = "=0.13.2"

@@ -23,7 +23,7 @@ env = dict(os.environ,CARGO_TARGET_DIR=str(out/'build'))
 env.pop('CARGO_BUILD_TARGET',None)
 packages = {}
 steps = []
-for name, version in [('nbreq-darwin','0.1.0'),('nbreq-winpoll','0.1.1'),('nbreq','0.2.0')]:
+for name, version in [('nbreq-darwin','0.1.0'),('nbreq-winpoll','0.1.1'),('nbreq','0.2.1')]:
     command = ['cargo','package','--locked','--offline','-p',name]
     if name == 'nbreq':
         for helper, folder in [('nbreq-darwin','support/darwin'),('nbreq-winpoll','support/winpoll')]:

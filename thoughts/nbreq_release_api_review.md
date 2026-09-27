@@ -10,9 +10,9 @@ Opened 2026-09-27. Decision review requested by the owner after the
 | Published baseline | `v0.2.0`, source `d866179719f1cd4e2efcda7e4a533fe590ae3dd6` |
 | Reviewed candidate | `f636a3c00728379758f7e922d9968c478fec81a5`, `codex/nbreq-smtp` |
 | Recommendation | Release core NBReq as **0.2.1**, retaining the 0.2 compatibility line |
-| Decision | Proposed; owner has not yet selected the number. Manifests and versioned documentation remain unchanged. |
+| Decision | Owner accepted **0.2.1** on 2026-09-27. Apply package/dependency/release-tool metadata now; user documentation is the next pass. |
 | Review | Complete: root source comparison and independent Astra xhigh API/behavior/evidence review found no demonstrated source-breaking change. Unchanged old-consumer tests and representative new API compilation pass. |
-| Scope | API/version decision only. Final candidate packaging, hosted CI, publication and GDS integration remain separate release stages. |
+| Scope | API/version decision and metadata implementation. Final release-candidate packaging after documentation, hosted CI, publication and GDS integration remain separate release stages. |
 
 ## API assessment
 
@@ -77,11 +77,10 @@ pin still controls when an existing application upgrades; a new version does not
 rewrite its lockfile automatically.
 
 Code using the new APIs should require **`nbreq = "0.2.1"`**, a normal compatible
-range rather than an exact pin. In particular, the unpublished SMTP crate currently
-declares `version = "0.2.0"` while using TLS and `Engine::run_mode` APIs absent from
-published 0.2.0. Raise that minimum to the chosen core release during versioning.
-Leaving it at 0.2.0 can permit an old consumer lock that satisfies the manifest but
-cannot compile the new API usage.
+range rather than an exact pin. In particular, the unpublished SMTP crate uses TLS
+and `Engine::run_mode` APIs absent from published 0.2.0. Its minimum is raised from
+`"0.2.0"` to `"0.2.1"` during versioning. Leaving it at 0.2.0 could permit an old
+consumer lock that satisfies the manifest but cannot compile the new API usage.
 
 Keep `nbreq-darwin` at 0.1.0 and `nbreq-winpoll` at 0.1.1: their source and requirements
 are unchanged. `nbreq-smtp` remains unpublished at its own 0.1.0 development version;
@@ -119,8 +118,33 @@ The [artifact index](evidence/nbreq_release_api_review_artifacts.json) includes
 per-member hashes and the consumer report. Sources, manifests/locks, commands,
 metadata and logs are included; build output is excluded.
 
-After the owner selects the number, update core version/lock entries, the minimums
-of tools/SMTP using the new APIs, release checks and user documentation together.
-Preserve intentionally pinned old-version compatibility baselines. Then perform
-the exact versioned candidate and published-registry checks already identified in
-release preparation. This decision review does not replace those gates.
+## Accepted version implementation
+
+Owner accepted core **0.2.1** on 2026-09-27, with user documentation explicitly next.
+The metadata pass updates the root package and current local-path lock entries,
+SMTP's dependency minimum, the exact release-consumer candidate requirement,
+package/download/manifest assertions, the registry-check workflow and the current
+benchmark version label. The regenerated license inventory identifies the new
+root version too. The exact consumer pin is a release-verification input, not a
+recommended application dependency policy.
+
+The actual registry 0.1.1 comparison and recorded 0.2.0 publication evidence remain
+unchanged. Helper crates stay at their existing releases; SMTP remains unpublished
+at 0.1.0. No production Rust or third-party dependency changes are intended.
+
+Focused Windows stable checks pass in
+`C:/User/projects/nbreq/target/version-021-20260927/`: 11 locked/offline metadata
+checks resolve local NBReq 0.2.1, SMTP compiles with all targets, and an independent
+exact-0.2.1 consumer's tests compile in default/native/minimal/test-support modes.
+These are compilation checks, not another runtime/MSRV/platform matrix. Executing
+the legacy manifest transformation still selects exact registry 0.1.1. All eight
+changed locks differ only in the local NBReq version; third-party entries remain
+unchanged. Python syntax checks pass. Cargo-about 0.9.1 regenerates the license
+report with only the root version changed. Independent review found no blocker.
+
+A clean package identity check remains before closing this metadata pass. It is
+a metadata rehearsal; the final candidate must be rebuilt after documentation.
+README, guides, examples, changelog and tool README updates remain for that next
+pass, including the behavior disclosures above. Then perform the exact versioned
+candidate, hosted CI and published-registry checks already identified in release
+preparation. This pass does not replace those gates or authorize publication.

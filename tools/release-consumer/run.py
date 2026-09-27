@@ -16,7 +16,7 @@ out = args.out.resolve()
 out.mkdir(parents=True, exist_ok=False)
 source = Path(__file__).resolve().parent
 shutil.copytree(source, out/'consumer-source', ignore=shutil.ignore_patterns('target','Cargo.lock','__pycache__'))
-work = Path(tempfile.mkdtemp(prefix='nbreq-020-consumer-'))
+work = Path(tempfile.mkdtemp(prefix='nbreq-021-consumer-'))
 env = dict(os.environ, CARGO_TARGET_DIR=str(out/'build'))
 results = []
 
@@ -87,7 +87,7 @@ manifest = (legacy/'Cargo.toml').read_text()
 manifest = manifest.replace('default = ["native", "resolver", "v020"]','default = ["native"]')
 manifest = manifest.replace('resolver = ["native", "nbreq/resolver"]','resolver = []')
 manifest = manifest.replace('test-support = ["nbreq/test-support"]','test-support = []')
-manifest = manifest.replace('version = "=0.2.0"','version = "=0.1.1"')
+manifest = manifest.replace('version = "=0.2.1"','version = "=0.1.1"')
 (legacy/'Cargo.toml').write_text(manifest,encoding='utf-8')
 run('resolve-011',['cargo','generate-lockfile',*network],legacy)
 shutil.copy2(legacy/'Cargo.lock',out/'legacy-Cargo.lock')

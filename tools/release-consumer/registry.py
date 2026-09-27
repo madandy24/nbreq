@@ -25,7 +25,7 @@ if (args.mode == 'candidate') != (args.package is not None):
 source = Path(__file__).resolve().parent
 out = args.out.resolve()
 out.mkdir(parents=True, exist_ok=False)
-work = Path(tempfile.mkdtemp(prefix='nbreq-020-registry-')).resolve()
+work = Path(tempfile.mkdtemp(prefix='nbreq-021-registry-')).resolve()
 env = dict(os.environ, CARGO_TARGET_DIR=str(out / 'build'))
 env.pop('CARGO_BUILD_TARGET', None)
 steps = []
@@ -54,11 +54,11 @@ def run(label, command, cwd, expected=0, contains=None):
 
 
 if args.mode == 'published':
-    request = urllib.request.Request('https://crates.io/api/v1/crates/nbreq/0.2.0/download',
-                                    headers={'User-Agent': 'nbreq-020-registry-check'})
+    request = urllib.request.Request('https://crates.io/api/v1/crates/nbreq/0.2.1/download',
+                                    headers={'User-Agent': 'nbreq-021-registry-check'})
     with urllib.request.urlopen(request, timeout=60) as response:
         payload = response.read()
-    package = out / 'nbreq-0.2.0.crate'
+    package = out / 'nbreq-0.2.1.crate'
     package.write_bytes(payload)
 else:
     package = args.package.resolve()
@@ -69,15 +69,15 @@ with tarfile.open(package) as archive:
         name = PurePosixPath(member.name)
         assert member.isfile() and not name.is_absolute() and '..' not in name.parts
         assert all('\\' not in part and ':' not in part for part in name.parts)
-        assert name.parts[0] == 'nbreq-0.2.0' and member.name not in seen
+        assert name.parts[0] == 'nbreq-0.2.1' and member.name not in seen
         seen.add(member.name)
         destination = work.joinpath(*name.parts).resolve()
         assert destination.is_relative_to(work)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(archive.extractfile(member).read())
-root = work / 'nbreq-0.2.0'
+root = work / 'nbreq-0.2.1'
 manifest = tomllib.loads((root / 'Cargo.toml').read_text())
-assert manifest['package']['name'] == 'nbreq' and manifest['package']['version'] == '0.2.0'
+assert manifest['package']['name'] == 'nbreq' and manifest['package']['version'] == '0.2.1'
 assert 'patch' not in manifest
 for target, helper in [('cfg(windows)', 'nbreq-winpoll'), ('cfg(target_os = "macos")', 'nbreq-darwin')]:
     assert 'path' not in manifest['target'][target]['dependencies'][helper]

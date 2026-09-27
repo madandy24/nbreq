@@ -130,7 +130,7 @@ def main():
                     label = version+'-'+kind+'-'+str(body)+'-'+str(repetition)
                     origin = ('manifest:'+source['runtime_source']) if version == 'current' else source['registry_commit']
                     record = observe(Path(built['binaries'][version+'-'+kind]['path']),out/label,label,
-                                     '0.2.0' if version == 'current' else '0.1.1',origin,body,requests,kind=='alloc')
+                                     '0.2.1' if version == 'current' else '0.1.1',origin,body,requests,kind=='alloc')
                     records.append(dict(label=label,wall_ms=record['inner']['measures']['wall_ms']))
                     print(label+' passed',flush=True)
     (out/'result.json').write_text(json.dumps(dict(status='passed',source=identity,runs=len(records),records=records),indent=2),encoding='utf-8')

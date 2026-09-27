@@ -46,7 +46,7 @@ jobs:
         run: cargo package --locked -p nbreq --target-dir "${{ runner.temp }}/registry-package"
       - name: Check candidate consumers
         if: inputs.mode == 'candidate'
-        run: python tools/release-consumer/registry.py --mode candidate --package "${{ runner.temp }}/registry-package/package/nbreq-0.2.0.crate" --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
+        run: python tools/release-consumer/registry.py --mode candidate --package "${{ runner.temp }}/registry-package/package/nbreq-0.2.1.crate" --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
       - name: Check published consumers
         if: inputs.mode == 'published'
         run: python tools/release-consumer/registry.py --mode published --out "${{ runner.temp }}/nbreq-registry" --toolchains ${{ matrix.toolchain }}
