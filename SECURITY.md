@@ -21,9 +21,26 @@ upgrade before receiving a fix. This policy will be revisited before 1.0.
 
 ## Security posture
 
-NBReq verifies TLS certificate chains and hostnames by default. The deliberately verbose
-`DangerouslyDisableCertificateVerification` option is a compatibility escape hatch and should not
-be used in ordinary deployments. Resource limits, cancellation, and consuming Engine shutdown are
+NBReq verifies TLS certificate chains and DNS/IP identities. Platform trust is the default for
+HTTPS, direct TLS and STARTTLS, even when the optional `bundled-roots` feature is enabled.
+`TlsTrust::SuppliedRootsOnly` uses only the Engine's supplied DER roots;
+`TlsTrust::BundledMozilla` requires that feature and uses compiled Mozilla roots plus any supplied
+roots. Both are explicit WebPKI policies: they retain certificate signatures, validity and identity
+checks but do not inherit OS enterprise roots, distrust rules or revocation retrieval, and add no
+online revocation checking. Choose separate Engines for separate trust domains.
+
+Trust selection never disables verification or falls back to another policy. Malformed roots,
+empty supplied-only trust and unsupported configurations fail construction. In 0.2.1, additional
+roots pass WebPKI trust-anchor parsing before platform verification too, so OS acceptance differences
+can surface as construction failures. Public `test-support` backends also reject trust settings
+they cannot apply with `Unsupported`. Bundled roots change only after dependency updates, a rebuild
+and deployment; running applications do not download replacements. See
+[TLS trust configuration](docs/tcp-tls.md#selecting-certificate-trust).
+
+The legacy HTTP-request `DangerouslyDisableCertificateVerification` option is a compatibility
+escape hatch and should not be used in ordinary deployments. Standalone TLS has no such option,
+and a failed consuming upgrade closes the original connection without plaintext fallback.
+Resource limits, cancellation, and consuming Engine shutdown are
 part of the public contract. NBReq's public diagnostics are intended to be payload-free, but callers
 remain responsible for protecting request and response values they choose to log.
 
@@ -32,6 +49,11 @@ conversion/notification FFI are isolated in the implementation-detail `nbreq-win
 `nbreq-darwin` support crates behind safe interfaces. Neither helper is intended as a standalone
 consumer API. macOS resolver configurations that cannot be represented safely are rejected
 rather than flattened into an incorrect global DNS route.
+
+Portable TLS tests and unauthenticated live transport probes passed for Win32 binaries on Wine
+5.0 (Ubuntu package 5.0-3ubuntu1) with a private Win32 prefix and an app-local ProcessPrng shim.
+Platform trust still failed in that environment. This scoped evidence is not a general Wine or
+SMTP delivery claim; validate the deployed trust policy and environment.
 
 Windows DNS discovery reads only the needed IP Helper fields through bounds-checked byte slices.
 It does not decode unused adapter descriptions or friendly names; malformed required records

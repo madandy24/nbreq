@@ -1,4 +1,4 @@
-//! Public cleartext TCP connector contract.
+//! Public TCP connector contract for plain connections, direct TLS and TLS upgrades.
 //!
 //! [`TcpConnector`] is an Engine-issued capability ticket. Native Engines accept literal-address
 //! connections on their existing reactor owner and exact hostname connections through their
@@ -26,7 +26,8 @@ use crate::{Error, ErrorKind, ExecuteError, RequestId};
 
 use io::TcpIoShared;
 
-/// Destination of one cleartext TCP connect request.
+/// Destination of a TCP connect request, shared by plain TCP and direct TLS.
+/// TLS certificate identity is supplied separately through [`TlsOptions`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TcpConnectTarget {
@@ -41,12 +42,14 @@ pub enum TcpConnectTarget {
     Literal(SocketAddr),
 }
 
-/// An owned cleartext TCP connect request.
+/// An owned TCP connect request, shared by plain TCP and direct TLS.
+/// TLS identity and handshake policy are supplied separately through [`TlsOptions`].
 ///
-/// Connect timeout begins at admission and covers queued DNS plus TCP connection establishment; it
-/// ends when the live connection is produced. Optional connected-phase read and write inactivity
-/// policies then apply separately. Blocking connected operations reject manual mode rather than
-/// driving it.
+/// Establishment deadlines start at admission. For plain TCP, connect timeout covers queued DNS
+/// and TCP establishment. For direct TLS, the earlier of this deadline and
+/// [`TlsOptions::handshake_timeout`] bounds the complete DNS/TCP/TLS establishment. Connected-phase
+/// read/write inactivity policies begin after plain TCP connects or TLS verification completes.
+/// Blocking connected operations reject manual mode rather than driving it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TcpConnectRequest {
     target: TcpConnectTarget,
@@ -93,8 +96,8 @@ impl TcpConnectRequest {
         &self.target
     }
 
-    /// Returns the connect timeout covering capacity waiting, DNS when required, and TCP
-    /// connection establishment. The clock ends when the live connection is produced.
+    /// Returns the optional connect timeout. See [`TcpConnectRequest`] for its admission-based
+    /// deadline and how it combines with the handshake deadline for direct TLS.
     #[must_use]
     pub fn connect_timeout(&self) -> Option<Duration> {
         self.connect_timeout
@@ -147,8 +150,8 @@ pub struct TcpConnectRequestBuilder {
 }
 
 impl TcpConnectRequestBuilder {
-    /// Sets the connect timeout covering capacity waiting, DNS when required, and connection
-    /// establishment.
+    /// Sets the connect timeout. See [`TcpConnectRequest`] for its admission-based deadline and
+    /// how it combines with the handshake deadline for direct TLS.
     #[must_use]
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = Some(timeout);
@@ -250,7 +253,7 @@ fn is_unspecified_destination(ip: IpAddr) -> bool {
     }
 }
 
-/// Cheap cloneable cleartext TCP handle issued by an [`Engine`](crate::Engine).
+/// Cheap cloneable plain TCP and direct TLS connector issued by an [`Engine`](crate::Engine).
 ///
 /// TcpConnector has no public constructor. It does not own or extend Engine lifetime. Detached
 /// handles reject new work with [`ErrorKind::EngineStopped`].

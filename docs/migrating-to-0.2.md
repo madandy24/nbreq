@@ -1,7 +1,39 @@
-# Upgrading from NBReq 0.1.1 to 0.2
+# Upgrading to NBReq 0.2.1
 
-This document describes the public changes from 0.1.1 to 0.2. Select `nbreq = "0.2"` to upgrade;
-a dependency on `"0.1"` intentionally stays on the 0.1 line.
+Select `nbreq = "0.2.1"` for the APIs described here. Existing `"0.2"` requirements permit
+0.2.1, but an application's lockfile controls when it updates; `"0.1"` stays on the 0.1 line.
+
+## From 0.2.0 to 0.2.1
+
+Existing HTTP, DNS and plain TCP APIs remain available. The additions are verified TLS 1.2/1.3
+connections, consuming TCP-to-TLS upgrades, TLS waiters/callbacks, `Engine::run_mode()` and
+explicit Engine trust selection. `PendingTlsConnect` works with the existing sealed
+`WaiterTarget` and `drive_until`. `TlsFailure::Truncated` extends an already non-exhaustive enum;
+retain wildcard match arms. Use a minimum of 0.2.1 when calling these new APIs.
+
+Review these behavior changes when upgrading:
+
+- Additional DER roots now pass WebPKI trust-anchor parsing even in platform mode. Certificates
+  an OS previously accepted or ignored differently can fail Engine construction.
+- Backends that cannot apply explicit trust settings return `Unsupported`. This includes public
+  `test-support` held/HTTP-only constructors that previously ignored additional roots. Tests using
+  production TLS settings may need an HTTPS fixture or a configuration without unused roots.
+- Accepted plain TCP send buffers shed spare `Vec` capacity, which may allocate or copy. Refused
+  buffers retain their original allocation and bytes; partial blocking sends still return only
+  the unaccepted suffix.
+- Peer FIN remains EOF when queue pressure changes, so read inactivity does not restart after
+  EOF. Small native receive windows use bounded allocation. These fixes preserve byte-stream
+  semantics while tightening resource behavior.
+
+Platform trust remains the default, including when `bundled-roots` is enabled. Select
+`TlsTrust::SuppliedRootsOnly` with at least one DER root, or enable `bundled-roots` and select
+`TlsTrust::BundledMozilla`. Portable modes retain certificate and identity checks but do not
+inherit OS enterprise roots, distrust rules or revocation retrieval. There is no automatic
+fallback. Update the application lockfile, rebuild and redeploy to refresh bundled roots.
+See [trust configuration and TLS lifecycle](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md)
+and [runnable TLS examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp).
+
+The following sections describe the earlier changes from 0.1.1 to the 0.2 line.
 
 ## Existing HTTP consumers
 
@@ -38,7 +70,8 @@ memory responsibility to the application; it does not free that allocation.
 - `Engine::resolver` provides public DNS through the default-on `resolver` feature. Exact lookup
   is the default, search expansion is opt-in, and NXDOMAIN/NoData are completed negative answers.
 - `Engine::tcp_connector` provides cancellable cleartext TCP and bounded duplex queues. It shares
-  the native reactor; it is not a TLS stream or a `std::net::TcpStream` replacement with raw sockets.
+  the native reactor and does not expose raw sockets. Version 0.2.1 adds separate verified TLS
+  connection and upgrade calls without changing the ordinary cleartext calls.
 - `Engine::drive_until` accepts HTTP, DNS and TCP direct waiters through the sealed `WaiterTarget`
   trait. Ordinary HTTP calls retain their return type; consumers storing the method as a function
   item may need to specify the waiter type explicitly.

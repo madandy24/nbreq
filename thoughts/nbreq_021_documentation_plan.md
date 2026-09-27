@@ -6,20 +6,20 @@ Opened 2026-09-27 after the accepted [0.2.1 version change](nbreq_release_api_re
 
 | Field | State |
 | --- | --- |
-| Working branch | `codex/nbreq-smtp`; version metadata/evidence complete at `4f7f202` |
-| Current request | Basic examples of TLS on initial TCP connection and a plain TCP connection upgraded to TLS |
-| Approach | Polish existing C04/C05 and keep their names; both already use local verified peers. Add both to the existing CI/release example runner. |
-| Current scope | TCP example explanations, example index, TLS guide introduction and directly related runner/documentation updates |
-| Deferred | Main README, remaining guides and changelog; final package/hosted CI/publication gates |
+| Working branch | `codex/nbreq-smtp`; version metadata/evidence complete at `4f7f202`, example pass at `cdc40d1` |
+| Current request | Update documentation for 0.2.1, then hand it to the owner for review |
+| Approach | Preserve the README's approved layout and GET-first introduction; explain standalone TLS, trust choices and compatibility changes in the appropriate guides |
+| Current scope | Documentation draft complete and independently accepted; ready for owner review. Main README, guides, changelog, security/contributor guidance, SMTP wording and API comments updated; no production behavior changes |
+| Deferred | Owner review, final package/hosted CI/publication gates |
 
 ## Work sequence
 
 | Item | Deliverable | State |
 | --- | --- | --- |
 | D1 | C04 immediate TLS and C05 STARTTLS; runnable, explained and included in local example checks | Complete: existing programs clarified for 0.2.1, both included in the runner; focused Windows checks pass |
-| D2 | Main README and remaining guides describe 0.2.1, trust choices and new APIs | Next documentation pass |
-| D3 | Changelog/release notes include additions and reviewed behavior changes | Pending |
-| D4 | Final documentation/package link check and release candidate verification | After documentation; existing release gates remain required |
+| D2 | Main README and remaining guides describe 0.2.1, trust choices and new APIs | Complete; ready for owner review |
+| D3 | Changelog/release notes include additions and reviewed behavior changes | Complete; release date deliberately pending |
+| D4 | Final documentation/package link check and release candidate verification | Local documentation/link checks complete. Final clean candidate, hosted CI and published-link checks follow owner review |
 
 ## D1 decisions and checks
 
@@ -76,3 +76,74 @@ The [artifact index](evidence/nbreq_examples_021_artifacts.json) records member 
 executed-binary hashes. Commands, raw logs, example sources and the scoped diff are
 included; build outputs and binaries are excluded. D2/D3 are next; rebuild the final
 release candidate after documentation is complete.
+
+## D2/D3 scope and validation
+
+- Describe the intended 0.2.1 release without claiming publication or inventing its
+  release date. New-API dependency examples require at least `"0.2.1"`.
+- Keep Highlights above the convenience GET, short cancellation/DNS/TCP snippets,
+  and curl history brief and last. Link to the runnable TLS examples.
+- Explain platform, supplied-only and optional Mozilla trust; feature enablement
+  does not select a policy. Document root refresh/rebuild requirements and the
+  absence of automatic verification fallback or portable OS revocation policy.
+- Correct hostname TCP's feature requirements and qualify actual Wine evidence.
+  Keep GDS integration and the unpublished SMTP crate's release separate.
+- Disclose the behavior changes already accepted in the API review, including
+  supplied-root parsing, unsupported trust configurations, TCP retained capacity,
+  peer-FIN timeout handling and the TLS final-shutdown correction.
+- Validate included-guide doctests, exact standalone README/TLS snippets and local
+  documentation link destinations/anchors. Compile relevant snippets on stable
+  and Rust 1.85. Follow the repository's required verifier before committing.
+- Independent review checks API accuracy, trust/feature claims, migration advice
+  and evidence; the owner then reviews the prose before release preparation.
+
+Documentation evidence lab: `C:/User/projects/nbreq/target/docs-021-20260927/`.
+
+## D2/D3 result and handoff
+
+The README keeps Highlights above its convenience GET, existing short snippets and
+brief final History section. It now presents direct TLS, consuming upgrades and
+explicit trust selection. The guides include supplied-only/bundled-root examples,
+correct native-only hostname support, TLS boundaries and qualified Wine evidence.
+Migration notes and the 0.2.1 changelog disclose the accepted compatibility details.
+Security and contributor guidance match current trust choices and repository gates.
+SMTP remains a separate unpublished crate; no combined release is promised.
+
+Independent review corrected one timeout comment: for immediate TLS the earlier
+connect/handshake deadline bounds complete DNS/TCP/TLS establishment. Request,
+getter and builder descriptions now agree. No executable Rust, dependency, test
+fixture or runtime behavior changed.
+
+| Validation | Result |
+| --- | --- |
+| Existing full offline verifier, Windows x86_64 stable 1.97.1 | All 30 stages passed in 311.179 seconds |
+| Exact README snippets | All four compile on stable and Rust 1.85 with only their documented Engine/Duration context supplied |
+| Standalone TLS guide | All three no-run snippets compile on stable, Rust 1.85 and native-only |
+| Included guides and SMTP README | 34 core and two SMTP doctests pass on Rust 1.85; stable covered by the full gate |
+| Final API comment correction | Only TCP doc comments differ from the full-gate snapshot; executable lines identical. Final stable/MSRV 34 core doctests, strict root/SMTP rustdoc and formatting pass |
+| Markdown/package checks | 55 link destinations/anchors resolve against the working package inventory or, for SMTP/contributor material, repository files |
+| Generated API documentation | 586 links across root/SMTP indexes and affected TCP API pages resolve locally |
+| Independent review | Final prose, API contracts, raw logs and source integrity accepted; no remaining findings |
+
+The initial package-list attempt rejected the uncommitted tree; the explicit
+`--allow-dirty --list` retry only inventories reviewed files and is not clean
+candidate verification. The generated-link checker was corrected to recognize
+rustdoc's literal percent-encoded IDs as well as decoded fragments; no document or
+Cargo check changed for that validator correction. Both details remain in the logs.
+
+Cross-file links in rustdoc-included guides use the intended `v0.2.1` source URLs.
+Their targets are verified locally; they are not live hosted-link evidence before
+the release tag is published. Ordinary README/standalone-guide links remain relative.
+No external network snippets were executed, and no new remote-platform pass is
+claimed for this documentation slice.
+
+Retained [documentation evidence](evidence/nbreq-docs-021-20260927.tar.gz): 84 regular
+members, 269,121 bytes, SHA256
+`3ba1f453d90c3dd5fcdc8c0496377f89c0af4f82d45e57609740ef997820c497`.
+The [artifact index](evidence/nbreq_docs_021_artifacts.json) binds raw logs, source
+snapshots, exact snippet scaffolds and local link inventories. Build outputs and
+binaries are excluded.
+
+Next is the owner's prose review. Apply any requested changes, then rebuild the
+clean release candidate and complete hosted/registry gates. No push, merge,
+publication or GDS change is part of this documentation pass.

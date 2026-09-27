@@ -1,6 +1,10 @@
 # NBReq SMTP sender
 
-`nbreq-smtp` sends one prepared message over NBReq's verified TCP/TLS transport. It is a separate, unpublished workspace crate while it depends on the unreleased local TCP/TLS API. It supports required STARTTLS and implicit TLS. It has no plaintext fallback, automatic retry, authentication, SIZE, 8BITMIME, SMTPUTF8, pipelining, MIME builder, mail reader, or server.
+`nbreq-smtp` sends one prepared message over NBReq's verified TCP/TLS transport. It remains a
+separate, unpublished workspace crate at version 0.1.0, requiring NBReq 0.2.1 or a compatible
+newer version. It supports required STARTTLS and implicit TLS. It has no plaintext fallback,
+automatic retry, authentication, SIZE, 8BITMIME, SMTPUTF8, pipelining, MIME builder, mail reader,
+or server. Its release readiness is independent of the core NBReq release.
 
 The caller supplies the relay and its verified certificate identity, an EHLO name, an envelope, and prepared RFC 5322 message bytes. The message must contain a valid header section and a blank line before the body. Input uses printable seven-bit ASCII plus horizontal tab and canonical CRLF line endings, with at most 998 content bytes per line. A missing final CRLF is appended. Both the canonical length and retained `Vec` capacity must fit 8 MiB; there may be 1–100 recipients. Mailbox and EHLO validation happens before network admission. Envelope local parts support ASCII dot-atom syntax with DNS domains; quoted local parts and mailbox address literals are unsupported. There is no generated `From`, `Date`, or `Message-ID` header, so include the fields your relay and recipients require. The constructor checks framing and basic header syntax; it does not validate full RFC 5322 semantics, `From`/`Date` correctness, or MIME content.
 
@@ -66,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 SMTP phase and overall deadlines are checked when `poll` runs. Leaving an operation unpolled does not schedule an SMTP watchdog or protocol progress; underlying NBReq transport deadlines still run while its Engine progresses. Cancellation aborts a pending operation and reports the appropriate `NotAccepted` or `Uncertain` state. Dropping an operation aborts its pending connect or live connection. `send_blocking` is available only with a spawned Engine.
 
-The command-line [send_message example](examples/send_message.rs) requires every destination and envelope argument explicitly:
+The command-line [send_message example](https://github.com/madandy24/nbreq/blob/v0.2.1/smtp/examples/send_message.rs) requires every destination and envelope argument explicitly:
 
 ```text
 cargo run -p nbreq-smtp --example send_message -- HOST PORT starttls|implicit EHLO_NAME FROM TO MESSAGE_FILE
@@ -76,6 +80,18 @@ The file must end in CRLF so its prepared bytes are preserved before SMTP dot-st
 
 Replies are bounded to 512 bytes per line, 32 lines, and 8 KiB total. Retained recipient reply summaries can add roughly 800 KiB plus per-recipient metadata at the 100-recipient cap. Protocol output staging is at most 4 KiB, with at most 64 state/I/O steps and 16 KiB DATA admission per poll. Defaults are a 30-second command deadline and a 120-second overall deadline; both are configurable and must be finite. TCP queue windows may be as small as one byte. These limits bound the crate's own queues and parsing, not the process's total memory.
 
-TLS identity verification uses NBReq's platform trust and any additional roots configured on the Engine. It is independent of a literal socket address. On STARTTLS, the client discards all pre-upgrade capabilities and sends EHLO again after verified TLS. No mail transaction command is sent if the required upgrade fails. The reviewed NBReq transport has an inherited Wine 5 platform-verifier limitation; this crate does not claim verified TLS support on that Wine version.
+SMTP inherits the Engine's immutable `TlsTrust` policy: platform trust by default, or explicitly
+selected supplied-only or bundled Mozilla roots. Selecting portable trust retains certificate
+signature, validity and DNS/IP identity checks; it does not add OS enterprise trust or revocation
+retrieval. Enabling `bundled-roots` alone does not change the policy. Configure the NBReq Engine
+before creating `SmtpClient`; see the
+[trust configuration guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#selecting-certificate-trust).
+The verified identity is independent of a literal socket address. After STARTTLS, the client
+discards pre-upgrade capabilities and sends EHLO again. No mail transaction command is sent if
+the required upgrade fails.
 
-This workspace crate requires the local NBReq TCP/TLS source. The published NBReq 0.2.0 package does not yet provide that API, so a separate consumer must use this checkout until the transport and SMTP packages are released together.
+Core transport portable-trust tests and live greeting/capability probes passed in a specific
+Win32/Wine 5.0 environment with an app-local ProcessPrng shim; platform trust still failed there.
+Those checks do not establish SMTP message-sending support for this workspace crate on Wine.
+Use this checkout to consume the unpublished SMTP crate. NBReq 0.2.0 lacks the APIs it needs;
+publication of the core and SMTP packages remains separate.

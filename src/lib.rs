@@ -1,12 +1,13 @@
 #![warn(missing_docs)]
 
-//! Runtime-independent HTTP client architecture.
+//! Runtime-independent HTTP, DNS and TCP/TLS for Rust applications.
 //!
 //! The crate implements NBReq's backend-independent ownership and lifecycle kernel. Compiled HTTP
 //! implementations can be selected explicitly with [`EngineBuilder::http_backend`]. The default
 //! build and ordinary [`Engine::new`] constructor use NBReq's native HTTP implementation.
 //!
-//! [`Engine::tcp_connector`] issues a cloneable capability ticket into the same Engine lifecycle.
+//! [`Engine::tcp_connector`] issues a cloneable capability ticket for plain TCP, verified direct
+//! TLS and consuming TLS upgrades within the same Engine lifecycle.
 //! The default-on `resolver` feature additionally exposes public hostname resolution through
 //! `Engine::resolver`. Both capabilities use the Engine-owned native DNS and reactor owners.
 #![cfg_attr(

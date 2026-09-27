@@ -10,7 +10,7 @@ Opened 2026-09-27. Decision review requested by the owner after the
 | Published baseline | `v0.2.0`, source `d866179719f1cd4e2efcda7e4a533fe590ae3dd6` |
 | Reviewed candidate | `f636a3c00728379758f7e922d9968c478fec81a5`, `codex/nbreq-smtp` |
 | Recommendation | Release core NBReq as **0.2.1**, retaining the 0.2 compatibility line |
-| Decision | Owner accepted **0.2.1** on 2026-09-27. Package/dependency/release-tool metadata applied; user documentation is the next pass. |
+| Decision | Owner accepted **0.2.1** on 2026-09-27. Package/dependency/release-tool metadata applied; documentation draft complete and ready for owner review. |
 | Implementation | Complete at `9e810211d700ff747a01ed727d8fe3d83f46fef6`: focused compilation/metadata checks and a clean 0.2.1 package identity rehearsal pass. Independent review accepted. |
 | Review | Complete: root source comparison and independent Astra xhigh API/behavior/evidence review found no demonstrated source-breaking change. Unchanged old-consumer tests and representative new API compilation pass. |
 | Scope | API/version decision and metadata implementation. Final release-candidate packaging after documentation, hosted CI, publication and GDS integration remain separate release stages. |
@@ -163,7 +163,7 @@ metadata source snapshots and independent consumer sources are included; build
 outputs and crate archives are excluded.
 
 The [documentation plan](nbreq_021_documentation_plan.md) records the completed TCP
-example pass and its runner checks. Main README, remaining guides and changelog
-updates are next, including the behavior disclosures above. Then perform the exact versioned
+example pass, README/guides/changelog update and validation, including the behavior
+disclosures above. After owner review, perform the exact versioned
 candidate, hosted CI and published-registry checks already identified in release
 preparation. This pass does not replace those gates or authorize publication.

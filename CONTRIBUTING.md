@@ -1,12 +1,16 @@
 # Developing NBReq
 
-NBReq currently requires Rust 1.85 or later and uses Rust 2024 edition. The initial supported deployment targets are Windows 10 x64 or later, the Windows build under Ubuntu 20.04's default Wine, and native Linux x64 built against an Ubuntu 20.04 ABI baseline.
+NBReq requires Rust 1.85 or later and uses Rust 2024 edition. The tested native targets are
+Windows x64, Linux x64 with an Ubuntu 20.04 ABI baseline, and Intel/Apple Silicon macOS.
+Focused Win32/Wine evidence has additional environment and trust-policy requirements; see
+[platform scope](docs/getting-started.md#platform-scope) before making deployment claims.
 
 The settled project and crate name is NBReq / `nbreq` (Non-Blocking Request). Copyright is held by
 Cave Rock Software Limited and the public grant is `MIT OR Apache-2.0`. The public repository is
-`https://github.com/madandy24/nbreq`. The implementation-detail `nbreq-winpoll 0.1.0` support crate
-is published; root releases remain explicit, reviewed maintainer actions. WP10's native-default and
-platform gates are accepted.
+`https://github.com/madandy24/nbreq`. The published implementation-detail support crates are
+`nbreq-winpoll 0.1.1` and `nbreq-darwin 0.1.0`; core releases remain explicit, reviewed maintainer
+actions. The separate `nbreq-smtp 0.1.0` workspace crate remains unpublished and requires core
+NBReq 0.2.1 or newer within the compatible line.
 
 Unless explicitly stated otherwise, any contribution intentionally submitted for inclusion in
 NBReq is licensed under the same `MIT OR Apache-2.0` terms, without additional conditions.
@@ -22,7 +26,8 @@ cargo run --manifest-path tools/xtask/Cargo.toml -- verify
 It first checks its own formatting, tests, and warning-denied lint, then checks the private WinSock
 compatibility wrapper before printing and running the frozen NBReq formatting, compilation,
 warning-denied lint, default/minimal/native/all-feature test, doctest, documentation, and named
-pressure-regression gates. It flushes each exact command before execution, reports elapsed time per
+pressure-regression gates, plus SMTP formatting, lint, tests, doctests, docs and example builds.
+It flushes each exact command before execution, reports elapsed time per
 stage, and stops at the first failure. Use
 `--offline` on an exact-source host with a populated Cargo cache, and
 `--stress-repetitions 25` when repeating the pressure gate. `--dry-run` prints the complete command
@@ -37,6 +42,10 @@ cargo check --manifest-path support/winpoll/Cargo.toml --all-targets
 cargo clippy --manifest-path support/winpoll/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path support/winpoll/Cargo.toml
 cargo check --no-default-features
+cargo clippy --no-default-features --all-targets -- -D warnings
+cargo check --no-default-features --features native --all-targets
+cargo clippy --no-default-features --features native,test-support --all-targets -- -D warnings
+cargo test --no-default-features --features native,test-support
 cargo check --all-features --all-targets
 cargo clippy --all-features --all-targets -- -D warnings
 cargo test
@@ -45,14 +54,23 @@ cargo test --features native,test-support
 cargo test --all-features
 cargo test --all-features --doc
 cargo doc --all-features --no-deps
+cargo fmt --package nbreq-smtp --check
+cargo clippy --package nbreq-smtp --all-targets -- -D warnings
+cargo test --package nbreq-smtp --all-targets
+cargo test --package nbreq-smtp --doc
+cargo doc --package nbreq-smtp --no-deps
+cargo build --package nbreq-smtp --examples
 ```
 
 The crate enables Rust's `missing_docs` lint. The existing warning-denied all-feature lint stage
 therefore also prevents undocumented public API from entering the release surface.
 
-The public-repository CI runs that same complete verifier on current stable Rust for Windows and
-Ubuntu, and on Rust 1.85 for Ubuntu. Each job fetches the exact lock graph first and then executes
-the verifier offline. A separate stable-Ubuntu job runs `cargo-audit 0.22.2`; the reviewed
+The public-repository CI runs that complete verifier on stable Rust and Rust 1.85 for Windows,
+Ubuntu, macOS 15 Intel and macOS 15 Apple Silicon. Each job fetches the exact lock graph first and
+then executes the verifier offline, builds and runs local examples, and checks fresh consumer
+dependency graphs. The separate manual registry workflow covers those same platform/toolchain
+combinations for a candidate archive or published package. A separate stable-Ubuntu job runs
+`cargo-audit 0.22.2`; the reviewed
 exception in `.cargo/audit.toml` is justified in `SECURITY.md` and must not be expanded without a
 source-level reachability review.
 

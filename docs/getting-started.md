@@ -1,6 +1,6 @@
 # Using NBReq
 
-For complete programs in learning order, see the [HTTP, DNS and TCP examples](https://github.com/madandy24/nbreq/blob/432509b8d2d198cb0139def322f2cc82cd4a76c6/examples/README.md).
+For complete programs in learning order, see the [HTTP, DNS and TCP/TLS examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md).
 
 NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
 workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client
@@ -10,11 +10,11 @@ responsible for stopping HTTP.
 The default Cargo features are `native` and `resolver`. They provide NBReq's Rust-native HTTP/1.1,
 DNS, TCP, public Resolver, and rustls implementation without Tokio or another async runtime.
 
-This guide targets NBReq 0.2. Add the dependency below to use the default native backend:
+This guide targets NBReq 0.2.1. Add the dependency below to use the default native backend:
 
 ```toml
 [dependencies]
-nbreq = "0.2"
+nbreq = "0.2.1"
 ```
 
 An HTTP-only consumer can omit the public Resolver API and its Windows search-suffix registry
@@ -22,7 +22,7 @@ reader while retaining native HTTP and exact-name DNS for HTTP and hostname `Tcp
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2", default-features = false, features = ["native"] }
+nbreq = { version = "0.2.1", default-features = false, features = ["native"] }
 ```
 
 The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
@@ -124,9 +124,9 @@ engine.shutdown()?;
 `execute` returns a `Response` only for completed HTTP exchanges. A 404 or 500 remains a Response;
 transport, timeout, policy, and cancellation outcomes are errors. Total timeout begins when NBReq
 accepts the request, so queue time is included. TLS certificate and hostname verification is on by
-default. Disable it only through the deliberately explicit `TlsVerification` compatibility option.
+default. Keep verification enabled when choosing a trust policy.
 
-## Private certificate authorities
+## Certificate trust and private authorities
 
 Add DER-encoded root certificates to an Engine when an application uses a private CA. The roots
 supplement platform trust, without modifying the operating-system trust store. Hostname, validity
@@ -144,17 +144,59 @@ engine.shutdown()?;
 ```
 
 Call the configuration method once per root. An Engine's trust policy is fixed at construction and
-applies to all its HTTPS requests and redirects; use separate Engines for separate trust domains.
-Windows, Linux and macOS use the existing platform verifier with extra roots. The pinned Android
-verifier does not support this option in platform mode and rejects a nonempty extra-root
+applies to HTTPS requests and redirects, direct TLS and STARTTLS; use separate Engines for separate
+trust domains. Additional roots are parsed as WebPKI trust anchors before entering the selected
+verifier, including platform mode. A certificate accepted or ignored differently by the OS in
+0.2.0 can therefore fail construction in 0.2.1.
+Windows, Linux and macOS use the existing platform verifier with extra roots. The current platform
+verifier dependency does not support this option on Android in platform mode and rejects a nonempty extra-root
 configuration explicitly.
 
-In the development checkout, `EngineConfig::with_tls_trust` also selects portable WebPKI
-verification using supplied roots only or an optional Mozilla bundle plus supplied roots.
-Platform trust remains the default, even when `bundled-roots` is enabled. Portable policies
-do not import OS enterprise trust/distrust or revocation retrieval. See
-[trust selection and bundle updates](tcp-tls.md#selecting-certificate-trust) for the API and
-the required dependency-update, rebuild and deployment steps. These additions are unreleased.
+To trust only your supplied DER roots, select `TlsTrust::SuppliedRootsOnly` before constructing
+the Engine:
+
+```rust,no_run
+use nbreq::{Engine, EngineConfig, TlsTrust};
+
+let config = EngineConfig::spawned()
+    .with_tls_trust(TlsTrust::SuppliedRootsOnly)
+    .with_additional_tls_root_certificate(std::fs::read("company-root.der")?);
+let engine = Engine::new(config)?;
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For bundled Mozilla roots, enable the feature and explicitly select the policy:
+
+```toml
+[dependencies]
+nbreq = { version = "0.2.1", features = ["bundled-roots"] }
+```
+
+```rust,no_run
+# #[cfg(feature = "bundled-roots")]
+# {
+use nbreq::{Engine, EngineConfig, TlsTrust};
+
+let engine = Engine::new(
+    EngineConfig::spawned().with_tls_trust(TlsTrust::BundledMozilla),
+)?;
+engine.shutdown()?;
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Platform trust remains the default even with `bundled-roots` enabled. Both portable policies
+retain certificate signatures, validity and DNS/IP identity checks, but do not import OS
+enterprise roots, distrust rules or revocation retrieval, and do not add online revocation
+checking. No automatic fallback or verification bypass is part of trust selection.
+Malformed roots, empty supplied-only trust and unsupported policies fail Engine construction;
+configurations a backend cannot apply return `Unsupported`, including public `test-support`
+held/HTTP-only constructors. Use an HTTPS fixture or omit unused trust settings in those tests.
+
+The Mozilla roots are compiled into the application. Update the application's dependency
+lockfile, rebuild and redeploy to refresh them; running processes do not fetch new roots.
+See [trust selection and bundle updates](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#selecting-certificate-trust).
 
 ## Callbacks and direct waiters
 
@@ -389,7 +431,7 @@ calling `wait()` on its undriven owner thread cannot make network progress.
 
 `Engine::tcp_connector()` provides literal-address and exact-hostname connects on the same
 reactor. It is available with `native`, even when the public Resolver feature is disabled.
-It provides a byte stream, with no TLS wrapping or message framing:
+The ordinary `execute` call returns a cleartext byte stream with no message framing:
 
 ```rust,no_run
 use std::time::Duration;
@@ -425,6 +467,9 @@ only while accepted output waits for socket progress.
 so `TcpSendError::into_remaining()` returns only the unaccepted suffix. Retrying the original whole
 message can duplicate its accepted prefix. A successful send means bytes were queued, not that
 the peer processed them. Bound each chunk to the configured send window for passive `try_send`.
+Accepted plain TCP buffers shed excess `Vec` capacity, which may allocate or copy; refused buffers
+retain their allocation. Receive storage uses bounded windows. Peer FIN remains EOF, and later
+queue-pressure changes do not restart the read inactivity timer after it.
 
 For manual driving use `submit`/`drive_until` to connect and passive `try_read`, `try_send` and
 `try_finish` between drive calls. Blocking connected methods reject manual mode. `split` moves
@@ -434,13 +479,31 @@ or `finish_with` requests drain-then-half-close; the split writer may then be dr
 reader still needs to drain to EOF. Dropping an unsplit connection before EOF also aborts it.
 Use a cloned connection handle to cancel from another thread.
 
+## Verified TCP TLS and upgrades
+
+Use `TcpConnector::execute_tls(request, options)` for immediate TLS, or negotiate the application's
+upgrade protocol over an unsplit `TcpConnection` and consume it with `into_tls(options)`.
+`TlsOptions` names the DNS name or IP identity the certificate must authenticate; it can differ
+from the address used to reach the peer. Both paths verify TLS before returning a `TlsConnection`.
+`submit_tls` and `start_tls` provide waiter and callback forms, and a manual Engine can drive a
+`PendingTlsConnect` with `drive_until`. `Engine::run_mode()` reports who owns progress.
+
+Drain the complete positive plaintext upgrade response and leave no unread or queued plaintext
+at the boundary. Every consuming-upgrade failure closes the original connection. Standalone TLS
+has no automatic plaintext fallback or verification-disable option. On an established TLS
+connection, a raw transport EOF without the TLS close alert is `TlsFailure::Truncated`;
+TLS 1.2 and 1.3 differ in half-close behavior.
+See the [TCP TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md) and
+[local direct-TLS and upgrade examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp)
+for complete programs, closure rules and additional memory reservations.
+
 ## Backend and feature selection
 
 | Cargo selection | Available behavior |
 | --- | --- |
 | Default | Native HTTP/1.1, TLS, internal DNS, standalone TCP and public Resolver |
 | `default-features = false, features = ["native"]` | Native HTTP/TLS/TCP and internal exact-name DNS; no public Resolver or Windows search-suffix registry reader |
-| `bundled-roots` (development checkout) | Enables `native` and optional Mozilla roots; explicitly select `TlsTrust::BundledMozilla` to use them; default trust remains platform |
+| `bundled-roots` | Enables `native` and optional Mozilla roots; explicitly select `TlsTrust::BundledMozilla` to use them; default trust remains platform |
 | No features | Portable configuration/HTTP/TCP types compile; public Resolver is absent and Engine construction returns `Unsupported` |
 | `test-support` | Additional deterministic test controls; does not select a network backend or add production capabilities |
 
@@ -450,7 +513,7 @@ transport choice.
 
 ## Platform scope
 
-NBReq 0.2 targets Rust 1.85 or later with Rust 2024 edition. The verified target set is:
+NBReq 0.2.1 targets Rust 1.85 or later with Rust 2024 edition. The verified target set is:
 
 | Target | Tested scope |
 | --- | --- |
@@ -461,7 +524,12 @@ NBReq 0.2 targets Rust 1.85 or later with Rust 2024 edition. The verified target
 
 Other operating systems, architectures and older macOS versions are not covered by this release's
 support claim. Windows x86 also has focused compatibility evidence under Ubuntu 20.04's stock
-Wine 5. This does not establish support for every Wine/host combination.
+Wine 5.0 (Ubuntu package 5.0-3ubuntu1), using a private Win32 prefix and an app-local ProcessPrng
+shim. In that environment, actual portable-trust tests and verified live IMAPS/SMTP STARTTLS
+transport probes passed; the live probes explicitly selected `BundledMozilla` and performed
+unauthenticated greetings/capability/quit exchanges. Platform-trust verification still failed.
+This is evidence for that explicit configuration, not every Wine/host combination or SMTP message
+delivery. Validate the intended deployment and trust mode.
 
 macOS discovery accepts a bounded ordinary default System Configuration view. Supplemental
 `/etc/resolver` entries, split/scoped routing, conflicting primary services and other unrepresented
@@ -539,7 +607,7 @@ There are three distinct byte controls:
 | --- | --- |
 | `max_buffered_body_bytes` (optional) | Retained/reserved buffered HTTP payload capacity and its charged receive staging |
 | `max_stream_queued_bytes` | HTTP streaming response windows |
-| `max_queued_bytes` | Shared parent for HTTP streaming response windows and reserved standalone TCP send/receive windows |
+| `max_queued_bytes` | Shared parent for HTTP streaming response windows, standalone TCP send/receive windows and additional TLS staging reservations |
 
 Per-stream and per-TCP-connection windows also apply. A buffered upload with a streamed response
 participates in the buffered-body cap as well as its response's streaming window. These limits

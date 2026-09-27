@@ -15,16 +15,18 @@ drive networking from your own event loop. No async runtime required.
 - Bounded queues, resource limits, connection pooling, structured errors, and deterministic joined
   shutdown.
 - Rust-native HTTP/1.1 and TLS on Windows, Linux, and Intel/Apple Silicon macOS.
-- Public DNS resolution and cleartext TCP connections using the same Engine ownership and shutdown.
+- Public DNS resolution, plain TCP, verified direct TLS and STARTTLS upgrades using the same
+  Engine ownership and shutdown.
+- Platform certificate trust by default, with explicit private-root-only or bundled Mozilla trust.
 - Shared buffered responses, optional consuming buffer transfer, and opt-in retained-body limits.
 
 ## Start with a GET
 
-Requires Rust 1.85 or newer. This guide covers NBReq 0.2.0.
+Requires Rust 1.85 or newer. This guide covers NBReq 0.2.1.
 
 ```toml
 [dependencies]
-nbreq = "0.2"
+nbreq = "0.2.1"
 ```
 
 ```rust
@@ -57,8 +59,10 @@ The snippets use `?` inside a function returning `Result`. For a complete progra
   Stream larger bodies incrementally; share buffered responses or take their allocation without
   copying when uniquely owned. [Memory controls](docs/getting-started.md#buffered-http-memory-controls)
   and [A10: memory limits](examples/A10-http-memory-limits.rs) explain the choices.
-- **Use verified HTTPS.** TLS certificate and hostname verification is enabled by default, using
-  platform trust. Applications can also supply private CA roots.
+- **Choose certificate trust.** HTTPS and standalone TLS use platform trust by default.
+  Applications can add private CA roots or explicitly select portable verification with supplied
+  roots only or a Mozilla bundle. [Trust selection](docs/tcp-tls.md#selecting-certificate-trust)
+  explains the feature and configuration choices.
 
 Keep an Engine for the lifetime of a service so requests can reuse its connections and DNS cache.
 The following snippets each assume a running, spawned `engine` and `Duration` as above.
@@ -134,22 +138,26 @@ TCP supports hostname connections, separate reader/writer halves, cancellation, 
 and nonblocking I/O. The [TCP examples](examples/README.md#c--tcp) start their own local echo server,
 so you can run them without setting one up.
 
-For work underway after 0.2.0, see the [TCP TLS development guide](docs/tcp-tls.md) and the new
-C04/C05 examples. Immediate TLS and explicit connection upgrades are not in the published 0.2.0 crate.
-That development guide also covers explicit portable trust using supplied roots or an optional
-Mozilla bundle. Enabling the bundle does not change platform trust as the default.
+For immediate TLS, pass the request and `TlsOptions` to `execute_tls`; for a negotiated upgrade,
+consume the unsplit plain connection with `into_tls`. Both return a verified `TlsConnection`.
+Try [C04: direct TLS](examples/C04-tcp-tls.rs) and [C05: TCP-to-TLS upgrade](examples/C05-tcp-starttls.rs),
+which run local verified peers, then read the [TCP TLS guide](docs/tcp-tls.md).
+Enabling `bundled-roots` does not select it automatically: the Engine must explicitly use
+`TlsTrust::BundledMozilla`. Platform trust remains the default.
 
 ## Learn more
 
 - [Getting started](docs/getting-started.md): request options, streaming, manual driving,
   memory controls, error handling and embedding in GUI/FFI applications.
 - [Runnable examples](examples/README.md): **A** HTTP, **B** DNS, **C** TCP; simplest first.
-- [Migrating from 0.1.1](docs/migrating-to-0.2.md): changes to response ownership and resource limits.
+- [Migration notes](docs/migrating-to-0.2.md): upgrading from 0.2.0 or 0.1.1, including trust
+  validation, response ownership and resource limits.
 
 ## Scope and configuration
 
-NBReq provides native HTTP/1.1 and HTTPS, DNS resolution and cleartext TCP on Windows, Linux,
-and Intel/Apple Silicon macOS. TCP does not add TLS or message framing. macOS currently supports
+NBReq provides native HTTP/1.1 and HTTPS, DNS resolution, plain TCP and verified TLS 1.2/1.3
+connections on Windows, Linux, and Intel/Apple Silicon macOS. TCP/TLS provide byte streams;
+the application supplies message framing and any STARTTLS negotiation. macOS currently supports
 the ordinary default DNS configuration; richer split/scoped configurations are rejected explicitly.
 See the [platform scope](docs/getting-started.md#platform-scope) for tested versions and Wine coverage.
 

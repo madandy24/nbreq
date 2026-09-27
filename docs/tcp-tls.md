@@ -10,10 +10,11 @@ such as an IMAP server on port 993. Use an explicit upgrade when the application
 protocol starts in cleartext and negotiates TLS, such as SMTP STARTTLS on port 25.
 NBReq supplies the transport; the application supplies the mail protocol.
 
-The default features include both `native` and `resolver`. TLS requires `native`;
-connecting to a hostname also requires `resolver`. With `native` alone, connect to
-a literal socket address and supply the certificate's DNS name or IP identity
-separately through `TlsOptions`.
+The default features include both `native` and `resolver`. TLS requires `native`,
+which includes internal exact-name DNS for `TcpConnectRequest::hostname` even
+without `resolver`. The `resolver` feature adds the public Resolver API and search
+expansion. A literal socket address can also be paired with a separate certificate
+DNS name or IP identity through `TlsOptions`.
 
 ## Immediate TLS
 
@@ -56,13 +57,17 @@ identities require a matching IP certificate identity and do not send DNS SNI.
 This API has no verification bypass or automatic plaintext fallback. Standalone
 TLS offers no ALPN protocols; HTTPS keeps its existing HTTP policy.
 
-Verified TLS failed in the tested Wine 5.0 environment during platform
-certificate setup or validation. Validate the intended Wine version and trust
-configuration before relying on TLS there.
+Win32 portable-trust tests and verified live IMAPS/SMTP STARTTLS transport probes
+passed on Wine 5.0 (Ubuntu package 5.0-3ubuntu1), using a private Win32 prefix and an
+app-local ProcessPrng shim. The live probes selected `BundledMozilla` and performed
+only unauthenticated greeting/capability/quit exchanges. Platform certificate setup
+or validation still failed there. This does not establish compatibility for all
+Wine versions or SMTP message delivery; validate the intended
+deployment and explicitly selected trust policy.
 
 ## Selecting certificate trust
 
-This development API applies one immutable trust policy to HTTPS (including redirects),
+NBReq 0.2.1 applies one immutable trust policy to HTTPS (including redirects),
 direct TLS and STARTTLS. Choose it explicitly when constructing the Engine:
 
 | `TlsTrust` mode | Roots used | Required feature |
@@ -82,11 +87,31 @@ engine.shutdown()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-For public Mozilla roots, enable `features = ["bundled-roots"]` on the NBReq dependency
-and select `.with_tls_trust(TlsTrust::BundledMozilla)`. The feature implies `native`
-but does not change the default policy. Custom DER roots may be added before or after
-selecting a mode. Malformed roots, an empty supplied-only set, and unsupported selections
-fail during Engine construction, before network work; no platform fallback occurs.
+For public Mozilla roots, enable the feature and explicitly select the policy:
+
+```toml
+[dependencies]
+nbreq = { version = "0.2.1", features = ["bundled-roots"] }
+```
+
+```rust,no_run
+use nbreq::{Engine, EngineConfig, TlsTrust};
+
+let engine = Engine::new(
+    EngineConfig::spawned().with_tls_trust(TlsTrust::BundledMozilla),
+)?;
+engine.shutdown()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The feature implies `native` but does not change the default policy. Custom DER roots
+may be added before or after selecting a mode. They are parsed as WebPKI trust anchors
+before entering the selected verifier, including platform mode. Certificates accepted
+or ignored differently by the OS in 0.2.0 can therefore fail construction in 0.2.1.
+Malformed roots, an empty supplied-only set, and unsupported selections fail during
+Engine construction, before network work; no platform fallback occurs. Backends that
+cannot apply configured trust return `Unsupported`, including public `test-support`
+held/HTTP-only constructors.
 
 Both portable modes use WebPKI for certificate signatures, validity and hostname checks.
 They do not inherit OS enterprise roots, distrust rules or revocation retrieval, and do
@@ -163,8 +188,12 @@ a later close alert would break TLS framing or record sequencing. Bytes already
 accepted by the operating system cannot be recalled. This is never reported as a
 successful finish.
 
-Orderly closure delivers queued authenticated input before EOF. A bare TCP EOF is
-a TLS truncation failure, not a successful TLS close. Abrupt TLS or transport
+Orderly closure delivers queued authenticated input before EOF. On an established TLS
+connection, a bare TCP EOF is a `TlsFailure::Truncated` failure, not a successful TLS close.
+After an authenticated
+peer close and complete local output drain, a final write shutdown reporting an
+already disconnected socket preserves the reply and orderly EOF. Other transport
+errors remain failures. Abrupt TLS or transport
 failure discards unread NBReq queues, following ordinary TCP abort semantics.
 Bytes already returned to the application remain its responsibility. Dropping an
 unfinished connection is abortive, so use the protocol's logout/quit exchange and
