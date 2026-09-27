@@ -4460,7 +4460,7 @@ fn check_stalled_fixture_cleanup(partial_request: bool) {
 }
 
 #[test]
-fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
+fn native_http_spawned_requests_classify_inactivity_and_total_timeouts() {
     let config = EngineConfig::spawned();
     let engine =
         Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
@@ -4475,29 +4475,29 @@ fn native_http_stalled_response_classifies_inactivity_and_total_timeouts() {
 
         let builder = Request::get(format!("http://{address}/timeout"));
         let request = match timeout_kind {
-            TimeoutKind::Inactivity => builder
-                .inactivity_timeout(Duration::from_millis(40))
-                .total_timeout(Duration::from_secs(2)),
+            TimeoutKind::Inactivity => builder.inactivity_timeout(Duration::from_millis(40)),
             TimeoutKind::Total => builder.total_timeout(Duration::from_millis(40)),
             _ => panic!("unexpected timeout fixture kind"),
         }
         .build()
         .expect("timeout request must build");
-        let started = Instant::now();
-        let error = client
-            .execute(request)
-            .expect_err("stalled native HTTP response must time out");
-        let ExecuteError::Failed(error) = error else {
-            panic!("timeout request returned the wrong terminal category");
+        let outcome = client
+            .submit(request)
+            .expect("timeout request must submit")
+            .wait_for(Duration::from_secs(2));
+        let crate::WaitOutcome::Completed(Completion::Failed(error)) = outcome else {
+            panic!(
+                "{timeout_kind:?}: expected request timeout within local wait bound: {outcome:?}"
+            );
         };
         assert_eq!(error.kind(), ErrorKind::Timeout);
         assert_eq!(error.timeout_kind(), Some(timeout_kind));
         let _ = stop.send(());
-        assert!(
-            server.join().expect("timeout fixture must join"),
-            "timeout must occur after the fixture receives a complete request head"
-        );
-        assert!(started.elapsed() < Duration::from_millis(500));
+        // A spawned owner may expire the accepted request before the peer is scheduled.
+        // This smoke test checks classification in either phase and bounded fixture cleanup.
+        // http_adversarial's manual test separately requires a parsed response-head stall
+        // and observes the timeout's socket close before any teardown.
+        let _observed_request = server.join().expect("timeout fixture must join");
     }
     engine.shutdown().expect("native HTTP Engine must stop");
 }

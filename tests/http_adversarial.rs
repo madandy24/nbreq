@@ -1365,19 +1365,127 @@ fn explicit_no_verify_and_unknown_root_share_tls_outcomes() {
 fn total_and_inactivity_timeouts_close_the_stalled_socket() {
     for (backend_name, backend) in test_backends() {
         for timeout_kind in [TimeoutKind::Total, TimeoutKind::Inactivity] {
-            let server = ScriptedServer::start(Script::StallAfterHead);
-            let engine = test_engine(EngineConfig::spawned(), backend);
-            let mut request = Request::get(server.url()).total_timeout(Duration::from_secs(2));
-            request = match timeout_kind {
-                TimeoutKind::Total => request.total_timeout(Duration::from_millis(150)),
-                TimeoutKind::Inactivity => request.inactivity_timeout(Duration::from_millis(150)),
+            // Drive both sides here: a spawned owner can exhaust a short request deadline
+            // before the independently scheduled peer ever sees the request.
+            let listener = bind_loopback();
+            listener.set_nonblocking(true).expect("nonblocking accept");
+            let address = listener.local_addr().expect("timeout listener address");
+            let mut engine = test_engine(EngineConfig::manual(), backend);
+            let timeout = Duration::from_secs(2);
+            let request = Request::get(format!("http://{address}/"));
+            let request = match timeout_kind {
+                TimeoutKind::Total => request.total_timeout(timeout),
+                // The fixture watchdog bounds the test; a competing total clock must not
+                // obscure the inactivity category when the test thread is descheduled.
+                TimeoutKind::Inactivity => request.inactivity_timeout(timeout),
                 _ => unreachable!("the parity fixture only selects portable request clocks"),
             };
-            let result = engine
+            let pending = engine
                 .client()
-                .execute(request.build().expect("timeout request must build"));
-            match result.expect_err("stalled response must time out") {
-                ExecuteError::Failed(error) => {
+                .submit(request.build().expect("timeout request must build"))
+                .unwrap_or_else(|error| panic!("{backend_name}/{timeout_kind:?}: submit: {error}"));
+            assert_eq!(
+                engine.metrics().current().reserved_buffered_body_bytes(),
+                0,
+                "{backend_name}/{timeout_kind:?}: empty GET must reserve no body"
+            );
+
+            // The real request clock starts at submission. Allow setup headroom, but require
+            // proof of the stalled-body phase before deliberately withholding further drive.
+            let setup_deadline = Instant::now() + Duration::from_secs(1);
+            let mut progress = |phase| {
+                assert!(
+                    Instant::now() < setup_deadline,
+                    "{backend_name}/{timeout_kind:?}: setup stalled at {phase}"
+                );
+                assert!(
+                    !pending.is_complete(),
+                    "{backend_name}/{timeout_kind:?}: request ended before {phase}"
+                );
+                engine
+                    .drive(Instant::now() + Duration::from_millis(10))
+                    .unwrap_or_else(|error| {
+                        panic!("{backend_name}/{timeout_kind:?}: setup drive at {phase}: {error}")
+                    });
+            };
+            let mut peer = loop {
+                match listener.accept() {
+                    Ok((peer, _)) => break peer,
+                    Err(error) if error.kind() == IoErrorKind::WouldBlock => progress("accept"),
+                    Err(error) => panic!("{backend_name}/{timeout_kind:?}: accept failed: {error}"),
+                }
+            };
+            peer.set_nonblocking(true)
+                .expect("nonblocking request read");
+            let mut request_head = Vec::new();
+            let mut buffer = [0_u8; 512];
+            while !request_head.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                match peer.read(&mut buffer) {
+                    Ok(0) => panic!(
+                        "{backend_name}/{timeout_kind:?}: client closed before the request head"
+                    ),
+                    Ok(read) => {
+                        request_head.extend_from_slice(&buffer[..read]);
+                        assert!(
+                            request_head.len() <= 8192,
+                            "{backend_name}/{timeout_kind:?}: request head exceeded fixture bound"
+                        );
+                    }
+                    Err(error) if error.kind() == IoErrorKind::WouldBlock => {
+                        progress("request head")
+                    }
+                    Err(error) => {
+                        panic!("{backend_name}/{timeout_kind:?}: request read failed: {error}")
+                    }
+                }
+            }
+            peer.set_nonblocking(false).expect("bounded blocking peer");
+            peer.set_write_timeout(Some(Duration::from_secs(1)))
+                .expect("response write bound");
+            peer.set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("peer close bound");
+            peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n")
+                .expect("stalled response head must write");
+            // On this fresh native buffered GET, parsing Content-Length: 1 reserves one
+            // body byte. Input staging is released before drive returns. With no body sent,
+            // exactly one retained byte proves the client consumed the final response head.
+            while engine.metrics().current().reserved_buffered_body_bytes() != 1 {
+                assert!(
+                    Instant::now() < setup_deadline,
+                    "{backend_name}/{timeout_kind:?}: response head was not parsed"
+                );
+                assert!(
+                    !pending.is_complete(),
+                    "{backend_name}/{timeout_kind:?}: request ended before parsing the head"
+                );
+                engine
+                    .drive(Instant::now() + Duration::from_millis(10))
+                    .unwrap_or_else(|error| {
+                        panic!("{backend_name}/{timeout_kind:?}: response-head drive: {error}")
+                    });
+            }
+            assert!(
+                !pending.is_complete(),
+                "{backend_name}/{timeout_kind:?}: missing body byte must keep request pending"
+            );
+
+            // Reproduce a delayed owner only AFTER observing the desired phase. No queued
+            // response bytes can refresh inactivity when driving resumes.
+            thread::sleep(timeout);
+            let completion_deadline = Instant::now() + Duration::from_secs(2);
+            while !pending.is_complete() {
+                assert!(
+                    Instant::now() < completion_deadline,
+                    "{backend_name}/{timeout_kind:?}: timeout did not complete"
+                );
+                engine
+                    .drive(Instant::now() + Duration::from_millis(10))
+                    .unwrap_or_else(|error| {
+                        panic!("{backend_name}/{timeout_kind:?}: timeout expiry drive: {error}")
+                    });
+            }
+            match pending.wait() {
+                Completion::Failed(error) => {
                     assert_eq!(
                         error.kind(),
                         ErrorKind::Timeout,
@@ -1393,8 +1501,26 @@ fn total_and_inactivity_timeouts_close_the_stalled_socket() {
                     "{backend_name}/{timeout_kind:?}: expected timeout failure, got {other:?}"
                 ),
             }
-            server.wait_for_request();
-            server.wait_for_peer_close();
+            assert_eq!(
+                engine.metrics().current().reserved_buffered_body_bytes(),
+                0,
+                "{backend_name}/{timeout_kind:?}: timeout must release buffered capacity"
+            );
+            // Assert actual EOF/reset while Engine is alive. Fixture or Engine teardown must
+            // not manufacture the close that this timeout is required to cause.
+            match peer.read(&mut buffer) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        IoErrorKind::ConnectionReset
+                            | IoErrorKind::ConnectionAborted
+                            | IoErrorKind::BrokenPipe
+                    ) => {}
+                other => {
+                    panic!("{backend_name}/{timeout_kind:?}: timeout did not close peer: {other:?}")
+                }
+            }
             engine.shutdown().unwrap_or_else(|error| {
                 panic!("{backend_name}/{timeout_kind:?}: Engine failed to stop: {error}")
             });
