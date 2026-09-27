@@ -9,10 +9,10 @@ publication/GDS integration stay separate.
 
 | Item | State |
 | --- | --- |
-| Baseline | Reviewed work pushed to main at `465319b`; validated Rust 1.85 lint corrections ready for follow-up commit |
+| Baseline | Main pushed through `17a097d`; test-watchdog correction in progress |
 | Reviewed work | Documentation and bundled consumer tooling committed; owner approved consumer-lock compatibility policy below |
 | Existing evidence | Documentation/defaults pass: full 30-step Windows verifier, stable/MSRV snippets, strict rustdoc and independent review; runtime/platform/Wine evidence remains in the linked plans |
-| Current stage | Both lint corrections passed full Rust 1.85 and focused stable gates; preparing refreshed candidate |
+| Current stage | Revised test-watchdog passed controlled diagnostics, full stable verifier and Rust 1.85 checks; preparing final candidate refresh |
 | Publication | Not started; v0.2.1 tag absent at initial remote check |
 | Local evidence | `target/release-021-20260927/` (commands, package hashes, consumer results and hosted receipts) |
 
@@ -20,9 +20,9 @@ publication/GDS integration stay separate.
 
 | Gate | Required result | State |
 | --- | --- | --- |
-| R1 Integration | Clean main containing the reviewed branch and accepted notes; no unrelated edits | Integrated and pushed at `465319b`; fixture lint follow-up follows |
-| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | First archive passed; refresh after fixture correction |
-| R3 Hosted acceptance | Eight platform/stable/MSRV verifier jobs plus advisory/license checks; candidate registry-helper consumer matrix | First candidate matrix 8/8 passed; stable CI/advisory/licenses passed; MSRV lint corrections require a new CI run |
+| R1 Integration | Clean main containing the reviewed branch and accepted notes; no unrelated edits | Integrated and pushed at `17a097d`; test-watchdog follow-up follows |
+| R2 Candidate | Exact clean package inventory, links, registry helper identities; packaged TLS regressions and bundle-on/off consumers | Second archive and identical dry-run passed; refresh after watchdog correction |
+| R3 Hosted acceptance | Eight platform/stable/MSRV verifier jobs plus advisory/license checks; candidate registry-helper consumer matrix | Second candidate matrix 8/8 passed and CI 9/10 passed; Intel stable hit global test deadline |
 | R4 Publication | Final dated changelog, exact dry-run/archive identity, publish core 0.2.1, matching tag | Pending |
 | R5 Published acceptance | Registry API/index/download checksums, registry-only matrix, live README/docs.rs/versioned-link checks | Pending |
 | R6 Closeout | Retained evidence, updated checkpoint and clean pushed main | Pending |
@@ -57,6 +57,50 @@ upstream-compatible correction and fresh validation.
   is included in this release operation.
 
 ## Prior evidence
+
+### Second hosted candidate (2026-09-27)
+
+At `17a097dbb7096aeef42b6ab2acd96d63d1d4eb06`, the clean package and
+publication dry run passed with identical archive SHA256
+`f37e9ee96c3d296329364a1f4739812f5304a904ae38ce4375dea4066e7b9e32`.
+Independent review verified all 114 archive members, VCS identity, 111 original
+file hashes, registry helper requirements and raw packaged test/consumer results.
+The [candidate matrix](https://github.com/madandy24/nbreq/actions/runs/36301613573)
+passed eight jobs. [CI](https://github.com/madandy24/nbreq/actions/runs/36301585861)
+passed nine jobs, including every Rust 1.85 job, advisory and license checks.
+
+Intel stable failed the 15-second global deadline in the 65,537-byte TLS test
+with a one-byte receive queue. Its log has no byte/progress count, so it cannot
+distinguish stalled progress from a slow drain. The unchanged test passed in the
+preceding Intel stable run and this run's Intel MSRV job. Do not claim a confirmed
+host-performance cause.
+
+Reviewed test-only repair: preserve exact bytes, one-byte queues, connection
+timers, manual drive behavior, EOF and peer completion; use an eight-second
+no-progress guard refreshed only after a validated byte, plus a 60-second total
+watchdog. Report bytes, total elapsed and progress age on failure. Controlled
+local diagnostic pacing fails the old timer at about 17 seconds and passes the
+new guard with every byte/EOF/peer assertion. Withholding engine drives fails the
+new guard after eight idle seconds at byte 8,192. Normal gates follow before
+committing and refreshing the candidate. The old archive is superseded.
+
+An optional dedicated-Mac source upload was rejected by automatic approval review
+for broad internal source and insufficient destination-specific authorization.
+No upload occurred. Local controlled diagnostics and hosted Intel verification
+remain the validation route; omit the rejected broad archive and bridge files
+from public evidence.
+
+The normal stable verifier passed all 30 steps in 170.316 seconds; exact Rust
+1.85 all-feature/all-target Clippy and 27 TLS integration/API tests passed too.
+All 185 captured source/manifest/lock hashes remained unchanged. Retained narrow
+[watchdog evidence](evidence/nbreq-tls-watchdog-021-20260927.tar.gz): 20 regular
+members, 91,312 bytes, SHA256
+`9572f8bd945c3e06baea815355a6fb6c80e5ea4121e8f5ebf9b4e171ae069d2e`.
+The [artifact index](evidence/nbreq_tls_watchdog_021_artifacts.json) binds all
+controlled probes and passing checks. Superseded package, dry-run and hosted
+receipts are preserved under `target/release-021-20260927/attempt-2/`; its raw
+candidate artifacts again verified 672 tests, 32 negative probes, 144 examples
+and five advisory-clean selected/example locks.
 
 ### First hosted candidate (2026-09-27)
 

@@ -786,13 +786,19 @@ fn one_byte_receive_window_preserves_more_than_64k_of_tls_plaintext() {
         other => panic!("tiny-window TLS connection failed: {other:?}"),
     };
     assert_eq!(peer.event(), Event::Accepted);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    for expected_byte in expected {
+    // A one-byte window requires many Engine passes; bound stalls separately from throughput.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    let mut last_progress = started;
+    for (received, expected_byte) in expected.into_iter().enumerate() {
         let mut byte = [0_u8; 1];
         loop {
+            let now = Instant::now();
             assert!(
-                Instant::now() < deadline,
-                "large one-byte TLS read exceeded test deadline"
+                now < deadline && now.duration_since(last_progress) < Duration::from_secs(8),
+                "large one-byte TLS read exceeded watchdog: bytes={received}/65537, elapsed={:?}, idle={:?}",
+                now.duration_since(started),
+                now.duration_since(last_progress)
             );
             match connection.try_read(&mut byte).expect("one-byte TLS read") {
                 TcpRead::Pending => {
@@ -805,6 +811,7 @@ fn one_byte_receive_window_preserves_more_than_64k_of_tls_plaintext() {
             }
         }
         assert_eq!(byte, [expected_byte]);
+        last_progress = Instant::now();
     }
     let eof_deadline = Instant::now() + Duration::from_secs(8);
     loop {
