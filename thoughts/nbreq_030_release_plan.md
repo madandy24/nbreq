@@ -1,9 +1,9 @@
-# NBReq 0.3.0 pre-release checks
+# NBReq 0.3.0 release checks
 
 Opened 2026-09-29 after the owner accepted the README/example simplification and
 requested standard tests, CI and processes prior to release. Commit/push and
-candidate CI are authorised. Publication and release-tag creation are not part
-of this request; return the concrete candidate and any remaining decision first.
+candidate CI were authorised in that initial request; publication was held until
+the final candidate was accepted. The owner authorised publication on 2026-09-30.
 
 ## Resume checkpoint
 
@@ -11,12 +11,12 @@ of this request; return the concrete candidate and any remaining decision first.
 | --- | --- |
 | Baseline | Initial main ca08014; pre-release proof a64bf92; final dated release source ae7bfeed7cc0bffa0e5e04cf16900496a1b66f08 |
 | Scope | 0.3.0 timeout defaults plus accepted documentation/examples and any demonstrated test correction; no new runtime work |
-| Current stage | Ready to publish: dated source, final checks, independent review and retained evidence complete; awaiting owner instruction to publish/tag |
+| Current stage | Release complete: core 0.3.0 published and tagged; published-consumer matrix, lock audits and live docs accepted; publication evidence retained |
 | Source | Approved example edits plus neutral version prose, versioned guide links and package checks |
-| Local lab | Final: target/release-030-final-20260930; earlier evidence preserved under target/release-030-20260929 |
+| Local lab | Publication: target/release-030-publication-20260930; final source: target/release-030-final-20260930; earlier evidence: target/release-030-20260929 |
 | Canonical package | 414,961 bytes; SHA256 193601f9a1616659afcd1802d3f904dded739a73ffc4786fffb828feb102f242 |
 | Publication checkout | C:/Users/andre/.codex/worktrees/nbreq-release-030/nbreq; clean at exact dated source; reproducible canonical bytes |
-| Publication | Held; no publish or tag action authorised by this pass |
+| Publication | Core 0.3.0 published 2026-09-29 11:51:02 UTC (30 September NZ); exact archive verified; annotated v0.3.0 pushed at ae7bfeed |
 
 ## Gates
 
@@ -27,6 +27,9 @@ of this request; return the concrete candidate and any remaining decision first.
 | P3 Hosted CI | Eight platform/compiler verifier jobs plus advisory and license jobs | Passed 10/10, run 36560189498 on ae7bfeed |
 | P4 Hosted candidate | Eight platform/compiler candidate jobs using published helpers; retained logs, locks and artifact digests | Prior 8/8 run 36555080515 on a64bf92 carried forward by exact package-member comparison: only two documentation files and VCS metadata differ |
 | P5 Review/closeout | Independent acceptance, retained evidence, ready-to-publish checkpoint and remaining decisions | Passed; final readiness and exact retention inventory independently accepted; ten distinct dependency locks freshly audited; final archive below |
+| P6 Publication | Authorised one-shot core upload, exact public API/index/download identity and matching annotated tag | Passed; canonical SHA 193601f9...f242; tag object 62125700...a701 resolves to ae7bfeed |
+| P7 Published consumers | Eight registry-only platform/compiler jobs and selected-lock audits | Passed 8/8 at v0.3.0, run 36564503089; raw results verified and all 14 distinct locks audited |
+| P8 Live docs/closeout | Published README, docs.rs, immutable guide/API links and retained publication evidence | Passed; live README/docs.rs and all 12 targets verified; independent review and exact 105-member evidence archive complete |
 
 Use a single local Cargo lane. Avoid reusing an xtask build directory across
 different source roots: its compile-time workspace path caused a rejected stale
@@ -267,19 +270,57 @@ inventory and archive read-back were checked; the earlier evidence archive is
 referenced by hash rather than duplicated. Failed harness/checkout attempts are
 labelled and retained alongside the accepted final receipts.
 
-### Remaining publication action
+### Publication: 2026-09-30
 
-The dated commit and its package are ready for owner-authorised publication.
-Nothing has been published or tagged for 0.3.0. Keep the attached publication
-checkout at the recorded commit while main advances with excluded notes/evidence.
+Owner authorised publication on 2026-09-30 after accepting the completed final
+checks. This supersedes the earlier publication hold; the earlier review receipts
+remain historical evidence of the pre-publication boundary. Record new commands,
+registry identity, tag, docs and consumer results in the separate lab
+`target/release-030-publication-20260930`, preserving all candidate evidence.
 
-1. Publish only core nbreq 0.3.0 from that exact clean checkout; verify its package
-   identity before upload and bind `v0.3.0` to `ae7bfeed7cc0bffa0e5e04cf16900496a1b66f08`.
-   Support-crate versions remain unchanged; SMTP and GDS deployment are outside
-   this action. Re-confirm the intended date if publication is delayed.
-2. Verify crates.io index/API/download identity, live versioned links and docs.rs.
-   Run the published registry-only consumer matrix and audit its selected locks;
-   retain publication and post-publication evidence separately.
+The authorised Cargo publication completed with exit 0. Both generated archives
+match the approved 414,961-byte package, and all frozen source hashes remain
+unchanged. Public API, sparse index and an independent archive download confirm
+checksum `193601f9a1616659afcd1802d3f904dded739a73ffc4786fffb828feb102f242`,
+version 0.3.0 and non-yanked status. The recorded creation time is
+`2026-09-29T11:51:02.061677Z` (30 September in the owner's New Zealand timezone).
+Annotated tag `v0.3.0`, object `6212570075b0a38ad0277d0b76df82c6a246a701`, is
+pushed and peels to `ae7bfeed7cc0bffa0e5e04cf16900496a1b66f08`.
+
+The [published registry-only matrix](https://github.com/madandy24/nbreq/actions/runs/36564503089)
+passed all eight platform/compiler jobs from that exact tag. Raw artifacts verify
+16 consumer graphs, 752 positive tests, 32 expected feature-absence failures,
+80 optional-timeout API passes and 144 local example executions. Each job used
+the published canonical checksum; no path/patch/replace overrides were used.
+The five distinct published consumer/example locks add four new lock identities
+to the ten previously accepted ones. All 14 passed the fresh cargo-audit scan
+against database `f23b768236fe2880e4cfa167da662cad8ca79240`, with zero unignored
+vulnerabilities or warnings and the existing dev-only exception unchanged.
+
+The first artifact-validation helper call failed before writing acceptance
+receipts because it passed bytes to a TOML parser expecting text. The corrected
+UTF-8 decode and rejected attempt are retained; this was an evidence-harness
+failure, not a consumer-test failure.
+
+Published README content, all four immutable guide/example paths and eight API
+pages passed. [Versioned rustdoc](https://docs.rs/nbreq/0.3.0/nbreq/) is live;
+the initial 404/redirect state was followed by an observed docs.rs queue entry
+and then successful exact-version page checks. Support-crate versions are
+unchanged; SMTP publication and GDS deployment remain separate.
+
+Independent post-publication review accepted the raw results, registry identity,
+tag, live documentation and dependency audits with no unresolved findings. The
+retained [publication evidence](evidence/nbreq-publication-030-20260930.tar.gz)
+contains 105 regular members and 1,711,980 bytes; SHA256
+`37b74dc6c7582486e811fb03fb02993516c49eedd135de8ac1fe19c92fdbe394`.
+Its [artifact index](evidence/nbreq_publication_030_artifacts.json) binds the
+reviewed 104-file payload inventory, canonical package and hosted run. The
+archive read-back matches every planned hash; earlier final-release evidence
+is referenced by hash. Build/cache trees, advisory database checkout, private
+bridge files and credentials are excluded.
+
+This closeout changes only excluded notes/evidence. The release tag remains at
+the exact published source; no dependency constraint or packaged file changes.
 
 Rust 1.85/1.86 consumers retain the documented application-lock workaround;
 newer compilers retain normal dependency resolution. Migration to the 0.3 line

@@ -1,0 +1,15 @@
+{
+  "archive": "nbreq-publication-030-20260930.tar.gz",
+  "sha256": "37b74dc6c7582486e811fb03fb02993516c49eedd135de8ac1fe19c92fdbe394",
+  "bytes": 1711980,
+  "source": "ae7bfeed7cc0bffa0e5e04cf16900496a1b66f08",
+  "canonical_package_sha256": "193601f9a1616659afcd1802d3f904dded739a73ffc4786fffb828feb102f242",
+  "published_run_id": 36564503089,
+  "approved_plan_sha256": "a4187e6327a0e4bd60c5b274505ea0f775c8ba7f72d149573286c73247604c96",
+  "regular_members": 105,
+  "prior_reviewed_release_archive": {
+    "path": "thoughts/evidence/nbreq-release-030-final-20260930.tar.gz",
+    "sha256": "fbceb2cfdf7c4132f6c22bf5431af4c9171adf22ce0a0a5b2c36b47b17438412",
+    "bytes": 3959619
+  }
+}

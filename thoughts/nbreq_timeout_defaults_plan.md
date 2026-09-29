@@ -10,11 +10,11 @@ Explicit `None` must restore the former unbounded HTTP/DNS/TCP timer behaviour.
 | Item | State |
 | --- | --- |
 | Baseline | Clean main `b0e8f1910234fbce9b99e568c93eed12bdc8359f`; 0.2.1 already published |
-| Active stage | Implementation and examples accepted; [final 0.3.0 release checks](nbreq_030_release_plan.md) passed on dated source ae7bfeed; exact clean publication checkout prepared; publication remains separate |
+| Active stage | Complete: core 0.3.0 published and tagged at ae7bfeed; [release checks](nbreq_030_release_plan.md), registry-only consumer matrix and live documentation accepted; publication evidence retained |
 | Team | Sol implementation and tests; independent Astra review/fix/re-review; root owns documentation, versions, source freezes and bridge |
 | Evidence lab | `target/timeout-defaults-20260929/`; retain raw failed and passing results |
 | Priority host | Scaleway Apple Silicon, Intel Mac and Linode bridges verified; prioritise Scaleway before retirement |
-| Release scope | Implement and verify 0.3.0; publication remains a separate release action |
+| Release scope | Core 0.3.0 implementation, verification and separately authorised publication completed; SMTP publication and GDS deployment remain separate |
 
 ## Agreed policy
 
