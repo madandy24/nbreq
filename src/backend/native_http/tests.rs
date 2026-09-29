@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -3014,16 +3015,66 @@ fn connection_queue_preserves_acceptance_timeouts_without_opening_past_the_cap()
 
 #[test]
 fn native_engine_composes_serialization_fragmentation_and_canonical_completion() {
+    #[derive(Default)]
+    struct FixtureProgress {
+        accepted: AtomicBool,
+        request_bytes: AtomicUsize,
+        response_bytes: AtomicUsize,
+    }
+
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture must bind");
     let address = listener.local_addr().expect("HTTP fixture address");
+    let progress = Arc::new(FixtureProgress::default());
+    let server_progress = Arc::clone(&progress);
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("HTTP fixture must accept");
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(20);
+        listener
+            .set_nonblocking(true)
+            .expect("bounded HTTP fixture accept");
+        let mut stream = loop {
+            assert!(
+                Instant::now() < deadline,
+                "HTTP fixture did not accept within 20s"
+            );
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("HTTP fixture accept failed: {error}"),
+            }
+        };
+        // Accepted sockets can inherit Windows' listener mode. Bound blocking I/O separately.
+        stream
+            .set_nonblocking(false)
+            .expect("blocking HTTP fixture I/O");
+        server_progress.accepted.store(true, Ordering::Relaxed);
         let mut received = Vec::new();
         let mut buffer = [0_u8; 256];
         while !received.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = stream.read(&mut buffer).expect("request head must read");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero() && received.len() <= 8192,
+                "HTTP fixture request head stalled after {} bytes in {:?}",
+                received.len(),
+                started.elapsed()
+            );
+            stream
+                .set_read_timeout(Some(remaining))
+                .expect("HTTP fixture request read bound");
+            let read = stream.read(&mut buffer).unwrap_or_else(|error| {
+                panic!(
+                    "HTTP fixture request head failed after {} bytes in {:?}: {error}",
+                    received.len(),
+                    started.elapsed()
+                )
+            });
             assert_ne!(read, 0, "client closed before request head");
             received.extend_from_slice(&buffer[..read]);
+            server_progress
+                .request_bytes
+                .store(received.len(), Ordering::Relaxed);
         }
         let head_end = received
             .windows(4)
@@ -3031,9 +3082,28 @@ fn native_engine_composes_serialization_fragmentation_and_canonical_completion()
             .expect("request head delimiter")
             + 4;
         while received.len() < head_end + 4 {
-            let read = stream.read(&mut buffer).expect("request body must read");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "HTTP fixture request body stalled after {} of 4 bytes in {:?}",
+                received.len() - head_end,
+                started.elapsed()
+            );
+            stream
+                .set_read_timeout(Some(remaining))
+                .expect("HTTP fixture request read bound");
+            let read = stream.read(&mut buffer).unwrap_or_else(|error| {
+                panic!(
+                    "HTTP fixture request body failed after {} of 4 bytes in {:?}: {error}",
+                    received.len() - head_end,
+                    started.elapsed()
+                )
+            });
             assert_ne!(read, 0, "client closed before request body");
             received.extend_from_slice(&buffer[..read]);
+            server_progress
+                .request_bytes
+                .store(received.len(), Ordering::Relaxed);
         }
         assert!(received.starts_with(b"POST /submit?q=1 HTTP/1.1\r\n"));
         assert!(
@@ -3044,10 +3114,27 @@ fn native_engine_composes_serialization_fragmentation_and_canonical_completion()
         assert_eq!(&received[head_end..head_end + 4], b"ping");
 
         let response = b"HTTP/1.1 100 Continue\r\nX-Ignored: yes\r\n\r\nHTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\nX-Final: yes\r\n\r\n4\r\npong\r\n0\r\nX-Trailer: yes\r\n\r\n";
-        for byte in response {
+        for (index, byte) in response.iter().enumerate() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "HTTP fixture response stalled after {index} of {} bytes in {:?}",
+                response.len(),
+                started.elapsed()
+            );
             stream
-                .write_all(std::slice::from_ref(byte))
-                .expect("fragmented response byte must write");
+                .set_write_timeout(Some(remaining))
+                .expect("HTTP fixture response write bound");
+            stream.write_all(std::slice::from_ref(byte)).unwrap_or_else(|error| {
+                panic!(
+                    "HTTP fixture response write failed after {index} of {} bytes in {:?}: {error}",
+                    response.len(),
+                    started.elapsed()
+                )
+            });
+            server_progress
+                .response_bytes
+                .store(index + 1, Ordering::Relaxed);
             thread::yield_now();
         }
     });
@@ -3056,16 +3143,26 @@ fn native_engine_composes_serialization_fragmentation_and_canonical_completion()
     let engine =
         Engine::with_spawned_factory(config.clone(), Box::new(NativeHttpFactory::new(&config)))
             .expect("native HTTP Engine must construct");
+    let client_started = Instant::now();
     let response = engine
         .client()
         .execute(
             Request::post(format!("http://{address}/submit?q=1#ignored"))
                 .body(b"ping".to_vec())
-                .total_timeout(Duration::from_secs(2))
+                .inactivity_timeout(Duration::from_secs(5))
+                .total_timeout(Duration::from_secs(15))
                 .build()
                 .expect("native HTTP request must build"),
         )
-        .expect("native HTTP request must complete");
+        .unwrap_or_else(|error| {
+            panic!(
+                "native HTTP request failed after {:?}: {error:?}; fixture accepted={}, request_bytes={}, response_bytes={}",
+                client_started.elapsed(),
+                progress.accepted.load(Ordering::Relaxed),
+                progress.request_bytes.load(Ordering::Relaxed),
+                progress.response_bytes.load(Ordering::Relaxed)
+            )
+        });
     assert_eq!(response.status(), 201);
     assert_eq!(response.body(), b"pong");
     assert!(response.headers().iter().any(|header| {

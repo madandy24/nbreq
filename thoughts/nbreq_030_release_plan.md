@@ -9,9 +9,9 @@ of this request; return the concrete candidate and any remaining decision first.
 
 | Item | State |
 | --- | --- |
-| Baseline | Local main ca08014; remote main b0e8f19 at preflight |
+| Baseline | Initial main ca08014; first integrated/pushed candidate ae114cf |
 | Scope | 0.3.0 timeout defaults plus accepted documentation/examples and any demonstrated test correction; no new runtime work |
-| Current stage | Full local verifier passed; integrate reviewed source, then exact package and hosted checks |
+| Current stage | Reviewed HTTP fixture correction passed full local verification; commit final candidate and rerun hosted/package gates |
 | Source | Approved example edits plus neutral version prose, versioned guide links and package checks |
 | Local lab | target/release-030-20260929; preserve failed attempts and exact candidate identities |
 | Publication | Held; no publish or tag action authorised by this pass |
@@ -20,10 +20,10 @@ of this request; return the concrete candidate and any remaining decision first.
 
 | Gate | Required result | State |
 | --- | --- | --- |
-| P1 Local/integration | Full 30-stage verifier, clean reviewed commit, pushed main | Local 30/30 passed; commit/push next |
-| P2 Candidate | Exact package inventory/links, registry helpers, unpacked timeout/TLS regressions, independent stable/MSRV consumers, dry run | Pending |
-| P3 Hosted CI | Eight platform/compiler verifier jobs plus advisory and license jobs | Pending |
-| P4 Hosted candidate | Eight platform/compiler candidate jobs using published helpers; retained logs, locks and artifact digests | Pending |
+| P1 Local/integration | Full 30-stage verifier, clean reviewed commit, pushed main | ae114cf pushed; reviewed HTTP follow-up passed local 30/30, final commit next |
+| P2 Candidate | Exact package inventory/links, registry helpers, unpacked timeout/TLS regressions, independent stable/MSRV consumers, dry run | ae114cf package/unpacked tests passed; final candidate must follow HTTP test correction |
+| P3 Hosted CI | Eight platform/compiler verifier jobs plus advisory and license jobs | First run 36552426679: 9/10 passed; Intel Mac MSRV HTTP test correction ready for new run |
+| P4 Hosted candidate | Eight platform/compiler candidate jobs using published helpers; retained logs, locks and artifact digests | First run 36552453885 passed 8/8; final-commit rerun pending |
 | P5 Review/closeout | Independent acceptance, retained evidence, ready-to-publish checkpoint and remaining decisions | Pending |
 
 Use a single local Cargo lane. Avoid reusing an xtask build directory across
@@ -93,6 +93,53 @@ matrix is expected to contain 752 test passes, 32 expected negative probes and
   used for unpacked tests and independent registry-helper consumers. The publish
   dry run must independently produce identical size and SHA256 with clean VCS
   provenance. Future v0.3.0 documentation paths and anchors are checked locally.
+- First integrated candidate: `ae114cf7d97c0764a9465d7399a2014191bedf67`, pushed to main.
+  [CI](https://github.com/madandy24/nbreq/actions/runs/36552426679) and
+  [candidate consumers](https://github.com/madandy24/nbreq/actions/runs/36552453885)
+  were started on that exact commit. The canonical archive is 413,680 bytes,
+  SHA256 `eb17b19648af63a1caa63e5a299aaa656985396206aa639e7e70e628c3e7bf9c`.
+  Independent review verified all 116 members and committed source provenance.
+- The initial unpacked-test launch was incorrectly nested below the workspace;
+  Cargo rejected workspace membership before compilation. Preserve that harness
+  failure in `packaged-tests/`. The corrected `packaged-tests-retry/` extracts the
+  unchanged archive outside the checkout and records its path and hashes. Stable
+  and Rust 1.85 passed timeout/defaults, TCP/TLS, portable trust and TLS shutdown
+  checks. No manifest patch was used to bypass the workspace issue.
+- Hosted Intel Mac/Rust 1.85 failed the protocol-composition HTTP test with an
+  explicit two-second total timeout; 389 other native-only unit tests passed.
+  The failure establishes deadline expiry, not whether progress was slow or
+  stalled. Review requested bounded fixture I/O/progress diagnostics and a more
+  generous finite total watchdog with a shorter inactivity limit, preserving
+  bytewise response writes and every protocol assertion. Registry/dry-run work
+  on the superseded candidate is held while that test correction is prepared.
+- Hosted candidate jobs build independently from the same clean commit. Record
+  their per-job package hash receipts; archive bytes may differ by platform or
+  compiler. The workflow retains those receipts, not the remote archive bytes.
+  Local canonical and dry-run bytes are available for independent hashing; do
+  not claim cross-platform archive byte identity from hosted receipts alone.
+- The first hosted candidate matrix passed all eight jobs. Independent artifact
+  review confirmed 752 consumer tests, 32 expected feature-absence failures,
+  80 executions of the new optional-timeout API case, and 144 local examples.
+  The first standard CI run completed 9/10; only the recorded Intel Mac MSRV HTTP
+  test failed. All raw logs/artifacts are retained under the parent lab.
+- The HTTP test correction preserves all serialization, interim-response, chunked
+  body, status and header assertions. Its fixture has a 20-second absolute bound,
+  the request a 15-second total and 5-second inactivity watchdog, and client errors
+  report acceptance, byte progress and elapsed time. These are test watchdogs,
+  not public API defaults. Runtime code is unchanged.
+- A temporary controlled variant proves a paced response can complete after
+  3.461 seconds (137 bytes) while a silent response fails with Inactivity after
+  5.008 seconds (zero response bytes). The first paced diagnostic accidentally
+  sent `paced` to a branch expecting `pace`; its 0.01-second normal-path pass is
+  explicitly rejected in `attempt-2/rejected-paced-control.json`. Corrected modes
+  fail closed and print their measured outcome. Preserve both original and
+  corrected evidence, including source snapshots and diffs.
+- An intermediate full verifier was interrupted while that diagnostic mismatch
+  was investigated; it is not a completed gate. The accepted test source was
+  restored byte-for-byte (`cee6daf04f48f2061042e0c0e154c4985fab02a59a1b36d6e230d02464e475ec`).
+  The fresh `attempt-2/verify-retry/` then passed all 30 stages in 273.925 seconds
+  with tracked-source hashes unchanged. Only that completed run counts for the
+  final HTTP test correction. Independent review accepted the corrected controls.
 
 ## Related evidence
 
