@@ -1,0 +1,19 @@
+{
+  "archive": "nbreq-release-030-20260929.tar.gz",
+  "sha256": "4cd4e8296f45ac7f39dbbf124a922c7230753f9ebf1f97e055d6511197bf9810",
+  "bytes": 9330295,
+  "source": "a64bf92bd74c871cb77e8eac5c4e9e0cde91a0b1",
+  "canonical_package_sha256": "b84102cabb72214305bddb4f365d093b3fdb17cee7cf3fa2e1620d28f8034b1a",
+  "approved_plan_sha256": "efce2c878b1cae5c5e835a4da87fe17530fcf224fa7905c96329b388f21f5e6d",
+  "regular_members": 464,
+  "prior_timeout_defaults_archive": {
+    "path": "thoughts/evidence/nbreq-timeout-defaults-030-20260929.tar.gz",
+    "sha256": "bd092c6c093c3023fd31b2a06d9a15f205a064603a9e2e3d28984160f50f9a47",
+    "bytes": 1768435
+  },
+  "groups": {
+    "first-attempt": 109,
+    "final": 289,
+    "example-defaults": 65
+  }
+}
