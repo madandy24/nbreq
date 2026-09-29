@@ -33,8 +33,14 @@ precedence. Existing duration-based calls compile unchanged.
 
 HTTP, DNS and TCP timeout setters now accept `Duration`, `Some(Duration)` or
 `None`. Omitting a setting uses its default. Passing `None` explicitly disables
-that timer; it never means "inherit the default". The last setter wins, and
-zero is not a synonym for disabling a timer.
+that timer; it never means "inherit the default". The last setter wins.
+For these optional request timers, a zero duration gives a timer no waiting
+budget once it is active; it does not disable the timer or necessarily fail in
+the builder. Expiry is processed by the Engine, so manual Engines still need
+driving. TCP read/write inactivity applies only after connection establishment;
+the write clock runs only while accepted output awaits progress, and the read
+clock pauses under receive backpressure. TLS retains its separate finite,
+nonzero handshake requirement.
 
 To restore the previous unbounded HTTP policy:
 

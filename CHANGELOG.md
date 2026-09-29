@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-09-30
 
 - Add finite default HTTP connection (10 seconds), useful-progress inactivity
   (30 seconds) and buffered total (120 seconds) deadlines. Fresh streaming HTTP
@@ -14,6 +14,26 @@
   TLS establishment policy, queue limits and memory budgets are unchanged.
 - Document the behavioural migration, direct-TLS combined deadlines and opt-outs.
   This change intentionally requires moving from the 0.2 to the 0.3 release line.
+
+When upgrading:
+
+- Fresh HTTP streams have no total-duration cap, but still have the 30-second
+  inactivity deadline. Quiet long polls or event streams may need
+  `inactivity_timeout(None)`.
+- `StreamRequest::from(request)` preserves the request's options, including a
+  default buffered request's 120-second total. Supplying
+  `.options(RequestOptions::default())` also restores buffered defaults on a stream.
+- Direct TLS uses the earlier of the TCP connect and TLS establishment deadlines.
+  Raising only `TlsOptions::handshake_timeout` leaves the default 10-second TCP
+  cap in place; raise that cap too, or disable it with `connect_timeout(None)`.
+  STARTTLS begins a fresh TLS budget after the existing TCP connection.
+- For these optional HTTP/DNS/TCP request timers, omitting the setter keeps the
+  default; `None` disables the timer. Zero gives an active timer no waiting
+  budget; expiry is processed by the Engine, so manual Engines still need
+  driving. TLS retains its finite, nonzero handshake requirement.
+
+See the [0.3 migration guide](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/migrating-to-0.3.md)
+for examples and the complete timeout policy.
 
 ## 0.2.1 — 2026-09-27
 

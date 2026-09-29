@@ -11,7 +11,7 @@ of this request; return the concrete candidate and any remaining decision first.
 | --- | --- |
 | Baseline | Initial main ca08014; first candidate ae114cf; accepted source a64bf92bd74c871cb77e8eac5c4e9e0cde91a0b1 |
 | Scope | 0.3.0 timeout defaults plus accepted documentation/examples and any demonstrated test correction; no new runtime work |
-| Current stage | All pre-release gates passed and independently reviewed; evidence retained; publication remains a separate action |
+| Current stage | Owner requested dated changelog/gotchas and final checks on 2026-09-30; prepare exact final archive, then stop before publication/tagging |
 | Source | Approved example edits plus neutral version prose, versioned guide links and package checks |
 | Local lab | target/release-030-20260929; preserve failed attempts and exact candidate identities |
 | Canonical package | 414,339 bytes; SHA256 b84102cabb72214305bddb4f365d093b3fdb17cee7cf3fa2e1620d28f8034b1a |
@@ -197,6 +197,18 @@ The archive references the earlier four-host defaults evidence by hash; no build
 trees, private bridge configuration or credentials are included.
 
 ## Publication handoff
+
+### Final documentation pass opened 2026-09-30
+
+The owner accepted the external review and requested the small documentation
+changes followed by final checks, returning when ready to publish. Date the
+changelog 2026-09-30, promote the streaming/inactivity/conversion and direct-TLS
+deadline gotchas, and clarify zero-duration processing in the migration guide.
+No runtime, dependency, SMTP or GDS changes are intended. Use a fresh lab at
+`target/release-030-final-20260930`; preserve the 2026-09-29 evidence unchanged.
+Review the documentation delta, run the required precommit verifier, freeze the
+dated commit, then verify the exact package and dry-run bytes, selected dependency
+graphs and fresh advisories. Publication and release tags remain held.
 
 This is a completed pre-release pass, not a publication receipt. Nothing has
 been published or tagged for 0.3.0. The next release action is:
