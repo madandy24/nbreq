@@ -71,9 +71,12 @@ for name, version in [('nbreq-darwin','0.1.0'),('nbreq-winpoll','0.1.1'),('nbreq
                                   packaged_target=target[len(prefix):]))
         if name == 'nbreq':
             assert not any(n.startswith(prefix+p) for n in names for p in ['thoughts/','tools/','target/'])
-            for doc in ['README.md','SECURITY.md','docs/getting-started.md','docs/migrating-to-0.2.md']:
-                text = archive.extractfile(prefix+doc).read().decode()
-                assert 'currently unreleased' not in text and 'latest published line is 0.1.1' not in text
+            for entry in entries:
+                if entry.name.endswith('.md'):
+                    text = archive.extractfile(entry).read().decode()
+                    # CHANGELOG may retain an undated "unreleased" heading until publication.
+                    assert 'currently unreleased' not in text and '(unreleased)' not in text, entry.name
+                    assert 'latest published line is 0.1.1' not in text, entry.name
             for key, helper, minimum in [('cfg(windows)','nbreq-winpoll','0.1.1'),('cfg(target_os = "macos")','nbreq-darwin','0.1.0')]:
                 dependency = manifest['target'][key]['dependencies'][helper]
                 assert dependency['version'] == minimum and 'path' not in dependency

@@ -4,15 +4,14 @@
 mod echo;
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use nbreq::{Engine, TcpConnectRequest};
 
 fn exchange(engine: &Engine, address: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let request = TcpConnectRequest::literal(address)
-        .connect_timeout(Duration::from_secs(5))
-        .read_inactivity_timeout(Duration::from_secs(10))
-        .write_inactivity_timeout(Duration::from_secs(10))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .read_inactivity_timeout(None) // Default setting. No idle-read deadline.
+        // .write_inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .send_queue_bytes(1024)
         .receive_queue_bytes(1024)
         .build()?;

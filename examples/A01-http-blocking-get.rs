@@ -6,7 +6,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "https://httpbin.org/get".into());
     let engine = Engine::builder().build()?;
-    let result = engine.get(url).call();
+    let result = engine
+        .get(url)
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
+        .call();
     engine.shutdown()?;
     let response = result?;
     println!("HTTP {}", response.status());

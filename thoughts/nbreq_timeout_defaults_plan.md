@@ -10,7 +10,7 @@ Explicit `None` must restore the former unbounded HTTP/DNS/TCP timer behaviour.
 | Item | State |
 | --- | --- |
 | Baseline | Clean main `b0e8f1910234fbce9b99e568c93eed12bdc8359f`; 0.2.1 already published |
-| Active stage | Implementation complete and independently accepted; next is the separate 0.3.0 release pass |
+| Active stage | Implementation committed as ca08014; owner accepted README/example follow-up; [0.3.0 release gates](nbreq_030_release_plan.md) in progress |
 | Team | Sol implementation and tests; independent Astra review/fix/re-review; root owns documentation, versions, source freezes and bridge |
 | Evidence lab | `target/timeout-defaults-20260929/`; retain raw failed and passing results |
 | Priority host | Scaleway Apple Silicon, Intel Mac and Linode bridges verified; prioritise Scaleway before retirement |
@@ -152,14 +152,36 @@ absence of build output, credentials or private bridge payloads. No review block
 remains. The commit containing this checkpoint concludes implementation; it does
 not claim publication or registry-only acceptance.
 
+## README and examples follow-up, 2026-09-29
+
+After implementation commit `ca08014`, the owner requested a simpler README and
+commented example settings at their actual default values. README snippets now
+omit timeout setters. All 19 runnable examples use the library's request defaults
+and show optional timeout lines marked `Default setting`, with fully qualified
+`std::time::Duration` so uncommenting needs no extra import. Streaming HTTP shows
+no total cap; TCP reads show `None`. Local cancellation/callback waits, event-loop
+budgets and fixture-server deadlines stay active and are distinguished from
+library request policy. The two guides' example cross-references were aligned.
+
+Validation is in `target/example-defaults-20260929/`: format, example lint/build,
+18 local example executions, native-only and Rust 1.85 example compilation,
+doctests and scratch compilation of all 53 commented timeout settings enabled.
+All checks passed: 19 examples build, all 18 local executions pass, and all 53
+commented settings compile when enabled together in scratch copies. Independent
+review accepted the source, documentation and all eight verification results,
+including 38 doctests, after correcting a stale guide cross-reference. This follow-up
+was accepted by the owner for integration and pre-release checks; no new runtime
+source changes, remote test pass or release claim is implied. The earlier full
+platform matrix continues to describe implementation commit `ca08014`.
+
 ## Release follow-up
 
-This implementation pass does not publish 0.3.0. From the reviewed commit, the
-release pass should push and check CI, freeze and inspect the actual package,
-exercise packaged consumers (including the documented MSRV dependency-selection
-route), then explicitly approve publication/tagging. The current documentation
-deliberately says "unreleased" and uses main-branch links; align those with the
-release when publishing. No support-crate version change is required by this work.
+This implementation pass does not publish 0.3.0. The owner authorised integration,
+push, CI and package checks, tracked in the [0.3.0 release plan](nbreq_030_release_plan.md).
+Publication/tagging still requires a separate decision. Current guides now use
+neutral 0.3.0 wording and immutable v0.3.0 links; their paths are checked locally
+before that tag exists. The changelog retains an undated unreleased heading until
+publication is authorised. No support-crate version change is required by this work.
 
 Applications on `nbreq = "0.2"` remain on that compatible line. Adoption of 0.3
 is deliberate and should review the migration guide, especially long polling,

@@ -1,6 +1,6 @@
 # Upgrading to NBReq 0.3.0
 
-Version 0.3.0 is currently unreleased. It introduces finite defaults for common
+Version 0.3.0 introduces finite defaults for common
 network operations. Existing `"0.2"` Cargo requirements stay on the 0.2 line;
 select `nbreq = "0.3.0"` when adopting this release.
 
@@ -111,6 +111,6 @@ certificate checks during joined shutdown.
 
 Queue sizes, body limits, connection limits, DNS selection/retry policy, TLS
 verification and dependency requirements are unchanged. See the
-[defaults table](https://github.com/madandy24/nbreq/blob/main/docs/getting-started.md#timeout-and-queue-defaults)
+[defaults table](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/getting-started.md#timeout-and-queue-defaults)
 for the complete policy, and the [0.2 migration guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/migrating-to-0.2.md)
 for earlier API changes.

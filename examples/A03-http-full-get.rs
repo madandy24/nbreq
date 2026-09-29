@@ -1,5 +1,4 @@
 //! Explicit requests and engine reuse: `cargo run --example A03-http-full-get -- [URL]`.
-use std::time::Duration;
 
 use nbreq::{Engine, Request};
 
@@ -8,9 +7,9 @@ fn fetch_twice(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Err
     for _ in 0..2 {
         let request = Request::get(url)
             .header("Accept", "application/json")
-            .connect_timeout(Duration::from_secs(5))
-            .inactivity_timeout(Duration::from_secs(10))
-            .total_timeout(Duration::from_secs(15))
+            // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+            // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+            // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
             .build()?;
         let response = client.execute(request)?;
         // HTTP 4xx/5xx are responses too. Transport failures return Err.

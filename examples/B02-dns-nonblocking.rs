@@ -13,7 +13,7 @@ fn lookup(engine: &Engine, name: &str) -> Result<(), Box<dyn std::error::Error>>
         .cache_mode(CacheMode::Use)
         .max_results(16)
         .use_search_suffixes(false) // Exact name; search expansion is an explicit opt-in.
-        .total_timeout(Duration::from_secs(10))
+        // .total_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .build()?;
     let pending = engine.resolver().submit(request)?;
     println!("lookup submitted; ready now: {}", pending.is_complete());

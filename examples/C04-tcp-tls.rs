@@ -3,21 +3,21 @@
 #[path = "support/tls_echo.rs"]
 mod tls_echo;
 
-use std::time::Duration;
-
 use nbreq::{Engine, EngineConfig, TcpConnectRequest, TlsOptions, TlsTrust};
 
 fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn std::error::Error>> {
     let request = TcpConnectRequest::literal(server.address())
-        .connect_timeout(Duration::from_secs(5))
-        .read_inactivity_timeout(Duration::from_secs(10))
-        .write_inactivity_timeout(Duration::from_secs(10))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .read_inactivity_timeout(None) // Default setting. No idle-read deadline.
+        // .write_inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .send_queue_bytes(1024)
         .receive_queue_bytes(1024)
         .build()?;
     // The socket endpoint is a literal address. The TLS identity is selected explicitly and
     // checked against the generated certificate using this Engine's private CA root.
-    let tls = TlsOptions::new("127.0.0.1")?.handshake_timeout(Duration::from_secs(5));
+    let tls = TlsOptions::new("127.0.0.1")?;
+    // Default setting; uncomment to change:
+    // let tls = tls.handshake_timeout(std::time::Duration::from_secs(10));
     // Connect TCP and complete the verified TLS handshake before sending application bytes.
     let mut connection = engine.tcp_connector().execute_tls(request, tls)?;
     connection.send(tls_echo::MESSAGE.to_vec())?;

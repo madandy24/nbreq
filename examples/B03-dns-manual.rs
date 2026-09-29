@@ -1,5 +1,4 @@
 //! Drive a lookup yourself: `cargo run --example B03-dns-manual -- [HOSTNAME]`.
-use std::time::Duration;
 
 use nbreq::{EngineBuilder, ResolveCompletion, ResolveRequest};
 
@@ -8,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "example.com".into());
     let request = ResolveRequest::hostname(name)
-        .total_timeout(Duration::from_secs(10))
+        // .total_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .build()?;
     let mut engine = EngineBuilder::manual().build()?;
     let pending = engine.resolver().submit(request)?;

@@ -13,8 +13,8 @@ use fixture::{
 };
 use nbreq::{
     Engine, EngineConfig, ErrorKind, ExecuteError, LimitKind, TcpConnectRequest, TcpFinishStatus,
-    TcpRead, TcpSendErrorKind, TcpStreamError, TlsConnectCompletion, TlsConnectWaitOutcome,
-    TlsConnection, TlsFailure, TlsOptions, TransportStage,
+    TcpRead, TcpSendErrorKind, TcpStreamError, TimeoutKind, TlsConnectCompletion,
+    TlsConnectWaitOutcome, TlsConnection, TlsFailure, TlsOptions, TransportStage,
 };
 
 fn request(peer: &TestPeer) -> nbreq::TcpConnectRequest {
@@ -526,20 +526,61 @@ fn manual_engine_drives_tls_handshake_and_nonblocking_application_io() {
 }
 
 #[test]
-fn silent_peer_handshake_times_out_and_cancel_is_terminal() {
+fn silent_peer_tls_establishment_times_out_and_cancel_is_terminal() {
     let identity = TestIdentity::localhost();
     let peer = TestPeer::spawn(&identity, PeerOptions::new(Exchange::SilentHandshake));
     let engine = verified_engine(&identity);
     let result = engine.tcp_connector().execute_tls(
-        request(&peer),
+        TcpConnectRequest::literal(peer.address)
+            .connect_timeout(None)
+            .read_inactivity_timeout(None)
+            .write_inactivity_timeout(None)
+            .build()
+            .expect("TLS-only establishment deadline request"),
         TlsOptions::new("127.0.0.1")
             .expect("TLS identity")
             .handshake_timeout(Duration::from_millis(150)),
     );
-    assert_eq!(peer.event(), Event::Accepted);
+    // The direct TLS deadline begins at admission, so it may expire before TCP acceptance.
     match result {
-        Err(ExecuteError::Failed(error)) => assert_eq!(error.kind(), ErrorKind::Timeout),
+        Err(ExecuteError::Failed(error)) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Connect));
+        }
         other => panic!("silent TLS peer should time out: {other:?}"),
+    }
+    assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
+    assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
+    drop(peer);
+    engine.shutdown().expect("TLS Engine shutdown");
+
+    let identity = TestIdentity::localhost();
+    let peer = TestPeer::spawn(&identity, PeerOptions::new(Exchange::SilentHandshake));
+    let engine = verified_engine(&identity);
+    let plain = engine
+        .tcp_connector()
+        .execute(
+            TcpConnectRequest::literal(peer.address)
+                .build()
+                .expect("plain request"),
+        )
+        .expect("plain connection before TLS upgrade");
+    assert_eq!(
+        peer.event(),
+        Event::Accepted,
+        "upgrade peer accepted plain TCP"
+    );
+    let result = plain.into_tls(
+        TlsOptions::new("127.0.0.1")
+            .expect("TLS identity")
+            .handshake_timeout(Duration::from_millis(150)),
+    );
+    match result {
+        Err(ExecuteError::Failed(error)) => {
+            assert_eq!(error.kind(), ErrorKind::Timeout);
+            assert_eq!(error.timeout_kind(), Some(TimeoutKind::Connect));
+        }
+        other => panic!("accepted silent TLS upgrade should time out: {other:?}"),
     }
     assert_eq!(engine.metrics().current().standalone_tcp_connections(), 0);
     assert_eq!(engine.metrics().current().reserved_tcp_queue_bytes(), 0);
@@ -553,7 +594,11 @@ fn silent_peer_handshake_times_out_and_cancel_is_terminal() {
         .tcp_connector()
         .submit_tls(request(&peer), options("127.0.0.1"))
         .expect("TLS submit before cancellation");
-    assert_eq!(peer.event(), Event::Accepted);
+    assert_eq!(
+        peer.event(),
+        Event::Accepted,
+        "cancellation peer accepted TCP"
+    );
     pending.handle().cancel().expect("cancel TLS handshake");
     match pending.wait_for(Duration::from_secs(3)) {
         TlsConnectWaitOutcome::Completed(TlsConnectCompletion::Cancelled) => {}

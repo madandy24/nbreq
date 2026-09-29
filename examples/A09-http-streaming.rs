@@ -1,6 +1,5 @@
 //! Bounded upload and incremental download: `cargo run --example A09-http-streaming -- [URL]`.
 use std::io::Write;
-use std::time::Duration;
 
 use nbreq::{Engine, StreamRequest, UploadBody};
 
@@ -11,7 +10,9 @@ fn exchange(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Error>
         .body_stream(body)
         .max_request_body_bytes(1024)
         .max_response_body_bytes(64 * 1024)
-        .total_timeout(Duration::from_secs(15))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        // .total_timeout(None) // Default setting.
         .build()?;
     let mut response = engine.client().submit_stream(request)?;
     // push() waits for upload capacity on a spawned Engine. finish() terminates the body.

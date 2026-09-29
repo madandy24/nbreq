@@ -1,5 +1,4 @@
 //! Submit without waiting: `cargo run --example A05-http-nonblocking -- [URL]`.
-use std::time::Duration;
 
 use nbreq::{Completion, Engine, Request};
 
@@ -7,13 +6,12 @@ fn fetch(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let client = engine.client();
     let mut pending = Vec::new();
     for _ in 0..2 {
-        pending.push(
-            client.submit(
-                Request::get(url)
-                    .total_timeout(Duration::from_secs(15))
-                    .build()?,
-            )?,
-        );
+        let request = Request::get(url)
+            // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+            // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+            // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
+            .build()?;
+        pending.push(client.submit(request)?);
     }
     // Both requests can progress while the application does other work.
     println!("submitted two requests; application is free to do other work");

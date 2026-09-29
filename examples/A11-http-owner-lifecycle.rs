@@ -42,7 +42,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "https://httpbin.org/get".into());
     let request = Request::get(&url)
-        .total_timeout(Duration::from_secs(15))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
         .build()?;
     let mut service = Service::new()?;
     let client = service.client();

@@ -1,6 +1,5 @@
 //! Budget and body ownership: `cargo run --example A10-http-memory-limits -- [URL]`.
 use std::num::NonZeroUsize;
-use std::time::Duration;
 
 use nbreq::{Engine, ErrorKind, ExecuteError, LimitKind};
 
@@ -8,7 +7,9 @@ fn fetch(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let result = engine
         .get(url)
         .max_response_body_bytes(1024 * 1024)
-        .total_timeout(Duration::from_secs(15))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
         .call();
     if let Err(ExecuteError::Submission(error) | ExecuteError::Failed(error)) = &result {
         if error.kind() == ErrorKind::Limit {

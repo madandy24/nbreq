@@ -13,9 +13,9 @@ use nbreq::{
 fn exchange(engine: &mut Engine, address: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let pending = engine.tcp_connector().submit(
         TcpConnectRequest::literal(address)
-            .connect_timeout(Duration::from_secs(5))
-            .read_inactivity_timeout(Duration::from_secs(10))
-            .write_inactivity_timeout(Duration::from_secs(10))
+            // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+            // .read_inactivity_timeout(None) // Default setting. No idle-read deadline.
+            // .write_inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
             .send_queue_bytes(1024)
             .receive_queue_bytes(1024)
             .build()?,
@@ -32,6 +32,7 @@ fn exchange(engine: &mut Engine, address: SocketAddr) -> Result<(), Box<dyn std:
     let mut buffer = [0_u8; 256];
     let mut finished = false;
     let mut eof = false;
+    // Bound this demonstration's event loop; this is not a TCP idle timeout.
     let deadline = Instant::now() + Duration::from_secs(15);
     while !finished || !eof {
         if Instant::now() >= deadline {

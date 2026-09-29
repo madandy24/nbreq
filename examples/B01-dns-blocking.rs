@@ -5,7 +5,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "example.com".into());
-    let request = ResolveRequest::hostname(name).build()?;
+    let request = ResolveRequest::hostname(name)
+        // .total_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        .build()?;
     let engine = Engine::builder().build()?;
     let result = engine.resolver().execute(request);
     engine.shutdown()?;

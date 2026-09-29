@@ -27,6 +27,7 @@ fn exchange(engine: &Engine, request: TcpConnectRequest) -> Result<(), Box<dyn s
     let mut buffer = [0_u8; 256];
     let mut finished = false;
     let mut eof = false;
+    // Bound this demonstration's polling loop; this is not a TCP idle timeout.
     let deadline = Instant::now() + Duration::from_secs(15);
     while !finished || !eof {
         if Instant::now() >= deadline {
@@ -80,9 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => TcpConnectRequest::literal(server.as_ref().ok_or("missing echo server")?.address()),
     };
     let request = builder
-        .connect_timeout(Duration::from_secs(5))
-        .read_inactivity_timeout(Duration::from_secs(10))
-        .write_inactivity_timeout(Duration::from_secs(10))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .read_inactivity_timeout(None) // Default setting. No idle-read deadline.
+        // .write_inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .send_queue_bytes(8)
         .receive_queue_bytes(8)
         .build()?;

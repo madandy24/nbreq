@@ -3,8 +3,6 @@
 #[path = "support/tls_echo.rs"]
 mod tls_echo;
 
-use std::time::Duration;
-
 use nbreq::{Engine, EngineConfig, TcpConnectRequest, TcpConnection, TlsOptions, TlsTrust};
 
 fn read_line(connection: &mut TcpConnection) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -26,9 +24,9 @@ fn read_line(connection: &mut TcpConnection) -> Result<Vec<u8>, Box<dyn std::err
 
 fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn std::error::Error>> {
     let request = TcpConnectRequest::literal(server.address())
-        .connect_timeout(Duration::from_secs(5))
-        .read_inactivity_timeout(Duration::from_secs(10))
-        .write_inactivity_timeout(Duration::from_secs(10))
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .read_inactivity_timeout(None) // Default setting. No idle-read deadline.
+        // .write_inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
         .send_queue_bytes(1024)
         .receive_queue_bytes(1024)
         .build()?;
@@ -44,7 +42,9 @@ fn exchange(engine: &Engine, server: &tls_echo::Server) -> Result<(), Box<dyn st
 
     // `into_tls` consumes the unsplit plain connection. There is no simultaneous cleartext
     // handle or fallback after the handshake starts.
-    let tls = TlsOptions::new("127.0.0.1")?.handshake_timeout(Duration::from_secs(5));
+    let tls = TlsOptions::new("127.0.0.1")?;
+    // Default setting; uncomment to change:
+    // let tls = tls.handshake_timeout(std::time::Duration::from_secs(10));
     // The same socket is ready for protected application bytes after verification succeeds.
     let mut secure = plain.into_tls(tls)?;
     secure.send(tls_echo::MESSAGE.to_vec())?;

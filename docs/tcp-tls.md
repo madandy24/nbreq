@@ -1,6 +1,6 @@
 # TLS for TCP connections
 
-This guide describes the TCP TLS API in NBReq 0.3.0 (unreleased). Start with
+This guide describes the TCP TLS API in NBReq 0.3.0. Start with
 [C04: direct TCP+TLS](../examples/C04-tcp-tls.rs) or
 [C05: upgrade TCP to TLS](../examples/C05-tcp-starttls.rs). Both use local verified
 TLS peers; see the [example commands and expected output](../examples/README.md#c--tcp).
@@ -52,7 +52,7 @@ deadline. Without that explicit read setting, a quiet established connection rem
 Pending output has a default thirty-second write inactivity deadline; that timer is inactive
 when no accepted output awaits progress. See [timeout and queue defaults](getting-started.md#timeout-and-queue-defaults) for
 the defaults and override methods; [C04](../examples/C04-tcp-tls.rs) and
-[C05](../examples/C05-tcp-starttls.rs) show explicit timeout and queue settings.
+[C05](../examples/C05-tcp-starttls.rs) show commented timeout defaults and explicit queue settings.
 
 Verification uses the Engine's selected trust policy, defaulting to platform trust
 and any additional CA roots. Certificate signatures, validity and server identity remain checked. IP

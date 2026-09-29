@@ -1,4 +1,4 @@
-"""Check 0.2 candidates with registry helpers, or the published release with no overrides."""
+"""Check NBReq candidates with registry helpers, or the published release with no overrides."""
 import argparse
 import hashlib
 import json

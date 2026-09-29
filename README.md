@@ -26,7 +26,7 @@ drive networking from your own event loop. No async runtime required.
 
 Requires Rust 1.85 or newer; Rust 1.85/1.86 may need the documented
 [dependency selection](docs/getting-started.md#rust-version-and-dependency-selection).
-This checkout targets NBReq 0.3.0 (unreleased).
+These examples target NBReq 0.3.0.
 
 ```toml
 [dependencies]
@@ -121,11 +121,9 @@ See the [DNS examples](examples/README.md#b--dns).
 With an echo server listening on `127.0.0.1:9000`:
 
 ```rust
-use std::time::Duration;
 use nbreq::TcpConnectRequest;
 
 let request = TcpConnectRequest::literal("127.0.0.1:9000".parse()?)
-    .read_inactivity_timeout(Duration::from_secs(10))
     .build()?;
 let mut connection = engine.tcp_connector().execute(request)?;
 
@@ -137,8 +135,8 @@ while let Some(count) = connection.read(&mut buffer)? {
 }
 ```
 
-This echo exchange opts into a read deadline while awaiting its reply; idle connections otherwise
-stay open by default. TCP supports hostname connections, separate reader/writer halves, cancellation, bounded queues
+Quiet established connections stay open by default. TCP supports hostname connections,
+separate reader/writer halves, cancellation, bounded queues
 and nonblocking I/O. The [TCP examples](examples/README.md#c--tcp) start their own local echo server,
 so you can run them without setting one up.
 

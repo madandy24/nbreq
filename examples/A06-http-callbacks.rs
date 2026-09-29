@@ -8,7 +8,9 @@ fn fetch(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let handle = engine.client().start(
         Request::get(url)
-            .total_timeout(Duration::from_secs(15))
+            // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+            // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+            // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
             .build()?,
         move |completion| {
             // Callback workers belong to the Engine. Keep callbacks short; hand work back.
@@ -16,6 +18,7 @@ fn fetch(engine: &Engine, url: &str) -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     println!("request started; awaiting the callback's message");
+    // Application wait budget, separate from the request's default deadlines.
     let result = receiver.recv_timeout(Duration::from_secs(20));
     if result.is_err() {
         handle.cancel()?;

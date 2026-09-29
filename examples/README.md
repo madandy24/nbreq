@@ -4,11 +4,14 @@ Each numbered source file is a complete program. Read each group from the top: A
 B is DNS, and C is TCP. The default Cargo features enable all three groups.
 Run these commands from the NBReq repository with Rust 1.85 or newer:
 
-The simplest GET and DNS examples use the 0.3.0 timeout defaults. Other programs
-show explicit overrides. HTTP/DNS/TCP timeout setters also accept `None` to
-disable a timer. Quiet established TCP/TLS connections have no default read
-deadline; echo and greeting examples opt into one for their request/response
-exchange. See [defaults and opt-outs](../docs/getting-started.md#timeout-and-queue-defaults).
+The examples use the 0.3.0 request timeout defaults. Commented timeout lines marked
+`Default setting` show the values already in effect: uncomment a line and change
+its value to override it. The fully qualified `std::time::Duration` works without
+adding an import. HTTP/DNS/TCP setters also accept `None` to disable a timer;
+quiet established TCP/TLS connections have no default read deadline.
+Local waits, event-loop intervals and fixture-server deadlines remain active:
+these serve the demonstration rather than configure request timeouts.
+See [defaults and opt-outs](../docs/getting-started.md#timeout-and-queue-defaults).
 
 ```sh
 cargo run --example A01-http-blocking-get

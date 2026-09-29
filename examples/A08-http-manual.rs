@@ -4,11 +4,12 @@ use std::time::{Duration, Instant};
 use nbreq::{Completion, Engine, EngineBuilder, Request};
 
 fn fetch(engine: &mut Engine, url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let pending = engine.client().submit(
-        Request::get(url)
-            .total_timeout(Duration::from_secs(15))
-            .build()?,
-    )?;
+    let request = Request::get(url)
+        // .connect_timeout(std::time::Duration::from_secs(10)) // Default setting.
+        // .inactivity_timeout(std::time::Duration::from_secs(30)) // Default setting.
+        // .total_timeout(std::time::Duration::from_secs(120)) // Default setting.
+        .build()?;
+    let pending = engine.client().submit(request)?;
     while !pending.is_complete() {
         // Process application events here. Each drive pass may wait up to this deadline.
         engine.drive(Instant::now() + Duration::from_millis(10))?;
