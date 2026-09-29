@@ -1,0 +1,17 @@
+{
+  "archive": "nbreq-release-030-final-20260930.tar.gz",
+  "sha256": "fbceb2cfdf7c4132f6c22bf5431af4c9171adf22ce0a0a5b2c36b47b17438412",
+  "bytes": 3959619,
+  "source": "ae7bfeed7cc0bffa0e5e04cf16900496a1b66f08",
+  "canonical_package_sha256": "193601f9a1616659afcd1802d3f904dded739a73ffc4786fffb828feb102f242",
+  "approved_plan_sha256": "a984121d034ebd7563eeaf30f1d03107d4fbeadb7fa026099f2afaccc1f577bb",
+  "regular_members": 248,
+  "prior_reviewed_release_archive": {
+    "path": "thoughts/evidence/nbreq-release-030-20260929.tar.gz",
+    "sha256": "4cd4e8296f45ac7f39dbbf124a922c7230753f9ebf1f97e055d6511197bf9810",
+    "bytes": 9330295
+  },
+  "groups": {
+    "final-freeze": 247
+  }
+}
