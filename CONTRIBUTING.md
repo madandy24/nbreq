@@ -10,7 +10,7 @@ Cave Rock Software Limited and the public grant is `MIT OR Apache-2.0`. The publ
 `https://github.com/madandy24/nbreq`. The published implementation-detail support crates are
 `nbreq-winpoll 0.1.1` and `nbreq-darwin 0.1.0`; core releases remain explicit, reviewed maintainer
 actions. The separate `nbreq-smtp 0.1.0` workspace crate remains unpublished and requires core
-NBReq 0.2.1 or newer within the compatible line.
+NBReq 0.3.0 or newer within the compatible line.
 
 Unless explicitly stated otherwise, any contribution intentionally submitted for inclusion in
 NBReq is licensed under the same `MIT OR Apache-2.0` terms, without additional conditions.

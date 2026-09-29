@@ -4,7 +4,7 @@ Unpublished verification tooling. `run.py` copies these tests into an independen
 Cargo workspace and unpacks the supplied normalized `.crate` files there. It never uses GDS,
 imports private nbreq modules, changes host networking or publishes anything.
 
-Pass `--package PATH/nbreq-0.2.1.crate --darwin-package PATH/nbreq-darwin-0.1.0.crate
+Pass `--package PATH/nbreq-0.3.0.crate --darwin-package PATH/nbreq-darwin-0.1.0.crate
 --winpoll-package PATH/nbreq-winpoll-0.1.1.crate
 --out NEW_EVIDENCE_DIRECTORY`, optionally `--offline` and `--toolchains stable 1.85.0`.
 The output directory must be new. It preserves source, dependency locks, commands and logs;
@@ -94,7 +94,7 @@ macOS validation. Both scripts require Python 3.11 or later and bound each Cargo
 `registry.py --mode candidate --package EXACT_ROOT_ARCHIVE --out NEW_DIRECTORY` tests a
 normalized root candidate with Darwin/winpoll resolved only from crates.io. Its sole local
 override is the unpublished root package. `--mode published --out NEW_DIRECTORY` downloads
-nbreq 0.2.1 and tests it with no local overrides. Both modes check Cargo metadata and lock
+nbreq 0.3.0 and tests it with no local overrides. Both modes check Cargo metadata and lock
 checksums, fresh current-compiler and compatibility-selected MSRV consumers with and without
 Mio coexistence, feature boundaries,
 the optional Mozilla-root graph and all 18 local example cases. The bundled-roots mode runs on

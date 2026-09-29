@@ -1,7 +1,7 @@
 # NBReq SMTP sender
 
 `nbreq-smtp` sends one prepared message over NBReq's verified TCP/TLS transport. It remains a
-separate, unpublished workspace crate at version 0.1.0, requiring NBReq 0.2.1 or a compatible
+separate, unpublished workspace crate at version 0.1.0, requiring NBReq 0.3.0 or a compatible
 newer version. It supports required STARTTLS and implicit TLS. It has no plaintext fallback,
 automatic retry, authentication, SIZE, 8BITMIME, SMTPUTF8, pipelining, MIME builder, mail reader,
 or server. Its release readiness is independent of the core NBReq release.
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 SMTP phase and overall deadlines are checked when `poll` runs. Leaving an operation unpolled does not schedule an SMTP watchdog or protocol progress; underlying NBReq transport deadlines still run while its Engine progresses. Cancellation aborts a pending operation and reports the appropriate `NotAccepted` or `Uncertain` state. Dropping an operation aborts its pending connect or live connection. `send_blocking` is available only with a spawned Engine.
 
-The command-line [send_message example](https://github.com/madandy24/nbreq/blob/v0.2.1/smtp/examples/send_message.rs) requires every destination and envelope argument explicitly:
+The command-line [send_message example](https://github.com/madandy24/nbreq/blob/main/smtp/examples/send_message.rs) requires every destination and envelope argument explicitly:
 
 ```text
 cargo run -p nbreq-smtp --example send_message -- HOST PORT starttls|implicit EHLO_NAME FROM TO MESSAGE_FILE
@@ -85,7 +85,7 @@ selected supplied-only or bundled Mozilla roots. Selecting portable trust retain
 signature, validity and DNS/IP identity checks; it does not add OS enterprise trust or revocation
 retrieval. Enabling `bundled-roots` alone does not change the policy. Configure the NBReq Engine
 before creating `SmtpClient`; see the
-[trust configuration guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#selecting-certificate-trust).
+[trust configuration guide](https://github.com/madandy24/nbreq/blob/main/docs/tcp-tls.md#selecting-certificate-trust).
 The verified identity is independent of a literal socket address. After STARTTLS, the client
 discards pre-upgrade capabilities and sends EHLO again. No mail transaction command is sent if
 the required upgrade fails.

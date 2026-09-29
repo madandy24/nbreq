@@ -17,7 +17,7 @@ test-support = ["nbreq/test-support"]
 v020 = []
 
 [dependencies]
-nbreq = { version = "=0.2.1", default-features = false }
+nbreq = { version = "=0.3.0", default-features = false }
 
 [[bin]]
 name = "resolver_probe"

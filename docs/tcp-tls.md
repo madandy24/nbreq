@@ -1,6 +1,6 @@
 # TLS for TCP connections
 
-This guide describes the TCP TLS API in NBReq 0.2.1. Start with
+This guide describes the TCP TLS API in NBReq 0.3.0 (unreleased). Start with
 [C04: direct TCP+TLS](../examples/C04-tcp-tls.rs) or
 [C05: upgrade TCP to TLS](../examples/C05-tcp-starttls.rs). Both use local verified
 TLS peers; see the [example commands and expected output](../examples/README.md#c--tcp).
@@ -48,7 +48,9 @@ response. TCP and TLS do not supply message boundaries.
 
 This example uses the default ten-second TLS establishment deadline and Engine queue windows.
 It keeps a read inactivity timeout because waiting for the application greeting has no default
-deadline. See [timeout and queue defaults](getting-started.md#timeout-and-queue-defaults) for
+deadline. Without that explicit read setting, a quiet established connection remains open.
+Pending output has a default thirty-second write inactivity deadline; that timer is inactive
+when no accepted output awaits progress. See [timeout and queue defaults](getting-started.md#timeout-and-queue-defaults) for
 the defaults and override methods; [C04](../examples/C04-tcp-tls.rs) and
 [C05](../examples/C05-tcp-starttls.rs) show explicit timeout and queue settings.
 
@@ -68,7 +70,7 @@ deployment and explicitly selected trust policy.
 
 ## Selecting certificate trust
 
-NBReq 0.2.1 applies one immutable trust policy to HTTPS (including redirects),
+NBReq applies one immutable trust policy to HTTPS (including redirects),
 direct TLS and STARTTLS. Choose it explicitly when constructing the Engine:
 
 | `TlsTrust` mode | Roots used | Required feature |
@@ -92,7 +94,7 @@ For public Mozilla roots, enable the feature and explicitly select the policy:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2.1", features = ["bundled-roots"] }
+nbreq = { version = "0.3.0", features = ["bundled-roots"] }
 ```
 
 ```rust,no_run
@@ -169,7 +171,10 @@ operations drives the Engine implicitly.
 
 The handshake timeout defaults to ten seconds, starts at admission, and includes
 queueing for certificate verification. For immediate TLS it also covers DNS and
-TCP establishment, with an earlier TCP connect deadline taking precedence. A
+TCP establishment, with an earlier TCP connect deadline taking precedence. TCP now also defaults
+to ten seconds: when increasing the TLS deadline, increase TCP's `connect_timeout` as well or
+set it to `None`. This disables only the TCP bound; TLS retains its finite establishment budget.
+An upgrade starts a fresh TLS budget without reviving the completed TCP deadline. A
 waiter-local timeout returns the still-live waiter; it does not cancel the
 operation. Zero or unrepresentable handshake timeouts are rejected at admission.
 

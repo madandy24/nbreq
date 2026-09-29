@@ -7,3 +7,5 @@ mod fixture;
 mod v020;
 #[cfg(all(test, feature = "native", feature = "v020"))]
 mod v021;
+#[cfg(all(test, feature = "v020"))]
+mod v030;

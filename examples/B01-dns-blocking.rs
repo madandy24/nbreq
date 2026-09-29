@@ -1,15 +1,11 @@
 //! Resolve a hostname: `cargo run --example B01-dns-blocking -- [HOSTNAME]`.
-use std::time::Duration;
-
 use nbreq::{Engine, ResolveRequest, ResolveStatus};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "example.com".into());
-    let request = ResolveRequest::hostname(name)
-        .total_timeout(Duration::from_secs(10))
-        .build()?;
+    let request = ResolveRequest::hostname(name).build()?;
     let engine = Engine::builder().build()?;
     let result = engine.resolver().execute(request);
     engine.shutdown()?;

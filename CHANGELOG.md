@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+- Add finite default HTTP connection (10 seconds), useful-progress inactivity
+  (30 seconds) and buffered total (120 seconds) deadlines. Fresh streaming HTTP
+  builders retain no total lifetime limit; conversion from `Request` preserves
+  all source options.
+- Default public DNS resolution to a 30-second total deadline and TCP
+  establishment to 10 seconds. Pending TCP/TLS writes have a 30-second inactivity
+  deadline; quiet established connections retain no read-inactivity deadline.
+- Let HTTP/DNS/TCP timeout setters accept `Duration`, `Some(Duration)` or `None`.
+  Explicit `None` restores the former unbounded timer behaviour. Existing finite
+  TLS establishment policy, queue limits and memory budgets are unchanged.
+- Document the behavioural migration, direct-TLS combined deadlines and opt-outs.
+  This change intentionally requires moving from the 0.2 to the 0.3 release line.
+
 ## 0.2.1 — 2026-09-27
 
 - Add verified standalone TLS 1.2/1.3 connections and consuming STARTTLS-style upgrades.

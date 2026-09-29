@@ -26,6 +26,7 @@ fn public_resolver_is_not_compiled(engine: &Engine) {
 "#
 )]
 #![doc = include_str!("../docs/getting-started.md")]
+#![doc = include_str!("../docs/migrating-to-0.3.md")]
 #![doc = include_str!("../docs/migrating-to-0.2.md")]
 
 mod atomic;

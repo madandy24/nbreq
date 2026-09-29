@@ -618,11 +618,13 @@ pub struct RequestOptions {
     /// Optional response body ceiling in bytes, further restricting the Engine ceiling.
     /// Enforced during receipt, including redirects. Zero permits only an empty body.
     pub max_response_body_bytes: Option<usize>,
-    /// Maximum time allowed to establish a connection.
+    /// Maximum time allowed to establish a connection. Defaults to ten seconds; `None` disables it.
     pub connect_timeout: Option<Duration>,
     /// Maximum time allowed without useful I/O progress across resolution, connection, and transfer.
+    /// Defaults to 30 seconds; `None` disables it.
     pub inactivity_timeout: Option<Duration>,
-    /// Maximum total request duration.
+    /// Maximum total request duration. This options default is 120 seconds; fresh stream builders
+    /// select `None`. An explicit `None` disables it.
     pub total_timeout: Option<Duration>,
     /// Maximum redirects followed under NBReq's conservative redirect policy.
     ///
@@ -637,9 +639,9 @@ impl Default for RequestOptions {
         Self {
             max_request_body_bytes: None,
             max_response_body_bytes: None,
-            connect_timeout: None,
-            inactivity_timeout: None,
-            total_timeout: None,
+            connect_timeout: Some(Duration::from_secs(10)),
+            inactivity_timeout: Some(Duration::from_secs(30)),
+            total_timeout: Some(Duration::from_secs(120)),
             redirect_limit: 5,
             tls_verification: TlsVerification::Verify,
         }
@@ -955,24 +957,24 @@ impl RequestBuilder {
         self
     }
 
-    /// Sets the maximum connection-establishment duration.
+    /// Sets the maximum connection-establishment duration. `None` disables the deadline.
     #[must_use]
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.request.options.connect_timeout = Some(timeout);
+    pub fn connect_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.request.options.connect_timeout = timeout.into();
         self
     }
 
-    /// Sets the maximum duration without useful I/O progress.
+    /// Sets the maximum duration without useful I/O progress. `None` disables the deadline.
     #[must_use]
-    pub fn inactivity_timeout(mut self, timeout: Duration) -> Self {
-        self.request.options.inactivity_timeout = Some(timeout);
+    pub fn inactivity_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.request.options.inactivity_timeout = timeout.into();
         self
     }
 
-    /// Sets the maximum total duration beginning at request acceptance.
+    /// Sets the maximum total duration beginning at request acceptance. `None` disables it.
     #[must_use]
-    pub fn total_timeout(mut self, timeout: Duration) -> Self {
-        self.request.options.total_timeout = Some(timeout);
+    pub fn total_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.request.options.total_timeout = timeout.into();
         self
     }
 

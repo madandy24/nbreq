@@ -121,23 +121,23 @@ impl EngineRequestBuilder {
         self
     }
 
-    /// Sets the maximum connection-establishment duration.
+    /// Sets the maximum connection-establishment duration. `None` disables the deadline.
     #[must_use]
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+    pub fn connect_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.request = self.request.connect_timeout(timeout);
         self
     }
 
-    /// Sets the maximum duration without useful I/O progress.
+    /// Sets the maximum duration without useful I/O progress. `None` disables the deadline.
     #[must_use]
-    pub fn inactivity_timeout(mut self, timeout: Duration) -> Self {
+    pub fn inactivity_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.request = self.request.inactivity_timeout(timeout);
         self
     }
 
-    /// Sets the maximum total duration beginning at request acceptance.
+    /// Sets the maximum total duration beginning at request acceptance. `None` disables it.
     #[must_use]
-    pub fn total_timeout(mut self, timeout: Duration) -> Self {
+    pub fn total_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.request = self.request.total_timeout(timeout);
         self
     }

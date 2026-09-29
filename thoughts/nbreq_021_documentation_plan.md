@@ -183,6 +183,11 @@ remote-host testing, push or publication were needed for this follow-up.
 
 ## Future revision: sensible timeout defaults throughout
 
+Follow-up, 2026-09-29: the owner selected 0.3.0 and approved the per-operation
+policy and explicit `None` opt-outs. Implementation and verification are tracked
+in [the timeout-default plan](nbreq_timeout_defaults_plan.md). The original
+0.2.1 deferral below is retained as historical context.
+
 Owner requested on 2026-09-27. Deferred from 0.2.1: establish sensible finite
 timeout defaults across HTTP, public DNS, plain TCP and TLS, so ordinary usage
 does not require boilerplate to avoid indefinite waits. Values and the release

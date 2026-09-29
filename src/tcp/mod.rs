@@ -69,9 +69,9 @@ impl TcpConnectRequest {
                 name: name.into(),
                 port,
             },
-            connect_timeout: None,
+            connect_timeout: Some(Duration::from_secs(10)),
             read_inactivity_timeout: None,
-            write_inactivity_timeout: None,
+            write_inactivity_timeout: Some(Duration::from_secs(30)),
             send_queue_bytes: None,
             receive_queue_bytes: None,
         }
@@ -82,9 +82,9 @@ impl TcpConnectRequest {
     pub fn literal(addr: SocketAddr) -> TcpConnectRequestBuilder {
         TcpConnectRequestBuilder {
             target: HostnameOrLiteral::Literal(addr),
-            connect_timeout: None,
+            connect_timeout: Some(Duration::from_secs(10)),
             read_inactivity_timeout: None,
-            write_inactivity_timeout: None,
+            write_inactivity_timeout: Some(Duration::from_secs(30)),
             send_queue_bytes: None,
             receive_queue_bytes: None,
         }
@@ -96,8 +96,8 @@ impl TcpConnectRequest {
         &self.target
     }
 
-    /// Returns the optional connect timeout. See [`TcpConnectRequest`] for its admission-based
-    /// deadline and how it combines with the handshake deadline for direct TLS.
+    /// Returns the connect timeout (ten seconds by default). See [`TcpConnectRequest`] for its
+    /// admission-based deadline and how it combines with the handshake deadline for direct TLS.
     #[must_use]
     pub fn connect_timeout(&self) -> Option<Duration> {
         self.connect_timeout
@@ -111,7 +111,7 @@ impl TcpConnectRequest {
         self.read_inactivity_timeout
     }
 
-    /// Returns the connected-phase write inactivity timeout when one was selected.
+    /// Returns the connected-phase write inactivity timeout (30 seconds by default).
     ///
     /// Write inactivity runs only while accepted output is waiting for socket progress.
     #[must_use]
@@ -150,31 +150,31 @@ pub struct TcpConnectRequestBuilder {
 }
 
 impl TcpConnectRequestBuilder {
-    /// Sets the connect timeout. See [`TcpConnectRequest`] for its admission-based deadline and
-    /// how it combines with the handshake deadline for direct TLS.
+    /// Sets the connect timeout. `None` disables it. See [`TcpConnectRequest`] for its
+    /// admission-based deadline and how it combines with the handshake deadline for direct TLS.
     #[must_use]
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = Some(timeout);
+    pub fn connect_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.connect_timeout = timeout.into();
         self
     }
 
-    /// Sets the connected-phase read inactivity timeout.
+    /// Sets the connected-phase read inactivity timeout. `None` disables it.
     ///
     /// The clock pauses under consumer backpressure, when no destination capacity is available.
     /// Blocking `read` rejects manual mode rather than driving the Engine.
     #[must_use]
-    pub fn read_inactivity_timeout(mut self, timeout: Duration) -> Self {
-        self.read_inactivity_timeout = Some(timeout);
+    pub fn read_inactivity_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.read_inactivity_timeout = timeout.into();
         self
     }
 
-    /// Sets the connected-phase write inactivity timeout.
+    /// Sets the connected-phase write inactivity timeout. `None` disables it.
     ///
     /// The clock runs only while accepted output is waiting for socket progress. Blocking `send`
     /// and `finish` reject manual mode rather than driving the Engine.
     #[must_use]
-    pub fn write_inactivity_timeout(mut self, timeout: Duration) -> Self {
-        self.write_inactivity_timeout = Some(timeout);
+    pub fn write_inactivity_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.write_inactivity_timeout = timeout.into();
         self
     }
 

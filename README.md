@@ -19,26 +19,26 @@ drive networking from your own event loop. No async runtime required.
   Engine ownership and shutdown.
 - Platform certificate trust by default, with explicit private-root-only or bundled Mozilla trust.
 - Shared buffered responses, optional consuming buffer transfer, and opt-in retained-body limits.
+- Sensible operation deadlines, with explicit overrides and `None` opt-outs; quiet established
+  TCP/TLS connections stay open.
 
 ## Start with a GET
 
 Requires Rust 1.85 or newer; Rust 1.85/1.86 may need the documented
 [dependency selection](docs/getting-started.md#rust-version-and-dependency-selection).
-This guide covers NBReq 0.2.1.
+This checkout targets NBReq 0.3.0 (unreleased).
 
 ```toml
 [dependencies]
-nbreq = "0.2.1"
+nbreq = "0.3.0"
 ```
 
 ```rust
-use std::time::Duration;
 use nbreq::Engine;
 
 let engine = Engine::builder().build()?;
 let response = engine
     .get("https://httpbin.org/get")
-    .total_timeout(Duration::from_secs(15))
     .call()?;
 
 println!("HTTP {}", response.status());
@@ -50,9 +50,9 @@ The snippets use `?` inside a function returning `Result`. For a complete progra
 [A01: blocking GET](examples/A01-http-blocking-get.rs), then try
 [A02: blocking POST](examples/A02-http-blocking-post.rs).
 
-The HTTP, DNS and plain TCP snippets set timeouts explicitly because those operation timeouts
-have no finite default. See [timeout and queue defaults](docs/getting-started.md#timeout-and-queue-defaults)
-for the settings you can omit or override.
+Common operations have finite timeout defaults. Pass a duration to override a timer or `None`
+to disable it. Quiet established TCP/TLS connections have no default read-inactivity deadline.
+See [timeout and queue defaults](docs/getting-started.md#timeout-and-queue-defaults).
 
 ## More control when you need it
 
@@ -71,7 +71,7 @@ for the settings you can omit or override.
   explains the feature and configuration choices.
 
 Keep an Engine for the lifetime of a service so requests can reuse its connections and DNS cache.
-The following snippets each assume a running, spawned `engine` and `Duration` as above.
+The following snippets each assume a running, spawned `engine`.
 
 ### Cancel outstanding work
 
@@ -80,7 +80,6 @@ use nbreq::{Completion, Request};
 
 let pending = engine.client().submit(
     Request::get("https://httpbin.org/get")
-        .total_timeout(Duration::from_secs(15))
         .build()?,
 )?;
 
@@ -104,7 +103,6 @@ use nbreq::ResolveRequest;
 
 let answer = engine.resolver().execute(
     ResolveRequest::hostname("example.com")
-        .total_timeout(Duration::from_secs(10))
         .build()?,
 )?;
 
@@ -123,12 +121,11 @@ See the [DNS examples](examples/README.md#b--dns).
 With an echo server listening on `127.0.0.1:9000`:
 
 ```rust
+use std::time::Duration;
 use nbreq::TcpConnectRequest;
 
 let request = TcpConnectRequest::literal("127.0.0.1:9000".parse()?)
-    .connect_timeout(Duration::from_secs(5))
     .read_inactivity_timeout(Duration::from_secs(10))
-    .write_inactivity_timeout(Duration::from_secs(10))
     .build()?;
 let mut connection = engine.tcp_connector().execute(request)?;
 
@@ -140,7 +137,8 @@ while let Some(count) = connection.read(&mut buffer)? {
 }
 ```
 
-TCP supports hostname connections, separate reader/writer halves, cancellation, bounded queues
+This echo exchange opts into a read deadline while awaiting its reply; idle connections otherwise
+stay open by default. TCP supports hostname connections, separate reader/writer halves, cancellation, bounded queues
 and nonblocking I/O. The [TCP examples](examples/README.md#c--tcp) start their own local echo server,
 so you can run them without setting one up.
 
@@ -156,8 +154,8 @@ Enabling `bundled-roots` does not select it automatically: the Engine must expli
 - [Getting started](docs/getting-started.md): request options, streaming, manual driving,
   memory controls, error handling and embedding in GUI/FFI applications.
 - [Runnable examples](examples/README.md): **A** HTTP, **B** DNS, **C** TCP; simplest first.
-- [Migration notes](docs/migrating-to-0.2.md): upgrading from 0.2.0 or 0.1.1, including trust
-  validation, response ownership and resource limits.
+- [Migration notes](docs/migrating-to-0.3.md): adopting the new defaults or restoring previous
+  timeout behaviour, with links to earlier API migrations.
 
 ## Scope and configuration
 

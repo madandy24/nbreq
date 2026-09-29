@@ -17,7 +17,7 @@ out = args.out.resolve()
 out.mkdir(parents=True, exist_ok=False)
 source = Path(__file__).resolve().parent
 shutil.copytree(source, out/'consumer-source', ignore=shutil.ignore_patterns('target','Cargo.lock','__pycache__'))
-work = Path(tempfile.mkdtemp(prefix='nbreq-021-consumer-'))
+work = Path(tempfile.mkdtemp(prefix='nbreq-030-consumer-'))
 env = dict(os.environ, CARGO_TARGET_DIR=str(out/'build'))
 results = []
 
@@ -98,7 +98,7 @@ manifest = manifest.replace('default = ["native", "resolver", "v020"]','default 
 manifest = manifest.replace('resolver = ["native", "nbreq/resolver"]','resolver = []')
 manifest = manifest.replace('test-support = ["nbreq/test-support"]','test-support = []')
 manifest = manifest.replace('bundled-roots = ["native", "nbreq/bundled-roots"]','bundled-roots = []')
-manifest = manifest.replace('version = "=0.2.1"','version = "=0.1.1"')
+manifest = manifest.replace('version = "=0.3.0"','version = "=0.1.1"')
 for toolchain in args.toolchains:
     legacy = work/(toolchain+'-consumer-011')
     shutil.copytree(out/'consumer-source',legacy)

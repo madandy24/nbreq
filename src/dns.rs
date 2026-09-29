@@ -250,7 +250,7 @@ impl ResolveRequest {
             cache_mode: CacheMode::Use,
             max_results: None,
             use_search_suffixes: false,
-            total_timeout: None,
+            total_timeout: Some(Duration::from_secs(30)),
         }
     }
 
@@ -312,7 +312,7 @@ impl ResolveRequest {
         self.use_search_suffixes && !self.absolute
     }
 
-    /// Returns the total resolution deadline beginning at admission.
+    /// Returns the total resolution deadline beginning at admission (30 seconds by default).
     ///
     /// Expiry is classified as [`TimeoutKind::Total`](crate::TimeoutKind::Total).
     #[must_use]
@@ -377,10 +377,10 @@ impl ResolveRequestBuilder {
         self
     }
 
-    /// Sets the maximum total duration beginning at resolution acceptance.
+    /// Sets the maximum total duration beginning at resolution acceptance. `None` disables it.
     #[must_use]
-    pub fn total_timeout(mut self, timeout: Duration) -> Self {
-        self.total_timeout = Some(timeout);
+    pub fn total_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.total_timeout = timeout.into();
         self
     }
 
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(request.cache_mode(), CacheMode::Use);
         assert_eq!(request.max_results(), None);
         assert!(!request.use_search_suffixes());
-        assert_eq!(request.total_timeout(), None);
+        assert_eq!(request.total_timeout(), Some(Duration::from_secs(30)));
     }
 
     #[test]
