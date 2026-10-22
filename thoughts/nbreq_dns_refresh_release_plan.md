@@ -10,7 +10,7 @@ belong to the originating GDS session.
 - Maintenance line: published v0.2.1 / 44bbd1b, target 0.2.2.
 - DNS implementation and tests are identical on both starting points.
 - Preserve each line's timeout defaults and public API/error classifications.
-- No helper release, dependency-range change, IPv4 filtering or OS network change.
+- No helper release, IPv4 filtering or OS network change.
 
 ## Fix and evidence
 
@@ -40,3 +40,17 @@ No version is released until its gates pass. GDS remains unchanged in this sessi
 Local 0.3.1 verification passed all 30 stages in 227.553 seconds on Rust 1.97.1.
 The first sandboxed run stopped when rustdoc was denied temporary executable writes;
 the unrestricted rerun passed, including all doctests. Both logs are retained.
+
+## Security gate follow-up
+
+The initial hosted audit found seven October advisories in the old TLS graph.
+Both candidates raise rustls to 0.23.46, constrain the existing WebPKI component
+to 0.103.16 for retained consumer locks, and raise optional roots to 1.0.10.
+The full locked graph also selects webpki-root-certs 1.0.10. License reports and
+full verification are repeated; no advisory exception is added. The extra direct
+WebPKI constraint introduces no new component, async runtime or public API,
+and retains its existing ISC license and supported-platform compatibility.
+
+The owner permits Apple Silicon coverage to remain explicitly pending only if
+runner capacity prevents execution. GitHub-hosted ARM jobs have started; Scaleway
+is unavailable and is not needed if hosted coverage succeeds.

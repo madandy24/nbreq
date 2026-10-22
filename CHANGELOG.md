@@ -8,7 +8,11 @@
   for retries and TCP DNS fallback.
 - Preserve discovery, socket setup and registration diagnostics when DNS becomes
   unavailable, while keeping existing public error classifications.
-- Keep timeout defaults, public APIs and dependency requirements unchanged from 0.3.0.
+- Keep timeout defaults and public APIs unchanged from 0.3.0.
+- Raise the compatible rustls minimum to 0.23.46, require its existing WebPKI dependency
+  at 0.103.16 or later, and raise optional bundled roots to 1.0.10. These security
+  updates address the October TLS advisories, including distrusted emSign intermediates.
+  The packaged dependency graph also updates webpki-root-certs to 1.0.10.
 
 ## 0.3.0 — 2026-09-30
 

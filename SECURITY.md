@@ -69,10 +69,22 @@ graph of a downstream application. Any future exact runtime pin needs a document
 reason. Test/tool pins, including the exception below, do not impose those development dependencies
 on applications that use NBReq as a library.
 
-NBReq requires rustls 0.23.45 or a compatible newer release. This minimum excludes the
+NBReq requires rustls 0.23.46 or a compatible newer release. This minimum excludes the
 TLS 1.3 encryption-level validation issue in
 [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html), reported September 14,
 2026. The advisory applies to earlier allowed/locked rustls versions; it is not an exception.
+
+The 0.2.2 and 0.3.1 DNS maintenance releases also exclude the October rustls
+advisories RUSTSEC-2026-0346 through RUSTSEC-2026-0349. Native support adds a
+compatible minimum of rustls-webpki 0.103.16 for the already-used transitive
+component, so retained application locks cannot keep the certificate verifier
+affected by [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382.html).
+This adds no new TLS implementation, feature, runtime or public type. WebPKI
+retains its ISC license and Rust 1.71 minimum; the supported platform set is unchanged.
+Optional bundled roots require webpki-roots 1.0.10 or newer for
+[RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381.html). The tested
+lock also selects webpki-root-certs 1.0.10 for the platform verifier's unsupported
+Wasm target dependency. No advisory exception is added.
 
 ## Reviewed advisory exceptions
 
