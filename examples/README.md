@@ -4,7 +4,7 @@ Each numbered source file is a complete program. Read each group from the top: A
 B is DNS, and C is TCP. The default Cargo features enable all three groups.
 Run these commands from the NBReq repository with Rust 1.85 or newer:
 
-The examples use the 0.3.0 request timeout defaults. Commented timeout lines marked
+The examples use the 0.3.1 request timeout defaults. Commented timeout lines marked
 `Default setting` show the values already in effect: uncomment a line and change
 its value to override it. The fully qualified `std::time::Duration` works without
 adding an import. HTTP/DNS/TCP setters also accept `None` to disable a timer;
@@ -102,7 +102,7 @@ cargo run --example C02-tcp-nonblocking -- echo.example.org 9000
 The hostname above is a placeholder for your own server. Sending FIN closes only our write side;
 we keep reading until the peer sends EOF. Dropping an unfinished connection aborts it.
 
-C04/C05 demonstrate the TCP TLS API in NBReq 0.3.0. C04 calls
+C04/C05 demonstrate the TCP TLS API in NBReq 0.3.1. C04 calls
 `engine.tcp_connector().execute_tls(request, tls)` to connect TCP and complete a verified TLS
 handshake. C05 first calls `execute(request)` for plain TCP, negotiates the upgrade, then calls
 `plain.into_tls(tls)` to consume that connection and secure the same socket.

@@ -1,6 +1,6 @@
 # TLS for TCP connections
 
-This guide describes the TCP TLS API in NBReq 0.3.0. Start with
+This guide describes the TCP TLS API in NBReq 0.3.1. Start with
 [C04: direct TCP+TLS](../examples/C04-tcp-tls.rs) or
 [C05: upgrade TCP to TLS](../examples/C05-tcp-starttls.rs). Both use local verified
 TLS peers; see the [example commands and expected output](../examples/README.md#c--tcp).
@@ -94,7 +94,7 @@ For public Mozilla roots, enable the feature and explicitly select the policy:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.3.0", features = ["bundled-roots"] }
+nbreq = { version = "0.3.1", features = ["bundled-roots"] }
 ```
 
 ```rust,no_run

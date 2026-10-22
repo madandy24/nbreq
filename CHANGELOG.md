@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-10-22
+
+- Fix DNS configuration refresh losing service when the first nameserver fails socket
+  setup but a later server is usable, including after Windows VPN activation. Refresh
+  now uses the same ordered fallback as startup and retains the selected server index
+  for retries and TCP DNS fallback.
+- Preserve discovery, socket setup and registration diagnostics when DNS becomes
+  unavailable, while keeping existing public error classifications.
+- Keep timeout defaults, public APIs and dependency requirements unchanged from 0.3.0.
+
 ## 0.3.0 â€” 2026-09-30
 
 - Add finite default HTTP connection (10 seconds), useful-progress inactivity

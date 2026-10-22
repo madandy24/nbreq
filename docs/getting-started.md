@@ -1,6 +1,6 @@
 # Using NBReq
 
-For complete programs in learning order, see the [HTTP, DNS and TCP/TLS examples](https://github.com/madandy24/nbreq/blob/v0.3.0/examples/README.md).
+For complete programs in learning order, see the [HTTP, DNS and TCP/TLS examples](https://github.com/madandy24/nbreq/blob/v0.3.1/examples/README.md).
 
 NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
 workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client
@@ -10,11 +10,11 @@ responsible for stopping HTTP.
 The default Cargo features are `native` and `resolver`. They provide NBReq's Rust-native HTTP/1.1,
 DNS, TCP, public Resolver, and rustls implementation without Tokio or another async runtime.
 
-This guide targets NBReq 0.3.0. Add the dependency below to use the default native backend:
+This guide targets NBReq 0.3.1. Add the dependency below to use the default native backend:
 
 ```toml
 [dependencies]
-nbreq = "0.3.0"
+nbreq = "0.3.1"
 ```
 
 An HTTP-only consumer can omit the public Resolver API and its Windows search-suffix registry
@@ -22,7 +22,7 @@ reader while retaining native HTTP and exact-name DNS for HTTP and hostname `Tcp
 
 ```toml
 [dependencies]
-nbreq = { version = "0.3.0", default-features = false, features = ["native"] }
+nbreq = { version = "0.3.1", default-features = false, features = ["native"] }
 ```
 
 The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
@@ -170,7 +170,7 @@ For bundled Mozilla roots, enable the feature and explicitly select the policy:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.3.0", features = ["bundled-roots"] }
+nbreq = { version = "0.3.1", features = ["bundled-roots"] }
 ```
 
 ```rust,no_run
@@ -196,7 +196,7 @@ held/HTTP-only constructors. Use an HTTPS fixture or omit unused trust settings 
 
 The Mozilla roots are compiled into the application. Update the application's dependency
 lockfile, rebuild and redeploy to refresh them; running processes do not fetch new roots.
-See [trust selection and bundle updates](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/tcp-tls.md#selecting-certificate-trust).
+See [trust selection and bundle updates](https://github.com/madandy24/nbreq/blob/v0.3.1/docs/tcp-tls.md#selecting-certificate-trust).
 
 ## Callbacks and direct waiters
 
@@ -381,7 +381,7 @@ backends report honest unavailable zeroes.
 
 ## Timeout and queue defaults
 
-NBReq 0.3.0 bounds ordinary network operations by default. Quiet established TCP/TLS connections
+NBReq 0.3.1 bounds ordinary network operations by default. Quiet established TCP/TLS connections
 stay open: connected read inactivity has no default deadline, and write inactivity runs only
 while accepted output awaits progress. The deadlines below do not bound connection lifetime.
 
@@ -427,7 +427,7 @@ beyond ten seconds, also raise the TCP connect timeout or pass `connect_timeout(
 existing finite `TlsOptions::handshake_timeout(Duration)` still applies. A STARTTLS upgrade starts
 a fresh TLS deadline. Local `wait_for` expiry leaves the operation alive, and a manual Engine
 still needs explicit driving to process deadlines. See the
-[0.3 migration guide](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/migrating-to-0.3.md).
+[0.3 migration guide](https://github.com/madandy24/nbreq/blob/v0.3.1/docs/migrating-to-0.3.md).
 
 Set `EngineBuilder::max_tcp_queue_bytes_per_connection` or
 `EngineConfig::with_max_tcp_queue_bytes_per_connection` to change the queue ceiling; requested
@@ -438,8 +438,8 @@ are not all eagerly allocated, and these limits are not a cap on total process m
 
 Choose connected read/write timeouts for the application protocol even when using the default
 TLS handshake deadline. The cleartext TCP example below shows explicit overrides;
-[C04/C05](https://github.com/madandy24/nbreq/blob/v0.3.0/examples/README.md#c--tcp) show commented
-timeout defaults and explicit queue sizes. The [TLS guide](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/tcp-tls.md#immediate-tls)
+[C04/C05](https://github.com/madandy24/nbreq/blob/v0.3.1/examples/README.md#c--tcp) show commented
+timeout defaults and explicit queue sizes. The [TLS guide](https://github.com/madandy24/nbreq/blob/v0.3.1/docs/tcp-tls.md#immediate-tls)
 uses the default establishment deadline and queue windows.
 
 ## DNS resolution
@@ -556,8 +556,8 @@ at the boundary. Every consuming-upgrade failure closes the original connection.
 has no automatic plaintext fallback or verification-disable option. On an established TLS
 connection, a raw transport EOF without the TLS close alert is `TlsFailure::Truncated`;
 TLS 1.2 and 1.3 differ in half-close behavior.
-See the [TCP TLS guide](https://github.com/madandy24/nbreq/blob/v0.3.0/docs/tcp-tls.md) and
-[local direct-TLS and upgrade examples](https://github.com/madandy24/nbreq/blob/v0.3.0/examples/README.md#c--tcp)
+See the [TCP TLS guide](https://github.com/madandy24/nbreq/blob/v0.3.1/docs/tcp-tls.md) and
+[local direct-TLS and upgrade examples](https://github.com/madandy24/nbreq/blob/v0.3.1/examples/README.md#c--tcp)
 for complete programs, closure rules and additional memory reservations.
 
 ## Backend and feature selection
@@ -609,7 +609,7 @@ locks. Revisit the workaround after upstream publishes a compatible correction.
 
 ## Platform scope
 
-NBReq 0.3.0 targets Rust 1.85 or later with Rust 2024 edition; see the dependency
+NBReq 0.3.1 targets Rust 1.85 or later with Rust 2024 edition; see the dependency
 selection above when using an older compiler. The verified target set is:
 
 | Target | Tested scope |

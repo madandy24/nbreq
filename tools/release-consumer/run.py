@@ -98,7 +98,7 @@ manifest = manifest.replace('default = ["native", "resolver", "v020"]','default 
 manifest = manifest.replace('resolver = ["native", "nbreq/resolver"]','resolver = []')
 manifest = manifest.replace('test-support = ["nbreq/test-support"]','test-support = []')
 manifest = manifest.replace('bundled-roots = ["native", "nbreq/bundled-roots"]','bundled-roots = []')
-manifest = manifest.replace('version = "=0.3.0"','version = "=0.1.1"')
+manifest = manifest.replace('version = "=0.3.1"','version = "=0.1.1"')
 for toolchain in args.toolchains:
     legacy = work/(toolchain+'-consumer-011')
     shutil.copytree(out/'consumer-source',legacy)
