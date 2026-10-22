@@ -1,6 +1,6 @@
 # TLS for TCP connections
 
-This guide describes the TCP TLS API in NBReq 0.2.1. Start with
+This guide describes the TCP TLS API in NBReq 0.2.2. Start with
 [C04: direct TCP+TLS](../examples/C04-tcp-tls.rs) or
 [C05: upgrade TCP to TLS](../examples/C05-tcp-starttls.rs). Both use local verified
 TLS peers; see the [example commands and expected output](../examples/README.md#c--tcp).
@@ -68,7 +68,7 @@ deployment and explicitly selected trust policy.
 
 ## Selecting certificate trust
 
-NBReq 0.2.1 applies one immutable trust policy to HTTPS (including redirects),
+NBReq 0.2.2 applies one immutable trust policy to HTTPS (including redirects),
 direct TLS and STARTTLS. Choose it explicitly when constructing the Engine:
 
 | `TlsTrust` mode | Roots used | Required feature |
@@ -92,7 +92,7 @@ For public Mozilla roots, enable the feature and explicitly select the policy:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2.1", features = ["bundled-roots"] }
+nbreq = { version = "0.2.2", features = ["bundled-roots"] }
 ```
 
 ```rust,no_run
@@ -108,7 +108,7 @@ engine.shutdown()?;
 The feature implies `native` but does not change the default policy. Custom DER roots
 may be added before or after selecting a mode. They are parsed as WebPKI trust anchors
 before entering the selected verifier, including platform mode. Certificates accepted
-or ignored differently by the OS in 0.2.0 can therefore fail construction in 0.2.1.
+or ignored differently by the OS in 0.2.0 can therefore fail construction in 0.2.1 and later.
 Malformed roots, an empty supplied-only set, and unsupported selections fail during
 Engine construction, before network work; no platform fallback occurs. Backends that
 cannot apply configured trust return `Unsupported`, including public `test-support`

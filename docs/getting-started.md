@@ -1,6 +1,6 @@
 # Using NBReq
 
-For complete programs in learning order, see the [HTTP, DNS and TCP/TLS examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md).
+For complete programs in learning order, see the [HTTP, DNS and TCP/TLS examples](https://github.com/madandy24/nbreq/blob/v0.2.2/examples/README.md).
 
 NBReq is built around one explicit owner. An `Engine` owns network state, pools, DNS work, callback
 workers, limits, and shutdown. It issues cheap cloneable `Client` command handles, but a Client
@@ -10,11 +10,11 @@ responsible for stopping HTTP.
 The default Cargo features are `native` and `resolver`. They provide NBReq's Rust-native HTTP/1.1,
 DNS, TCP, public Resolver, and rustls implementation without Tokio or another async runtime.
 
-This guide targets NBReq 0.2.1. Add the dependency below to use the default native backend:
+This guide targets NBReq 0.2.2. Add the dependency below to use the default native backend:
 
 ```toml
 [dependencies]
-nbreq = "0.2.1"
+nbreq = "0.2.2"
 ```
 
 An HTTP-only consumer can omit the public Resolver API and its Windows search-suffix registry
@@ -22,7 +22,7 @@ reader while retaining native HTTP and exact-name DNS for HTTP and hostname `Tcp
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2.1", default-features = false, features = ["native"] }
+nbreq = { version = "0.2.2", default-features = false, features = ["native"] }
 ```
 
 The `resolver` feature implies `native`. Turning it off does not use a blocking OS resolver and does
@@ -147,7 +147,7 @@ Call the configuration method once per root. An Engine's trust policy is fixed a
 applies to HTTPS requests and redirects, direct TLS and STARTTLS; use separate Engines for separate
 trust domains. Additional roots are parsed as WebPKI trust anchors before entering the selected
 verifier, including platform mode. A certificate accepted or ignored differently by the OS in
-0.2.0 can therefore fail construction in 0.2.1.
+0.2.0 can therefore fail construction in 0.2.1 and later.
 Windows, Linux and macOS use the existing platform verifier with extra roots. The current platform
 verifier dependency does not support this option on Android in platform mode and rejects a nonempty extra-root
 configuration explicitly.
@@ -170,7 +170,7 @@ For bundled Mozilla roots, enable the feature and explicitly select the policy:
 
 ```toml
 [dependencies]
-nbreq = { version = "0.2.1", features = ["bundled-roots"] }
+nbreq = { version = "0.2.2", features = ["bundled-roots"] }
 ```
 
 ```rust,no_run
@@ -196,7 +196,7 @@ held/HTTP-only constructors. Use an HTTPS fixture or omit unused trust settings 
 
 The Mozilla roots are compiled into the application. Update the application's dependency
 lockfile, rebuild and redeploy to refresh them; running processes do not fetch new roots.
-See [trust selection and bundle updates](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#selecting-certificate-trust).
+See [trust selection and bundle updates](https://github.com/madandy24/nbreq/blob/v0.2.2/docs/tcp-tls.md#selecting-certificate-trust).
 
 ## Callbacks and direct waiters
 
@@ -401,8 +401,8 @@ are not all eagerly allocated, and these limits are not a cap on total process m
 
 Choose connected read/write timeouts for the application protocol even when using the default
 TLS handshake deadline. The cleartext TCP example below and
-[C04/C05](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp) show explicit
-overrides; the [TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md#immediate-tls)
+[C04/C05](https://github.com/madandy24/nbreq/blob/v0.2.2/examples/README.md#c--tcp) show explicit
+overrides; the [TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.2/docs/tcp-tls.md#immediate-tls)
 uses the default establishment deadline and queue windows.
 
 ## DNS resolution
@@ -519,8 +519,8 @@ at the boundary. Every consuming-upgrade failure closes the original connection.
 has no automatic plaintext fallback or verification-disable option. On an established TLS
 connection, a raw transport EOF without the TLS close alert is `TlsFailure::Truncated`;
 TLS 1.2 and 1.3 differ in half-close behavior.
-See the [TCP TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.1/docs/tcp-tls.md) and
-[local direct-TLS and upgrade examples](https://github.com/madandy24/nbreq/blob/v0.2.1/examples/README.md#c--tcp)
+See the [TCP TLS guide](https://github.com/madandy24/nbreq/blob/v0.2.2/docs/tcp-tls.md) and
+[local direct-TLS and upgrade examples](https://github.com/madandy24/nbreq/blob/v0.2.2/examples/README.md#c--tcp)
 for complete programs, closure rules and additional memory reservations.
 
 ## Backend and feature selection
@@ -572,7 +572,7 @@ locks. Revisit the workaround after upstream publishes a compatible correction.
 
 ## Platform scope
 
-NBReq 0.2.1 targets Rust 1.85 or later with Rust 2024 edition; see the dependency
+NBReq 0.2.2 targets Rust 1.85 or later with Rust 2024 edition; see the dependency
 selection above when using an older compiler. The verified target set is:
 
 | Target | Tested scope |

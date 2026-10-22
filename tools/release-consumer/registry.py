@@ -1,4 +1,4 @@
-"""Check 0.2 candidates with registry helpers, or the published release with no overrides."""
+"""Check NBReq candidates with registry helpers, or the published release with no overrides."""
 import argparse
 import hashlib
 import json
@@ -55,11 +55,11 @@ def run(label, command, cwd, expected=0, contains=None):
 
 
 if args.mode == 'published':
-    request = urllib.request.Request('https://crates.io/api/v1/crates/nbreq/0.2.1/download',
+    request = urllib.request.Request('https://crates.io/api/v1/crates/nbreq/0.2.2/download',
                                     headers={'User-Agent': 'nbreq-021-registry-check'})
     with urllib.request.urlopen(request, timeout=60) as response:
         payload = response.read()
-    package = out / 'nbreq-0.2.1.crate'
+    package = out / 'nbreq-0.2.2.crate'
     package.write_bytes(payload)
 else:
     package = args.package.resolve()
@@ -70,15 +70,15 @@ with tarfile.open(package) as archive:
         name = PurePosixPath(member.name)
         assert member.isfile() and not name.is_absolute() and '..' not in name.parts
         assert all('\\' not in part and ':' not in part for part in name.parts)
-        assert name.parts[0] == 'nbreq-0.2.1' and member.name not in seen
+        assert name.parts[0] == 'nbreq-0.2.2' and member.name not in seen
         seen.add(member.name)
         destination = work.joinpath(*name.parts).resolve()
         assert destination.is_relative_to(work)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(archive.extractfile(member).read())
-root = work / 'nbreq-0.2.1'
+root = work / 'nbreq-0.2.2'
 manifest = tomllib.loads((root / 'Cargo.toml').read_text())
-assert manifest['package']['name'] == 'nbreq' and manifest['package']['version'] == '0.2.1'
+assert manifest['package']['name'] == 'nbreq' and manifest['package']['version'] == '0.2.2'
 assert 'patch' not in manifest
 for target, helper in [('cfg(windows)', 'nbreq-winpoll'), ('cfg(target_os = "macos")', 'nbreq-darwin')]:
     assert 'path' not in manifest['target'][target]['dependencies'][helper]
@@ -93,6 +93,18 @@ inputs = dict(mode=args.mode, archive_sha256=package_hash,
 for toolchain in args.toolchains:
     cargo = ['rustup', 'run', toolchain, 'cargo']
     run(toolchain + '-rustc', ['rustup', 'run', toolchain, 'rustc', '-vV'], work)
+    # Exercise the implementation in the exact archive, including the DNS refresh regression.
+    targets = [None, 'i686-pc-windows-msvc'] if platform.system() == 'Windows' else [None]
+    for target in targets:
+        target_args = ['--target', target] if target else []
+        if target:
+            run(toolchain + '-install-' + target,
+                ['rustup', 'target', 'add', '--toolchain', toolchain, target], work)
+        for mode, features in [('default', []), ('native', ['--no-default-features', '--features', 'native'])]:
+            run(toolchain + '-packaged-dns-' + (target or 'host') + '-' + mode,
+                cargo + ['test', '--locked', '--manifest-path', str(root / 'Cargo.toml'),
+                         *target_args, *features, '--lib', 'backend::native_dns::tests',
+                         '--', '--test-threads=1'], work, contains='test result: ok.')
     for case in ['fresh', 'mio-coexist']:
         label = toolchain + '-' + case
         consumer = work / label
@@ -137,6 +149,10 @@ for toolchain in args.toolchains:
         run(label + '-resolver-absent', cargo + ['check', '--locked', '--bin', 'resolver_probe',
             '--no-default-features', '--features', 'native,v020'], consumer, 101, 'unresolved import')
         run(label + '-testing-absent', cargo + ['check', '--locked', '--bin', 'testing_probe'], consumer, 101, 'unresolved import')
+        if platform.system() == 'Windows':
+            run(label + '-native-x86', cargo + ['test', '--locked', '--target', 'i686-pc-windows-msvc',
+                '--lib', '--no-default-features', '--features', 'native,v020', '--', '--test-threads=1'],
+                consumer, contains='test result: ok.')
         cases.append(dict(label=label, registry_only=args.mode == 'published', support_from_registry=True,
                           dependency_route=policy['route'], initial_lock_sha256=policy['initial']['sha256'],
                           packages={name: dict(version=p['version'], source=p['source']) for name, p in packages.items()},

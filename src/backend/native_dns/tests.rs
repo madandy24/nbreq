@@ -734,6 +734,15 @@ fn bind_dns_tcp_udp_pair(context: &str) -> (TcpListener, StdUdpSocket, SocketAdd
 
 #[test]
 fn truncated_udp_response_falls_back_to_fragmented_tcp() {
+    check_fragmented_dns_tcp_fallback(false);
+}
+
+#[test]
+fn refreshed_nameserver_index_is_used_for_dns_tcp_fallback() {
+    check_fragmented_dns_tcp_fallback(true);
+}
+
+fn check_fragmented_dns_tcp_fallback(refresh: bool) {
     let (listener, udp, address) = bind_dns_tcp_udp_pair("DNS fallback fixture");
     listener
         .set_nonblocking(true)
@@ -807,8 +816,36 @@ fn truncated_udp_response_falls_back_to_fragmented_tcp() {
     // The fixture deliberately fragments a valid TCP reply across three writes. Keep the
     // resolver deadline bounded without making loaded-runner scheduling part of that proof.
     config.attempt_timeout = Duration::from_secs(1);
+    let (config, updates) = config.with_test_refresh_source();
+    let blocked = DnsFixture::answering(Ipv4Addr::LOCALHOST);
+    let ResolverConfigSource::Test {
+        socket_failures, ..
+    } = &config.source
+    else {
+        panic!("test configuration source required");
+    };
+    socket_failures
+        .lock()
+        .expect("socket failures lock")
+        .insert(blocked.address, "injected unreachable first server");
     let mut resolver =
         NativeResolver::new(config, owner.waker()).expect("TCP-fallback resolver must construct");
+    if refresh {
+        updates
+            .send(Ok(ResolverSnapshot {
+                nameservers: vec![blocked.address, address],
+                search_suffixes: Vec::new(),
+                attempt_timeout: Duration::from_secs(1),
+                attempts: 2,
+            }))
+            .expect("publish TCP fallback routes");
+        assert_eq!(
+            resolver
+                .refresh_selected_nameserver_for_test()
+                .expect("TCP route refresh"),
+            1
+        );
+    }
     resolver
         .resolve(ResolveKey(70), "tcp-fallback.test".to_owned())
         .expect("TCP-fallback resolution must submit");
@@ -1256,6 +1293,183 @@ fn concurrent_exhaustion_has_one_terminal_per_lookup_and_later_work_recovers() {
 }
 
 #[test]
+fn refreshed_nameservers_skip_socket_failure_and_keep_the_selected_index() {
+    let first = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 61));
+    let blocked = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 62));
+    let fallback = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 63));
+    let (config, updates) = ResolverConfig::multiple_for_test(vec![blocked.address, first.address])
+        .with_test_refresh_source();
+    let ResolverConfigSource::Test {
+        socket_failures, ..
+    } = &config.source
+    else {
+        panic!("test configuration source required");
+    };
+    socket_failures
+        .lock()
+        .expect("socket failures lock")
+        .insert(blocked.address, "injected unreachable VPN nameserver");
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver = NativeResolver::new(config, owner.waker()).expect("resolver must construct");
+    assert_eq!(
+        resolver
+            .refresh_selected_nameserver_for_test()
+            .expect("startup selection"),
+        1
+    );
+
+    resolver
+        .resolve(ResolveKey(240), "refresh-fallback.test".into())
+        .expect("prime lookup");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("initial answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 61))]
+    );
+    let snapshot = ResolverSnapshot {
+        nameservers: vec![blocked.address, fallback.address],
+        search_suffixes: Vec::new(),
+        attempt_timeout: Duration::from_secs(1),
+        attempts: 2,
+    };
+    updates
+        .send(Ok(snapshot.clone()))
+        .expect("publish changed routes");
+    assert_eq!(
+        resolver
+            .refresh_selected_nameserver_for_test()
+            .expect("refresh"),
+        1
+    );
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("control queue")
+            .is_some()
+    );
+    resolver
+        .resolve(ResolveKey(241), "refresh-fallback.test".into())
+        .expect("refreshed lookup");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("fallback answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 63))],
+        "the old cached answer must be invalidated"
+    );
+
+    updates
+        .send(Ok(snapshot))
+        .expect("publish unchanged routes");
+    assert_eq!(
+        resolver
+            .refresh_selected_nameserver_for_test()
+            .expect("unchanged refresh"),
+        1
+    );
+    assert!(
+        resolver
+            .take_idle_http_eviction()
+            .expect("control queue")
+            .is_none()
+    );
+    resolver
+        .resolve(ResolveKey(242), "refresh-fallback.test".into())
+        .expect("cached lookup");
+    wait_for_resolution(&mut owner, &resolver)
+        .result
+        .expect("cached fallback answer");
+    assert_eq!(
+        fallback.observations().len(),
+        1,
+        "unchanged refresh retains the cache"
+    );
+    assert!(blocked.observations().is_empty());
+    resolver.shutdown().expect("resolver must join");
+}
+
+#[test]
+fn refreshed_nameservers_all_fail_then_recover_without_a_snapshot_change() {
+    let first = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 64));
+    let blocked = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 65));
+    let fallback = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 66));
+    let (config, updates) = ResolverConfig::for_test(first.address).with_test_refresh_source();
+    let ResolverConfigSource::Test {
+        socket_failures, ..
+    } = &config.source
+    else {
+        panic!("test configuration source required");
+    };
+    let failures = Arc::clone(socket_failures);
+    failures.lock().expect("socket failures lock").extend([
+        (blocked.address, "injected VPN socket failure"),
+        (fallback.address, "injected Wi-Fi socket failure"),
+    ]);
+    let mut owner = NativeReactor::new(4).expect("owner reactor must construct");
+    let mut resolver = NativeResolver::new(config, owner.waker()).expect("resolver must construct");
+    let snapshot = ResolverSnapshot {
+        nameservers: vec![blocked.address, fallback.address],
+        search_suffixes: Vec::new(),
+        attempt_timeout: Duration::from_secs(1),
+        attempts: 2,
+    };
+    updates
+        .send(Ok(snapshot.clone()))
+        .expect("publish unavailable routes");
+    resolver
+        .refresh_config_for_test()
+        .expect("failed refresh must finish");
+    resolver
+        .resolve(ResolveKey(243), "refresh-unavailable.test".into())
+        .expect("failed lookup");
+    let failure = wait_for_resolution(&mut owner, &resolver)
+        .result
+        .expect_err("all sockets fail");
+    assert_eq!(failure.class, DnsFailure::NoNameserver);
+    assert!(
+        failure.message.contains("injected Wi-Fi socket failure"),
+        "{}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains(&fallback.address.to_string()),
+        "{}",
+        failure.message
+    );
+
+    failures
+        .lock()
+        .expect("socket failures lock")
+        .remove(&fallback.address);
+    updates
+        .send(Ok(snapshot))
+        .expect("publish identical routes");
+    assert_eq!(
+        resolver
+            .refresh_selected_nameserver_for_test()
+            .expect("recovery refresh"),
+        1
+    );
+    resolver
+        .resolve(ResolveKey(244), "refresh-recovered.test".into())
+        .expect("recovery lookup");
+    assert_eq!(
+        wait_for_resolution(&mut owner, &resolver)
+            .result
+            .expect("recovered answer")
+            .addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 66))]
+    );
+    assert!(blocked.observations().is_empty());
+    resolver
+        .shutdown()
+        .expect("resolver must join after recovery");
+}
+
+#[test]
 fn live_configuration_refresh_moves_the_original_resolver_from_a_to_b() {
     let first = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 51));
     let second = DnsFixture::answering(Ipv4Addr::new(127, 0, 0, 52));
@@ -1468,13 +1682,21 @@ fn unsupported_live_snapshot_fails_closed_and_later_recovers() {
     resolver
         .resolve(ResolveKey(216), "configuration-unavailable.test".to_owned())
         .expect("unavailable lookup must submit to the live Engine");
-    assert_eq!(
-        wait_for_resolution(&mut owner, &resolver)
-            .result
-            .expect_err("unsupported live topology must fail closed")
-            .class,
-        DnsFailure::NoNameserver
-    );
+    let failure = wait_for_resolution(&mut owner, &resolver)
+        .result
+        .expect_err("unsupported live topology must fail closed");
+    assert_eq!(failure.class, DnsFailure::NoNameserver);
+    assert!(failure.message.contains("injected split DNS topology"));
+
+    updates
+        .send(Err(Error::new(
+            ErrorKind::Internal,
+            "injected adapter discovery failure",
+        )))
+        .expect("new discovery failure must publish");
+    resolver
+        .refresh_config_for_test()
+        .expect("repeat unavailable refresh");
 
     resolver
         .public_resolve(
@@ -1497,6 +1719,11 @@ fn unsupported_live_snapshot_fails_closed_and_later_recovers() {
     };
     assert_eq!(error.kind(), ErrorKind::Unsupported);
     assert_eq!(error.dns_failure(), None);
+    assert!(
+        error
+            .message()
+            .contains("injected adapter discovery failure")
+    );
 
     resolver
         .public_resolve(
@@ -1519,6 +1746,11 @@ fn unsupported_live_snapshot_fails_closed_and_later_recovers() {
     };
     assert_eq!(error.kind(), ErrorKind::Transport);
     assert_eq!(error.dns_failure(), Some(DnsFailure::NoNameserver));
+    assert!(
+        error
+            .message()
+            .contains("injected adapter discovery failure")
+    );
 
     updates
         .send(Ok(ResolverSnapshot {

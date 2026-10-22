@@ -24,11 +24,11 @@ drive networking from your own event loop. No async runtime required.
 
 Requires Rust 1.85 or newer; Rust 1.85/1.86 may need the documented
 [dependency selection](docs/getting-started.md#rust-version-and-dependency-selection).
-This guide covers NBReq 0.2.1.
+This guide covers NBReq 0.2.2.
 
 ```toml
 [dependencies]
-nbreq = "0.2.1"
+nbreq = "0.2.2"
 ```
 
 ```rust

@@ -60,6 +60,7 @@ enum ResolverConfigSource {
     Test {
         receiver: Receiver<Result<ResolverSnapshot, Error>>,
         refresh_interval: Option<Duration>,
+        socket_failures: Arc<Mutex<HashMap<SocketAddr, &'static str>>>,
     },
 }
 
@@ -155,6 +156,23 @@ impl ResolverConfig {
         self.attempts = snapshot.attempts;
     }
 
+    fn connect_nameserver(&self, nameserver: SocketAddr) -> io::Result<UdpSocket> {
+        #[cfg(test)]
+        if let ResolverConfigSource::Test {
+            socket_failures, ..
+        } = &self.source
+        {
+            if let Some(message) = socket_failures
+                .lock()
+                .expect("test socket failures must not be poisoned")
+                .get(&nameserver)
+            {
+                return Err(io::Error::new(io::ErrorKind::NetworkUnreachable, *message));
+            }
+        }
+        connect_one_nameserver(nameserver)
+    }
+
     #[cfg(test)]
     fn with_test_refresh_source(self) -> (Self, Sender<Result<ResolverSnapshot, Error>>) {
         self.with_test_refresh_source_and_interval(None)
@@ -169,6 +187,7 @@ impl ResolverConfig {
         self.source = ResolverConfigSource::Test {
             receiver,
             refresh_interval,
+            socket_failures: Arc::default(),
         };
         (self, sender)
     }
@@ -291,7 +310,7 @@ enum Command {
     },
     Cancel(ResolveKey),
     #[cfg(test)]
-    RefreshConfig(Sender<()>),
+    RefreshConfig(Sender<usize>),
     Shutdown,
 }
 
@@ -378,6 +397,7 @@ struct ResolverState {
     udp_generation: u64,
     config_generation: u64,
     config_available: bool,
+    config_error: Option<Error>,
     config_dirty: bool,
     next_config_refresh: Option<Instant>,
     cache: DnsCache,
@@ -628,7 +648,7 @@ impl NativeResolver {
         }
         let (mut poll, waker) = NativePoll::new(16, WAKE_TOKEN)
             .map_err(|error| resolver_internal("poll creation", &error))?;
-        let (mut socket, current_nameserver) = connect_nameserver(&config.nameservers)?;
+        let (mut socket, current_nameserver) = connect_nameserver(&config)?;
         poll.register(&mut socket, SOCKET_TOKEN, Interest::READABLE)
             .map_err(|error| resolver_internal("socket registration", &error))?;
 
@@ -648,6 +668,7 @@ impl NativeResolver {
             udp_generation: 1,
             config_generation: 1,
             config_available: true,
+            config_error: None,
             config_dirty: false,
             next_config_refresh,
             cache: DnsCache::new(),
@@ -722,6 +743,11 @@ impl NativeResolver {
 
     #[cfg(test)]
     pub(super) fn refresh_config_for_test(&self) -> Result<(), Error> {
+        self.refresh_selected_nameserver_for_test().map(|_| ())
+    }
+
+    #[cfg(test)]
+    fn refresh_selected_nameserver_for_test(&self) -> Result<usize, Error> {
         let (acknowledge, acknowledged) = mpsc::channel();
         self.send(Command::RefreshConfig(acknowledge))?;
         acknowledged
@@ -784,12 +810,12 @@ impl NativeResolver {
     }
 }
 
-fn connect_nameserver(nameservers: &[SocketAddr]) -> Result<(UdpSocket, usize), Error> {
+fn connect_nameserver(config: &ResolverConfig) -> Result<(UdpSocket, usize), Error> {
     let mut last_error = None;
-    for (index, nameserver) in nameservers.iter().enumerate() {
-        match connect_one_nameserver(*nameserver) {
+    for (index, nameserver) in config.nameservers.iter().enumerate() {
+        match config.connect_nameserver(*nameserver) {
             Ok(socket) => return Ok((socket, index)),
-            Err(error) => last_error = Some(error),
+            Err(error) => last_error = Some(format!("{nameserver}: {error}")),
         }
     }
     let detail = last_error.map_or_else(
@@ -861,7 +887,10 @@ fn resolver_main(
                         send_result(
                             &results,
                             &result_waker,
-                            ResolveResult::http(key, Err(configuration_unavailable_failure())),
+                            ResolveResult::http(
+                                key,
+                                Err(configuration_unavailable_failure(&state)),
+                            ),
                         );
                         continue;
                     }
@@ -910,10 +939,10 @@ fn resolver_main(
                         let error = if spec.unavailable_is_unsupported {
                             Error::new(
                                 ErrorKind::Unsupported,
-                                "the current system DNS configuration is unavailable or unsupported",
+                                configuration_unavailable_message(&state),
                             )
                         } else {
-                            public_error(configuration_unavailable_failure())
+                            public_error(configuration_unavailable_failure(&state))
                         };
                         send_result(
                             &results,
@@ -967,7 +996,7 @@ fn resolver_main(
         );
         #[cfg(test)]
         for acknowledge in refresh_acks {
-            let _acknowledge_result = acknowledge.send(());
+            let _acknowledge_result = acknowledge.send(state.current_nameserver);
         }
 
         if let Some(active_socket) = socket.as_mut() {
@@ -1088,10 +1117,18 @@ fn parse_dns_name(host: &str) -> Result<DnsName, ResolveFailure> {
     })
 }
 
-fn configuration_unavailable_failure() -> ResolveFailure {
+fn configuration_unavailable_message(state: &ResolverState) -> String {
+    let message = "the current system DNS configuration is unavailable or unsupported";
+    match &state.config_error {
+        Some(error) => format!("{message}: {}", error.message()),
+        None => message.to_owned(),
+    }
+}
+
+fn configuration_unavailable_failure(state: &ResolverState) -> ResolveFailure {
     ResolveFailure::classified(
         DnsFailure::NoNameserver,
-        "the current system DNS configuration is unavailable or unsupported",
+        configuration_unavailable_message(state),
     )
 }
 
@@ -1123,6 +1160,10 @@ fn refresh_configuration_if_dirty(
             snapshot
         }
         Ok(_) => {
+            state.config_error = Some(Error::new(
+                ErrorKind::Internal,
+                "DNS discovery returned no nameservers or a zero retry budget",
+            ));
             transition_configuration_unavailable(
                 socket,
                 poll,
@@ -1133,7 +1174,8 @@ fn refresh_configuration_if_dirty(
             );
             return;
         }
-        Err(_) => {
+        Err(error) => {
+            state.config_error = Some(error);
             transition_configuration_unavailable(
                 socket,
                 poll,
@@ -1160,8 +1202,17 @@ fn refresh_configuration_if_dirty(
     fail_pending_for_configuration_change(state, poll, results, result_waker);
     state.cache.clear();
     config.apply(snapshot);
-    state.current_nameserver = 0;
-    state.config_available = install_configured_socket(socket, poll, config);
+    match install_configured_socket(socket, poll, config) {
+        Ok(index) => {
+            state.current_nameserver = index;
+            state.config_available = true;
+            state.config_error = None;
+        }
+        Err(error) => {
+            state.config_available = false;
+            state.config_error = Some(error);
+        }
+    }
     advance_config_generation(&mut state.config_generation);
     send_control(
         controls,
@@ -1221,25 +1272,18 @@ fn install_configured_socket(
     socket: &mut Option<UdpSocket>,
     poll: &mut NativePoll,
     config: &ResolverConfig,
-) -> bool {
-    let Some(nameserver) = config.nameservers.first().copied() else {
-        retire_configured_socket(socket, poll);
-        return false;
-    };
-    let Ok(mut replacement) = connect_one_nameserver(nameserver) else {
-        retire_configured_socket(socket, poll);
-        return false;
-    };
-    if poll
-        .register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
-        .is_err()
-    {
-        retire_configured_socket(socket, poll);
-        return false;
-    }
+) -> Result<usize, Error> {
+    // Startup and refresh must select from the same ordered list. Keep the selected index
+    // together with its socket: retries and TCP fallback also use this nameserver.
+    let replacement = connect_nameserver(config).and_then(|(mut replacement, index)| {
+        poll.register(&mut replacement, SOCKET_TOKEN, Interest::READABLE)
+            .map_err(|error| resolver_internal("socket registration", &error))?;
+        Ok((replacement, index))
+    });
     retire_configured_socket(socket, poll);
+    let (replacement, index) = replacement?;
     *socket = Some(replacement);
-    true
+    Ok(index)
 }
 
 fn retire_configured_socket(socket: &mut Option<UdpSocket>, poll: &mut NativePoll) {

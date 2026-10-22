@@ -93,7 +93,7 @@ cargo run --example C02-tcp-nonblocking -- echo.example.org 9000
 The hostname above is a placeholder for your own server. Sending FIN closes only our write side;
 we keep reading until the peer sends EOF. Dropping an unfinished connection aborts it.
 
-C04/C05 demonstrate the TCP TLS API in NBReq 0.2.1. C04 calls
+C04/C05 demonstrate the TCP TLS API in NBReq 0.2.2. C04 calls
 `engine.tcp_connector().execute_tls(request, tls)` to connect TCP and complete a verified TLS
 handshake. C05 first calls `execute(request)` for plain TCP, negotiates the upgrade, then calls
 `plain.into_tls(tls)` to consume that connection and secure the same socket.
