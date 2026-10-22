@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 — 2026-10-22
+## 0.3.1 â€” 2026-10-22
 
 - Fix DNS configuration refresh losing service when the first nameserver fails socket
   setup but a later server is usable, including after Windows VPN activation. Refresh
